@@ -1,32 +1,43 @@
-# Tabduct host — .NET (planned)
+# Tabduct host — .NET
 
-📋 Not built yet. A .NET host implements
-[`../../protocol/PROTOCOL.md`](../../protocol/PROTOCOL.md) and passes
-[`../../protocol/conformance`](../../protocol/conformance). The shared extension
-is reused unchanged.
+✅ **First-class .NET reference host** (official
+[`ModelContextProtocol`](https://www.nuget.org/packages/ModelContextProtocol) SDK,
+`net10.0`). Passes the full conformance suite. The shared extension + wire protocol
+are reused unchanged.
 
-## Shape
+## Build & run
 
-- **North edge:** the official MCP C# SDK (`ModelContextProtocol` NuGet) with a
-  streamable-HTTP server on `127.0.0.1:<port>/mcp`.
-- **South edge:** read/write Chrome native-messaging frames on
-  `Console.OpenStandardInput()` / `OpenStandardOutput()` (uint32 LE length +
-  UTF-8 JSON). Keep stdout binary-clean.
-- **Bridge:** map each MCP tool call → `invoke` message → await the correlated
-  `replyTo`, using a `ConcurrentDictionary<string, TaskCompletionSource>`.
-  Tools come from `../../protocol/tools.schema.json`.
+```bash
+dotnet build hosts/dotnet
+```
 
-## Suggested layout
+Chrome launches the built host via the native-messaging manifest; it speaks the
+stdio wire protocol and runs the MCP server on `127.0.0.1:<ephemeral>/mcp`. Logs go
+to **stderr** so stdout stays a clean native-messaging frame stream.
+
+## Conformance
+
+From the repo root, after `dotnet build hosts/dotnet`:
+
+```bash
+node protocol/conformance/run.mjs -- dotnet hosts/dotnet/bin/Debug/net10.0/Tabduct.Host.dll
+```
+
+→ `CONFORMANCE PASSED` (14 tools). (Run the built dll, not `dotnet run`, which would
+print build output onto stdout and corrupt the frame stream.)
+
+## Layout
 
 ```
 Tabduct.Host/
-  Program.cs           entry (lifecycle: open/close/ping)
-  NativeMessaging.cs
-  Bridge.cs
-  McpServer.cs
-  Register.cs
-Tabduct.Host.csproj
+  Program.cs           entry: stdio loop + lifecycle (open/close/ping)
+  NativeMessaging.cs   uint32-LE + JSON framing (binary-clean stdout)
+  Bridge.cs            invoke → correlated reply (ConcurrentDictionary<…,TCS>)
+  McpServer.cs         Kestrel + MCP (low-level catalog tools) + auth middleware
+  Tabduct.Host.csproj
+Tabduct.slnx
 ```
 
-Build only when there's a reason (embedding in a .NET app, Node-free machine,
-contributor preference). Until then, the Node host serves every MCP agent.
+**Remaining:** a per-OS `register` (native-messaging manifest install) — until then,
+use the Node host's `register` or install the manifest manually pointing at the
+built dll. Consent, tools, and auth all live in the shared extension / protocol.

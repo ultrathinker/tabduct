@@ -136,8 +136,8 @@ tabduct/
 ├── extension/           # the one shared MV3 extension (JS)
 ├── hosts/
 │   ├── node/                reference host (build first)
-│   ├── python/              planned
-│   └── dotnet/              planned
+│   ├── python/              mcp SDK — passes conformance (register TODO)
+│   └── dotnet/              ModelContextProtocol SDK — passes conformance (register TODO)
 ├── scripts/             # gen-key etc.
 └── docs/
 ```

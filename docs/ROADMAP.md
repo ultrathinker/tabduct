@@ -70,8 +70,8 @@ loop is proven.
 
 ## Later / maybe
 
-- [ ] Python host (`hosts/python`) against the conformance suite.
-- [ ] .NET host (`hosts/dotnet`) against the conformance suite.
+- [x] Python host (`hosts/python`) — official `mcp` SDK, passes conformance. (per-OS `register` still TODO)
+- [x] .NET host (`hosts/dotnet`) — `ModelContextProtocol` SDK, passes conformance. (per-OS `register` still TODO)
 - [ ] Firefox support (MV3 differences: `background.scripts`, `browser.*`,
       `allowed_extensions` NM manifest) — currently Chromium-only; scope the docs
       accordingly until then.

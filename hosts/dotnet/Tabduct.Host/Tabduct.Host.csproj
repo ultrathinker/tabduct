@@ -1,0 +1,24 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RootNamespace>Tabduct.Host</RootNamespace>
+    <AssemblyName>Tabduct.Host</AssemblyName>
+    <!-- Emit to hosts/dotnet/bin/ (not hosts/dotnet/Tabduct.Host/bin/) so the
+         conformance command resolves the built dll at
+         hosts/dotnet/bin/Debug/net10.0/Tabduct.Host.dll. -->
+    <BaseOutputPath>..\bin\</BaseOutputPath>
+    <!-- No telemetry / first-time-experience noise on stdout. -->
+    <DOTNET_CLI_TELEMETRY_OPTOUT>true</DOTNET_CLI_TELEMETRY_OPTOUT>
+    <NoWarn>$(NoWarn);CS1591</NoWarn>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="ModelContextProtocol" Version="1.4.0" />
+    <PackageReference Include="ModelContextProtocol.AspNetCore" Version="1.4.0" />
+  </ItemGroup>
+
+</Project>

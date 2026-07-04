@@ -17,6 +17,11 @@ All notable changes to this project are documented here. The format follows
   by consent (never under read-only), signalled by a "CDP" header chip and Chrome's
   "being debugged" banner.
 
+- **Python host** (`hosts/python`, official `mcp` SDK) and **.NET host**
+  (`hosts/dotnet`, `ModelContextProtocol` SDK, net10.0) — both pass the full
+  conformance suite. Multi-language is no longer paper-only. (Per-OS `register`
+  for these two is still to come; the Node host's `register` covers install today.)
+
 ### Changed
 - Settings popup redesigned into a widened two-column layout (no vertical scroll).
 
