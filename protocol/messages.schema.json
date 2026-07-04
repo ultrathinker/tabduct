@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Tabduct wire message names",
+  "description": "Single source of truth for the message-type vocabulary of the host<->extension wire protocol (PROTOCOL.md). Kept here so hosts, the extension, and the conformance suite cannot drift. protocolVersion mirrors tools.schema.json.",
+  "protocolVersion": 0,
+  "envelope": {
+    "request": ["type", "id", "payload"],
+    "reply": ["replyTo", "ok", "result", "error"],
+    "notification": ["type", "payload"]
+  },
+  "extensionToHost": {
+    "requests": ["open", "close", "ping"],
+    "notifications": ["event"]
+  },
+  "hostToExtension": {
+    "requests": ["invoke"],
+    "notifications": ["notice"]
+  },
+  "events": ["permission_revoked", "tab_removed"],
+  "errorCodes": [
+    "UNKNOWN_TOOL", "TAB_NOT_FOUND", "TIMEOUT", "CSP_BLOCKED", "SCRIPT_ERROR",
+    "FRAME_TOO_LARGE", "VERSION_MISMATCH", "INVALID_ARGS", "INTERNAL",
+    "NOT_SHARED", "ORIGIN_DRIFT", "ORIGIN_DENIED", "CAP_NOT_GRANTED",
+    "AMBIGUOUS_INSTANCE", "INSTANCE_GONE"
+  ]
+}

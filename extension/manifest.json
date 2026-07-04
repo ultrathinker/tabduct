@@ -1,0 +1,44 @@
+{
+  "manifest_version": 3,
+  "name": "Tabduct",
+  "version": "0.0.1",
+  "description": "A conduit between CLI coding agents (via MCP) and your real browser tabs.",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAsKLDDy3qDcZPyg5lHb6g9nO4WpllhTWr1jPZ9a7M87NWkIOza+4RXGpatw2W+/sZPzacqes7eL1KxTe8dFxWMgeDIxjqObiPwJ3MuJPn2jKphZgy/ai9C5tcjDPgmzJnAmzUJjEe6UoKjDRI6cew+MkeGZ9OWUYE2c58b065E/XgUcZu3eAsHmHEWLIGim2SM19HpDcsUn5Sc/TtaFW7/l3KM8cfk+beFS4fazIbFekH28S8lmUGhPtq/3j7+sczeQkPoImpn6sZG4eTAaf4gqdz3zUy6xOD0IwD6UGazbRtWtH6taIHbILE46I8sDotvGD36yR/SYbrhBRp0OWOtQIDAQAB",
+  "minimum_chrome_version": "116",
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "Tabduct",
+    "default_icon": { "16": "icons/16.png", "24": "icons/24.png", "32": "icons/32.png" }
+  },
+  "commands": {
+    "toggle-share-tab": {
+      "suggested_key": { "default": "Ctrl+Shift+Y", "mac": "Command+Shift+Y" },
+      "description": "Tabduct: share / unshare the current tab"
+    }
+  },
+  "permissions": [
+    "nativeMessaging",
+    "tabs",
+    "activeTab",
+    "scripting",
+    "storage",
+    "alarms",
+    "tabGroups",
+    "contextMenus"
+  ],
+  "host_permissions": [
+    "<all_urls>"
+  ],
+  "icons": {
+    "16": "icons/16.png",
+    "24": "icons/24.png",
+    "32": "icons/32.png",
+    "48": "icons/48.png",
+    "64": "icons/64.png",
+    "128": "icons/128.png"
+  }
+}

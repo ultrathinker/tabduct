@@ -1,0 +1,20 @@
+{
+  "name": "@tabduct/host-node",
+  "version": "0.0.1",
+  "description": "Tabduct reference host (Node): MCP <-> Chrome native messaging bridge.",
+  "type": "module",
+  "license": "MIT",
+  "bin": {
+    "tabduct": "bin/tabduct.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "register": "node bin/tabduct.js register",
+    "doctor": "node bin/tabduct.js doctor"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0"
+  }
+}

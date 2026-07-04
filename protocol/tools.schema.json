@@ -1,0 +1,111 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Tabduct tool catalog",
+  "description": "Single source of truth for the MVP tool set. Hosts read this to register MCP tools; the extension reads it to know what it must implement. protocolVersion is the wire-protocol version (see PROTOCOL.md).",
+  "protocolVersion": 0,
+  "tools": [
+    {
+      "name": "list_tabs",
+      "description": "List open browser tabs (id, title, url, whether active/window).",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "currentWindowOnly": { "type": "boolean", "default": false, "description": "Restrict to the last-focused window." }
+        },
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "get_active_tab",
+      "description": "Return the currently focused tab (id, title, url).",
+      "inputSchema": { "type": "object", "properties": {}, "additionalProperties": false }
+    },
+    {
+      "name": "open_tab",
+      "description": "Open a new tab, optionally at a URL. Returns the new tab.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "url": { "type": "string", "description": "Optional URL; omit for a blank tab." },
+          "active": { "type": "boolean", "default": true, "description": "Focus the new tab." }
+        },
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "activate_tab",
+      "description": "Bring a tab (and its window) to the foreground.",
+      "inputSchema": {
+        "type": "object",
+        "properties": { "tabId": { "type": "integer" } },
+        "required": ["tabId"],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "close_tab",
+      "description": "Close a tab by id.",
+      "inputSchema": {
+        "type": "object",
+        "properties": { "tabId": { "type": "integer" } },
+        "required": ["tabId"],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "navigate",
+      "description": "Navigate a tab to a URL. Defaults to the active tab.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "url": { "type": "string", "format": "uri", "description": "Destination URL." },
+          "tabId": { "type": "integer", "description": "Target tab; omit for active tab." },
+          "waitUntilComplete": { "type": "boolean", "default": true, "description": "Resolve only after the load finishes (bounded by an internal deadline)." }
+        },
+        "required": ["url"],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "get_page_content",
+      "description": "Read a tab's content: visible innerText, logical textContent, rendered HTML, or full outerHTML.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "tabId": { "type": "integer", "description": "Target tab; omit for active tab." },
+          "format": { "type": "string", "enum": ["text", "textContent", "html", "outerHTML"], "default": "text", "description": "'text' = visible innerText; 'textContent' = logical DOM text." },
+          "maxChars": { "type": "integer", "minimum": 0, "default": 200000, "description": "Truncate result to this many chars (0 = no limit)." }
+        },
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "execute_script",
+      "description": "Run JavaScript in a tab and return the (JSON-serializable) result. Keystone tool: read AND modify the page. NOTE: your code must `return` its result (the wrapper is a statement body). On strict-CSP sites, MAIN-world eval may be blocked (see error code CSP_BLOCKED); the roadmap fix is chrome.userScripts. See ROADMAP.md.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "code": { "type": "string", "description": "JS source; must `return` the value to hand back. Runs in the page (MAIN) world. Result is capped at 1MB (truncated flag set if exceeded)." },
+          "tabId": { "type": "integer", "description": "Target tab; omit for active tab." },
+          "args": { "type": "array", "items": {}, "description": "Optional JSON-serializable args exposed as `args` to the code.", "default": [] }
+        },
+        "required": ["code"],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "screenshot",
+      "description": "Capture the visible area of a tab. Only the ACTIVE tab of a window can be captured; pass a background tabId with activate=true to bring it forward first. Returned to the agent as an MCP image.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "tabId": { "type": "integer", "description": "Target tab; omit for active tab." },
+          "activate": { "type": "boolean", "default": false, "description": "If the tab is not active, activate it before capturing (side effect: changes focus)." },
+          "format": { "type": "string", "enum": ["png", "jpeg"], "default": "png" },
+          "quality": { "type": "integer", "minimum": 0, "maximum": 100, "description": "JPEG quality (ignored for png)." }
+        },
+        "additionalProperties": false
+      }
+    }
+  ]
+}

@@ -1,0 +1,200 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <header>
+      <div class="hdr-left">
+        <h1>Tabduct</h1>
+        <span id="count" class="pill"><span id="countText">0 tabs</span><button id="countClear" class="pill-x" title="Unshare all" aria-label="Unshare all" hidden>✕</button></span>
+      </div>
+      <div class="hdr-right">
+        <span id="dot" class="dot" data-state="disconnected" title="disconnected" role="button" tabindex="0"></span>
+        <button id="gear" class="icon-btn" title="Settings" aria-label="Settings">⚙</button>
+      </div>
+    </header>
+
+    <!-- Main layer: connection (only while not connected) + sharing, one card -->
+    <div id="main">
+      <section class="card">
+        <div id="connArea">
+          <p id="status" class="status" data-state="disconnected">Disconnected</p>
+          <button id="toggle" class="btn">Connect</button>
+        </div>
+        <div id="shareArea" hidden>
+          <button id="shareThis" class="btn share">Share Current Tab</button>
+          <div id="allBadge" class="allbadge" hidden>⚡ Everything is shared</div>
+          <button id="shareEvery" class="btn every">Share Everything</button>
+          <ul id="shared" class="shared"></ul>
+          <button id="revokeAll" class="btn danger" hidden>Revoke all</button>
+        </div>
+      </section>
+    </div>
+
+    <!-- Settings layer -->
+    <div id="settings" hidden>
+      <section class="card">
+        <div class="row settings-hd">
+          <button id="back" class="icon-btn" title="Back" aria-label="Back">←</button>
+          <span class="muted">Settings</span>
+        </div>
+
+        <button id="howBtn" class="btn howto-btn">How it works<span class="qmark">?</span></button>
+
+        <div class="setrow"><span class="muted">Connection</span></div>
+        <label class="field"><span>Port <small class="muted">(0=auto)</small></span><input id="port" type="number" min="0" max="65535" value="0" /></label>
+        <label class="tg">
+          <input type="checkbox" id="hub" />
+          Shared hub (one endpoint for all browsers)
+          <span class="help" title="Exposes ONE stable endpoint (127.0.0.1:12311) with a fixed token that aggregates every browser you connect, so your agent config never changes across reconnects or extra browsers. On by default; turn off only if you specifically want a direct, per-browser endpoint.">?</span>
+        </label>
+        <div id="creds" class="creds" hidden>
+          <span class="muted">MCP endpoint</span><code id="url"></code>
+          <span class="muted">Authorization</span><code id="auth"></code>
+        </div>
+
+        <hr class="sep" />
+
+        <label class="field">
+          <span>Label <span class="help" title="Name for THIS browser instance. Matters only when you run several browsers under the hub — the agent lists them by this label so you can tell them apart. Cosmetic: routing uses a hidden id, not the label.">?</span></span>
+          <input id="label" type="text" placeholder="Chrome" />
+        </label>
+
+        <div class="setblock">
+          <div class="setrow">
+            <span id="denyHeading" class="muted">Blocked origins</span>
+            <select id="originMode">
+              <option value="block">Block listed</option>
+              <option value="allow">Allow only listed</option>
+            </select>
+            <span class="help" title="The origin list. In 'Block listed' mode these sites are NEVER shared — overrides every sharing mode, even 'Everything'. In 'Allow only listed' mode ONLY these sites can be shared; an empty allow list blocks everything. Add a host like mail.google.com or *.bank.com. Port and scheme are ignored — the host is the unit of trust. Persists across restarts.">?</span>
+          </div>
+          <div class="actions">
+            <input id="denyInput" type="text" placeholder="mail.google.com or *.bank.com" />
+            <button id="denyAdd" class="btn small ghost">Add</button>
+          </div>
+          <p id="denyHint" class="hint" hidden>Allow mode with an empty list blocks everything.</p>
+          <ul id="denyList" class="shared"></ul>
+        </div>
+
+        <label class="tg">
+          <input type="checkbox" id="tabGroup" />
+          Mark shared tabs with a "⚡" tab group
+          <span class="help" title="Puts your shared tabs into a coloured '⚡' tab group in the tab strip, so you can see at a glance which tabs the agent can access. May rearrange your tabs.">?</span>
+        </label>
+
+        <hr class="sep" />
+
+        <div class="setblock">
+          <div class="setrow"><span class="muted">Sharing defaults</span><span class="help" title="Apply to EVERY shared tab (global, not per-tab). Read-only lets the agent read the page and take screenshots but not click, type, navigate, run scripts or open/close tabs. Auto-expire un-shares all tabs after the chosen time. Lock-to-domain keeps a shared tab pinned to its origin (off lets the agent navigate it freely). Don't auto-share leaves tabs the agent opens un-shared until you share them. Read-only + auto-expire default off; the other two default on.">?</span></div>
+          <label class="tg" style="margin-top: 0">
+            <input type="checkbox" id="readOnly" />
+            Read-only (agent can look, not act)
+          </label>
+          <label class="field">
+            <span>Auto-expire shares</span>
+            <select id="ttl">
+              <option value="0">off</option>
+              <option value="300000">5m</option>
+              <option value="900000">15m</option>
+              <option value="1800000">30m</option>
+              <option value="3600000">1h</option>
+              <option value="7200000">2h</option>
+              <option value="18000000">5h</option>
+              <option value="36000000">10h</option>
+            </select>
+          </label>
+          <label class="tg">
+            <input type="checkbox" id="lockToDomain" checked />
+            Lock shared tabs to their domain (prevent navigating to other sites)
+            <span class="help" title="When on (default), a shared tab that navigates to a different site loses access (ORIGIN_DRIFT). Turn off to let the agent navigate a shared tab freely across sites. Off is riskier: a shared tab could follow you into sensitive pages.">?</span>
+          </label>
+          <label class="tg">
+            <input type="checkbox" id="noAutoShareOpened" checked />
+            Don't auto-share tabs the agent opens
+            <span class="help" title="When on (default), tabs the agent creates with open_tab are NOT shared automatically — you must share them yourself. Turn off to auto-share every tab the agent opens (sticky to its opening origin).">?</span>
+          </label>
+        </div>
+      </section>
+    </div>
+
+    <!-- How-it-works layer -->
+    <div id="howto" hidden>
+      <div class="howto-hd">
+        <h2>How Tabduct works</h2>
+        <button id="howClose" class="icon-btn" title="Close" aria-label="Close">✕</button>
+      </div>
+      <div class="howto-body">
+        <h3>What it is</h3>
+        <p>Tabduct connects an AI coding agent (such as Claude Code) to the real Chrome you are already using. Instead of driving a fresh, empty browser, the agent works with the exact tabs you hand it — your sessions, your logins, your open pages — so it can help with things that normally need a signed-in browser.</p>
+
+        <h3>Quick start</h3>
+        <ol>
+          <li><strong>Connect</strong> — click the button (or the header dot); it turns green.</li>
+          <li><strong>Point your agent at it</strong> — open Settings (⚙), copy the <strong>MCP endpoint</strong> + <strong>Authorization</strong> token into your agent's MCP config (template below), reload the agent.</li>
+          <li><strong>Share</strong> — <strong>Share Current Tab</strong> for one tab, or <strong>Share Everything</strong>. The agent can now work with what you shared, and nothing else.</li>
+        </ol>
+
+        <h3>What the agent can do</h3>
+        <p>For a tab you have shared, the agent can read the page's text/structure, take a screenshot, click, type, run small in-page scripts, navigate, and open/close tabs. Everything you have <strong>not</strong> shared stays completely invisible — it can't even see the title of an unshared tab. Several safety limits below can narrow this further.</p>
+
+        <h3>Sharing &amp; how you stay in control</h3>
+        <ul>
+          <li><strong>Two ways to share:</strong> <strong>Share Current Tab</strong> (just the tab you're on) or <strong>Share Everything</strong> (all current and future tabs). Sharing resets when you restart Chrome, so you never leave something shared by accident.</li>
+          <li><strong>Origin filter</strong> (Settings) decides which sites are eligible at all, and overrides every sharing mode:
+            <ul>
+              <li><strong>Block mode</strong> (default): the listed sites are <em>never</em> shared — put your email, bank, etc. here.</li>
+              <li><strong>Allow mode</strong>: flips it — <em>only</em> the listed sites can be shared, everything else is blocked (an empty allow list blocks everything). Best if you want the agent confined to a known set of sites.</li>
+            </ul>
+          </li>
+          <li><strong>Lock shared tabs to their domain</strong> (Settings, on by default): a shared tab that navigates to another site loses access — so a shared shopping tab can't quietly follow you into your bank. Turn it off to let the agent browse freely within a shared tab.</li>
+          <li><strong>Don't auto-share tabs the agent opens</strong> (Settings, on by default): tabs the agent opens itself aren't shared until you approve them, so it can't silently reach a brand-new site.</li>
+          <li><strong>Read-only</strong> (Settings): the agent may look (read text, screenshot) but never click, type, navigate, run scripts, or open/close tabs.</li>
+          <li><strong>Auto-expire</strong> (Settings): un-shares everything after a time you pick (5 min … 10 h).</li>
+        </ul>
+
+        <h3>Marking shared tabs &amp; indicators</h3>
+        <ul>
+          <li><strong>Header dot:</strong> green = connected, red = not connected. Click it to disconnect.</li>
+          <li><strong>Toolbar icon:</strong> plain = idle; green dot = the current tab is shared; red dot = Tabduct isn't connected.</li>
+          <li><strong>"⚡" tab group</strong> (Settings, on by default): shared tabs are gathered into a coloured ⚡ group. It's two-way — drag a tab <em>into</em> the group to share it, drag it <em>out</em> to unshare.</li>
+          <li><strong>Right-click a page → "⚡ Tabduct: share / unshare this tab"</strong> — the quickest way to toggle one tab.</li>
+          <li><strong>Shortcut Ctrl+Shift+Y</strong> toggles sharing for the current tab.</li>
+        </ul>
+
+        <h3>Connecting</h3>
+        <p>Click <strong>Connect</strong> (or the header dot). Tabduct starts a small server on your own machine — nothing is exposed to the internet — and shows an endpoint URL and a secret token in Settings. Point your agent at those.</p>
+        <p><strong>Shared hub</strong> is on by default: Tabduct exposes one fixed endpoint (<code class="inline">127.0.0.1:12311</code>) with a stable token, so your agent config never changes — and every browser you connect appears behind that single endpoint. You can turn the hub off in Settings if you'd rather point the agent at a direct, per-browser endpoint.</p>
+
+        <h3>Configuring your agent (MCP)</h3>
+        <p>Tabduct speaks MCP (Model Context Protocol) over HTTP. After connecting, copy the exact endpoint and token from Settings, then add a server entry to your MCP client's config:</p>
+        <pre>{
+  "mcpServers": {
+    "tabduct": {
+      "type": "http",
+      "url": "http://127.0.0.1:12311/mcp",
+      "headers": {
+        "Authorization": "Bearer PASTE_TOKEN_FROM_SETTINGS"
+      }
+    }
+  }
+}</pre>
+        <p>Replace the port and token with the values shown in Settings once connected (the shared hub uses port <code class="inline">12311</code>; a single browser uses whatever port it reports). Reload your agent and it will discover the Tabduct tools: <code class="inline">list_tabs</code>, <code class="inline">get_active_tab</code>, <code class="inline">get_page_content</code>, <code class="inline">screenshot</code>, <code class="inline">navigate</code>, <code class="inline">open_tab</code>, <code class="inline">close_tab</code>, <code class="inline">activate_tab</code> and <code class="inline">execute_script</code>.</p>
+
+        <h3>Running several browsers or profiles</h3>
+        <p>Install Tabduct in each Chrome profile you want to use — each Google account / profile is separate, so share and connect in each one. With the hub on, they all appear behind the one endpoint and the agent tells them apart by their <strong>Label</strong> (auto-named like <code class="inline">Chrome-abcd</code>). Give each a clear name in Settings — e.g. <code class="inline">Work</code> and <code class="inline">Personal</code> — so the agent (and you) never confuse them.</p>
+
+        <h3>Good to know</h3>
+        <ul>
+          <li>The server listens only on <code class="inline">127.0.0.1</code> (your machine) and is guarded by the token — treat the token like a password and don't paste it into untrusted places.</li>
+          <li>The <strong>origin filter</strong> is the only thing that confines <em>which sites</em> the agent can reach. In Block mode with an empty list, an agent that can open tabs could reach any non-listed site — use Allow mode (or add sensitive sites to the block list) if that matters to you.</li>
+          <li>If the agent asks for a tab that isn't shared, is blocked, or has expired, it simply gets "not shared" and moves on — no error, no leak.</li>
+        </ul>
+      </div>
+    </div>
+
+    <script type="module" src="popup.js"></script>
+  </body>
+</html>

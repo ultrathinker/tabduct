@@ -1,0 +1,17 @@
+{
+  "name": "tabduct",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "description": "A minimal conduit between CLI coding agents and your real browser tabs (MCP <-> Chrome).",
+  "keywords": ["mcp", "browser", "chrome-extension", "native-messaging", "cli-agent", "claude-code"],
+  "license": "MIT",
+  "workspaces": [
+    "hosts/node"
+  ],
+  "scripts": {
+    "//": "Repo is polyglot; this root only wires the Node reference host. Python/.NET hosts have their own build.",
+    "register": "npm --workspace hosts/node run register",
+    "test": "node scripts/test-consent.mjs && node protocol/conformance/run.mjs && node protocol/conformance/run-hub.mjs"
+  }
+}
