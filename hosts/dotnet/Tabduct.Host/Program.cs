@@ -114,8 +114,10 @@ internal static class Program
     {
         if (payload is null) payload = new JsonObject();
 
-        // Version check first (PROTOCOL.md §10).
-        int? pv = payload["protocolVersion"]?.GetValue<int>();
+        // Version check first (PROTOCOL.md §10). Read defensively: a present-but-
+        // wrong-typed field must NOT throw (that would leave the caller with no
+        // reply). Mirrors Node/Python, which compare rather than coerce.
+        int? pv = payload["protocolVersion"] is JsonValue pvv && pvv.TryGetValue<int>(out int pvi) ? pvi : null;
         if (pv != McpServer.ProtocolVersion)
         {
             Reply(id, false, ErrVersionMismatch,
@@ -123,8 +125,8 @@ internal static class Program
             return;
         }
 
-        // Token: required string, length >= 16.
-        string? token = payload["token"]?.GetValue<string>();
+        // Token: required string, length >= 16 (read defensively — see above).
+        string? token = payload["token"] is JsonValue tvv && tvv.TryGetValue<string>(out string? tval) ? tval : null;
         if (token is null || token.Length < 16)
         {
             Reply(id, false, ErrInvalidArgs, "missing or too-short token");
@@ -265,10 +267,41 @@ internal static class Program
         return Path.Combine(InstancesDir(), safe + ".json");
     }
 
+    private static bool _aclDone;
+    // The instances dir holds live bearer tokens. POSIX mode bits are 0700 on the
+    // Node/Python hosts; on Windows those are a no-op, so mirror Node's explicit ACL
+    // (icacls: strip inheritance, grant only the current user full control).
+    private static void RestrictWindowsAcl(string dir)
+    {
+        if (!System.Runtime.InteropServices.RuntimeInformation.IsOSPlatform(System.Runtime.InteropServices.OSPlatform.Windows) || _aclDone) return;
+        _aclDone = true;
+        string dom = Environment.GetEnvironmentVariable("USERDOMAIN") ?? "";
+        string name = Environment.GetEnvironmentVariable("USERNAME") ?? "";
+        string user = dom.Length > 0 && name.Length > 0 ? $"{dom}\\{name}" : name;
+        if (user.Length == 0) return;
+        try
+        {
+            var psi = new ProcessStartInfo("icacls")
+            {
+                UseShellExecute = false,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+            };
+            psi.ArgumentList.Add(dir);
+            psi.ArgumentList.Add("/inheritance:r");
+            psi.ArgumentList.Add("/grant:r");
+            psi.ArgumentList.Add($"{user}:(OI)(CI)F"); // args as a list → no shell injection
+            using var p = Process.Start(psi);
+            p?.WaitForExit(5000);
+        }
+        catch { /* best-effort; default profile ACL still protects the file */ }
+    }
+
     private static void WriteDiscoveryEntry(JsonObject entry)
     {
         string dir = InstancesDir();
         Directory.CreateDirectory(dir);
+        RestrictWindowsAcl(dir);
         string path = EntryPath(entry["instanceId"]!.GetValue<string>());
         string tmp = path + "." + Environment.ProcessId + ".tmp";
 

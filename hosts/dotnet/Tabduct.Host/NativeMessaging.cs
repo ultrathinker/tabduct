@@ -150,7 +150,7 @@ internal sealed class NativeMessaging : IDisposable
         while (read < n)
         {
             int r = _stdin.Read(buf, read, n - read);
-            if (r <= 0) return read == 0 ? null : null; // EOF (partial frame is also EOF)
+            if (r <= 0) return null; // EOF (a partial frame at EOF is also treated as EOF)
             read += r;
         }
         return buf;

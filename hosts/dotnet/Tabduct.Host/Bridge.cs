@@ -36,15 +36,17 @@ internal sealed class Bridge
         }
         if (!_pending.TryRemove(rid, out var tcs)) return; // unknown/already-resolved — drop quietly
 
-        bool ok = msg["ok"]?.GetValue<bool>() ?? false;
+        // Read defensively: a present-but-wrong-typed field must NOT throw on the
+        // reader thread (that would kill the whole host). Mirrors Node/Python.
+        bool ok = msg["ok"] is JsonValue okv && okv.TryGetValue<bool>(out bool okb) && okb;
         if (ok)
         {
             tcs.TrySetResult(msg["result"]);
         }
         else
         {
-            string code = msg["error"]?["code"]?.GetValue<string>() is { Length: > 0 } c ? c : "INTERNAL";
-            string message = msg["error"]?["message"]?.GetValue<string>() is { Length: > 0 } m ? m : "tool failed";
+            string code = msg["error"]?["code"] is JsonValue cv && cv.TryGetValue<string>(out string? cs) && cs is { Length: > 0 } ? cs : "INTERNAL";
+            string message = msg["error"]?["message"] is JsonValue mv && mv.TryGetValue<string>(out string? ms) && ms is { Length: > 0 } ? ms : "tool failed";
             tcs.TrySetException(new ToolError(code, message));
         }
     }

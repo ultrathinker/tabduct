@@ -3,8 +3,8 @@
 Each running host writes its OWN file under ``~/.tabduct/instances/<id>.json``
 (per-instance files → no shared-file write race). Written on ``open``, removed on
 clean shutdown. Files are 0600 and the dir 0700 (they hold a live bearer token).
-On Windows, POSIX mode bits are a no-op (best-effort; the Node host additionally
-applies an ACL — out of scope for conformance). Mirrors
+On Windows, POSIX mode bits are a no-op, so — like the Node host — we apply an
+explicit ACL (strip inheritance, grant only the current user). Mirrors
 hosts/node/src/discovery.js.
 """
 
@@ -13,9 +13,34 @@ from __future__ import annotations
 import json
 import os
 import re
+import subprocess
+import sys
 import tempfile
 
 from tabduct_host.constants import base_dir
+
+_acl_done: set[str] = set()
+
+
+def _restrict_windows_acl(d: str) -> None:
+    """Mirror Node's restrictWindowsAcl: 0o700 is a no-op on Windows → set an ACL."""
+    if sys.platform != "win32" or d in _acl_done:
+        return
+    _acl_done.add(d)
+    dom = os.environ.get("USERDOMAIN")
+    name = os.environ.get("USERNAME")
+    user = f"{dom}\\{name}" if dom and name else (name or "")
+    if not user:
+        return
+    try:
+        subprocess.run(
+            ["icacls", d, "/inheritance:r", "/grant:r", f"{user}:(OI)(CI)F"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+        )  # args as a list → no shell injection
+    except OSError:
+        pass  # best-effort; default profile ACL still protects the file
 
 
 def _instances_dir() -> str:
@@ -35,6 +60,7 @@ def write_entry(entry: dict) -> None:
         os.chmod(d, 0o700)
     except OSError:
         pass
+    _restrict_windows_acl(d)
     path = _entry_path(entry["instanceId"])
     fd, tmp = tempfile.mkstemp(dir=d, suffix=".tmp", prefix="entry.")
     try:

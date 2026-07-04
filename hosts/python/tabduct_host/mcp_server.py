@@ -30,6 +30,7 @@ from tabduct_host.constants import (
     CATALOG,
     ERR,
     MCP_PATH,
+    MCP_REQUEST_MAX_BYTES,
     STOP_GRACE_S,
     allowed_hosts,
 )
@@ -168,6 +169,7 @@ class McpHttpServer:
         origin = None
         host = None
         authorization = None
+        content_length = None
         for name_b, value_b in scope.get("headers", []):
             name = name_b.decode("latin-1")
             if name == "origin":
@@ -176,6 +178,8 @@ class McpHttpServer:
                 host = value_b.decode("latin-1")
             elif name == "authorization":
                 authorization = value_b.decode("latin-1")
+            elif name == "content-length":
+                content_length = value_b.decode("latin-1")
         if origin:
             return (403, "origin not permitted")  # no non-browser MCP client sends Origin
         if host not in (self._allowed_hosts or set()):
@@ -183,6 +187,14 @@ class McpHttpServer:
         m = re.match(r"^Bearer\s+(.+)$", authorization or "")
         if not m or not hmac.compare_digest(m.group(1), self._token or ""):
             return (401, "unauthorized")
+        # Cap the request body (parity with Node's MCP_REQUEST_MAX_BYTES). The SDK
+        # transport would otherwise read an unbounded body into memory.
+        if content_length is not None:
+            try:
+                if int(content_length) > MCP_REQUEST_MAX_BYTES:
+                    return (413, "request body too large")
+            except ValueError:
+                return (400, "bad content-length")
         return None
 
     # --- ASGI app (auth gate → path route → session manager) -------------------

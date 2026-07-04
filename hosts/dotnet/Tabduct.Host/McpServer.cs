@@ -71,7 +71,12 @@ internal sealed class McpServer
             builder.Logging.ClearProviders();
 
             builder.WebHost.ConfigureKestrel(opts =>
-                opts.Listen(IPAddress.Loopback, port, lo => _listen = lo));
+            {
+                // Cap the request body at the protocol limit (parity with Node's
+                // MCP_REQUEST_MAX_BYTES) rather than leaning on Kestrel's ~30 MB default.
+                opts.Limits.MaxRequestBodySize = 8 * 1024 * 1024;
+                opts.Listen(IPAddress.Loopback, port, lo => _listen = lo);
+            });
 
             builder.Services.AddMcpServer(o =>
                 {
