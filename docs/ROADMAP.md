@@ -34,11 +34,13 @@ Two principal capabilities, designed (synthesis of two independent reviews),
 These were deliberately deferred from the first pass; implement once the MVP
 loop is proven.
 
-- [ ] **`chrome.userScripts` for `execute_script`** — the only CSP-proof eval on
-      strict sites. Requires `minimum_chrome_version` 116 → 135, the
-      `userScripts` permission, and surfacing the "Allow user scripts" toggle in
-      the popup + `doctor`. This is the keystone tool's real fix. (ARCHITECTURE.md
-      "execute_script & page CSP".)
+- [~] **CSP on strict sites** — largely addressed: CSP-safe injected-function tools
+      (`click`/`type`/`wait_for`/`get_dom_snapshot`/read/console) work everywhere, and
+      an opt-in **CDP mode** (`debugger`) bypasses CSP for arbitrary `execute_script`
+      + full console capture. Still open: **`chrome.userScripts`** as the banner-free
+      eval (requires `minimum_chrome_version` 116 → 135, the `userScripts` permission,
+      an "Allow user scripts" toggle; `engine:auto` should then prefer it over CDP).
+      (ARCHITECTURE.md "execute_script & page CSP".)
 - [ ] **Capability handshake** — on `open`, exchange
       `{ protocolVersion, capabilities: [tool names] }`; the host advertises only
       tools the extension actually implements instead of failing late with
@@ -49,8 +51,8 @@ loop is proven.
 - [ ] **ext→host `event` channel usage** — extension proactively notifies the
       host of `tab_removed`, `permission_revoked`, focus changes (envelope
       already defined in PROTOCOL.md §5; wire real emitters + host handling).
-- [ ] **`register --browser`** — Chromium/Edge/Brave dirs & registry keys, plus
-      `unregister` (base Chrome + Windows/mac/Linux paths land in the MVP fixes).
+- [x] **`register --browser`** — Chromium/Edge/Brave dirs & registry keys + `unregister`,
+      across Windows/macOS/Linux. Done.
 - [ ] **Screenshot/large-reply sizing policy** — default screenshots to jpeg+
       quality or downscale so replies stay well within limits; document the
       overflow failure mode.
@@ -61,9 +63,10 @@ loop is proven.
       neutral; `-- <cmd>` runs any host) + `messages.schema.json` (shared wire-name
       enum) + `run-hub.mjs`. `npm test` runs consent + host + hub conformance in
       CI (GitHub Actions, Linux/macOS/Windows). Shared vectors still TODO.
-- [ ] **Prompt-injection UX** — flash the toolbar icon on every `invoke`; optional
-      per-tool allow/deny tiers (a "read-only / no-eval" mode using
-      `list_tabs`/`get_page_content`/screenshots only).
+- [x] **Prompt-injection UX / consent tiers** — shipped: a global **read-only** mode
+      (no click/type/nav/eval), the **origin filter** (block/allow), **lock-to-domain**
+      with sticky-revoke, **don't-auto-share**, auto-expire, and a denied-invoke
+      toolbar flash. (A flash on *every* invoke, not just denied, remains optional.)
 
 ## Later / maybe
 

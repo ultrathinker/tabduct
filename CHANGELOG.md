@@ -6,6 +6,20 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+- **CSP-safe interaction tools** — `click`, `type`, `wait_for`, `get_dom_snapshot`,
+  and `get_console_logs`, implemented as injected functions so they work even on
+  strict-CSP sites (GitHub, banks, SaaS) with no extra permission.
+- **Optional CDP mode** (`debugger` optional permission, opt-in, default off):
+  `execute_script` gains an `engine` (auto/scripting/cdp) with a CSP-blocked → CDP
+  fallback; a developer-mode toggle that routes all eval through CDP; and full
+  console/exception/browser-log capture surfaced through `get_console_logs`. Gated
+  by consent (never under read-only), signalled by a "CDP" header chip and Chrome's
+  "being debugged" banner.
+
+### Changed
+- Settings popup redesigned into a widened two-column layout (no vertical scroll).
+
 ## [0.1.0] — pre-release
 
 First public reference implementation.

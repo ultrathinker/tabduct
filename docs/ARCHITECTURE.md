@@ -82,16 +82,28 @@ The extension background is an MV3 service worker and can be evicted.
   browser restores the endpoint without a manual reconnect. The popup reads
   state from storage, never from worker globals. See PROTOCOL.md §8.
 
-## execute_script & page CSP (open design decision)
+## execute_script & page CSP
 
-Arbitrary-string eval via `chrome.scripting.executeScript` is blocked by page
-CSP in MAIN world and by the extension CSP in ISOLATED world on strict-CSP sites
-(GitHub, banks, most SaaS). The current code runs in the MAIN world (ISOLATED was
-removed — extension CSP forbids eval there, so it could never succeed) and
-surfaces the block cleanly as `CSP_BLOCKED`. The real fix — `chrome.userScripts`
-(configurable world CSP, immune to page CSP) — requires Chrome 135+ and a user
-"Allow user scripts" toggle. That trade (min version + onboarding step) is
-tracked in [ROADMAP.md](ROADMAP.md) as a pre-1.0 must.
+Arbitrary-string eval via `chrome.scripting.executeScript` is blocked by a page's
+CSP in the MAIN world (GitHub, banks, most SaaS) — it surfaces cleanly as
+`CSP_BLOCKED`. (ISOLATED world was removed: the extension CSP forbids eval there,
+so it could never succeed.) Tabduct addresses this on three levels:
+
+1. **Injected-function tools sidestep CSP entirely.** `click`, `type`, `wait_for`,
+   `get_dom_snapshot`, `get_page_content`, and the console hook run as injected
+   *functions* (not string eval), which a page's CSP does not block — so the common
+   interaction/read cases work everywhere, with no extra permission or banner.
+2. **Optional CDP mode** (opt-in `debugger` permission, default off) runs arbitrary
+   `execute_script` via the DevTools Protocol with `allowUnsafeEvalBlockedByCSP`,
+   bypassing CSP. `execute_script`'s `engine` is `auto|scripting|cdp` (auto falls
+   back to CDP on `CSP_BLOCKED` when enabled); a developer-mode toggle forces CDP
+   everywhere; and full console/exception/Log capture rides the same attach. Gated
+   by consent (never under read-only), signalled by Chrome's "being debugged"
+   banner. See PROTOCOL.md §6b and the cdpConsole section below.
+3. **`chrome.userScripts`** (roadmap, Chrome 135+) — the banner-free, CSP-proof eval
+   for once the min version is raised + a user "Allow user scripts" toggle is
+   surfaced; `engine:auto` should prefer it over CDP when available. Tracked in
+   [ROADMAP.md](ROADMAP.md).
 
 ## CDP console capture (cdpConsole, developer mode)
 

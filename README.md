@@ -87,13 +87,20 @@ browser's own port and token.)
 | Tool | What it does |
 |------|--------------|
 | `list_tabs` / `get_active_tab` | Enumerate / get the focused tab — **filtered to shared tabs only** |
-| `get_page_content` | Read visible text / DOM text / HTML of a shared tab |
+| `get_page_content` / `get_dom_snapshot` | Read a shared tab's text/HTML, or a compact outline of its interactive elements |
 | `screenshot` | Capture the visible tab (returned as an MCP image) |
+| `click` / `type` | Click an element / type into a field, by CSS selector |
+| `wait_for` | Wait for a selector, URL fragment, or load state (bounded) |
 | `navigate` | Point a shared tab at a URL |
 | `open_tab` / `activate_tab` / `close_tab` | Tab management |
-| `execute_script` | Run JS in a shared tab — read *and* modify the page |
+| `get_console_logs` | Read the tab's console output (plus uncaught errors, in CDP mode) |
+| `execute_script` | Run arbitrary JS in a shared tab — read *and* modify the page |
 
-Unshared tabs are **completely invisible** — the agent can't even read their title.
+Most tools — including `click` / `type` / `wait_for` / `get_dom_snapshot` — run as
+**injected functions**, so they work even on strict-CSP sites (GitHub, banks, SaaS).
+Only arbitrary-string `execute_script` is blocked by a page's CSP; for that, opt into
+**CDP mode** (see below). Unshared tabs are **completely invisible** — the agent
+can't even read their title.
 
 ## Security & consent
 
@@ -110,6 +117,7 @@ the browser). All of these are in the popup:
 - **Read-only** — the agent may look but never click, type, navigate, run scripts, or open/close tabs.
 - **Auto-expire** — un-shares everything after a chosen time (5 min … 10 h).
 - **Don't auto-share tabs the agent opens** (default on).
+- **CDP mode** (Advanced, opt-in, default off) — grants the optional `debugger` permission so `execute_script` can bypass a page's CSP, with an optional "developer mode" that routes all eval through it and full console/error capture. Chrome shows a "being debugged" banner while it's in use; still gated by consent (never in read-only).
 - Sharing lives in session storage → it resets when the browser restarts.
 
 The full trust model and honest limitations are in [`SECURITY.md`](SECURITY.md) —

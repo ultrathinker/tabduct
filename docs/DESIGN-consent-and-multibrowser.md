@@ -87,6 +87,11 @@ leaking the title.
   single-instance topology.
 - **v2:** `all` (non-sticky, re-confirmed each session), per-tab `caps` (read-only
   tier), TTL/expiry, tab-group marking, global status view.
+- **v0.1 (shipped):** read-only is now a **global** setting; the origin list is a
+  **block *or* allow** filter; **lock-to-domain** (sticky) is a toggle; opened tabs
+  are not auto-shared by default; and a distinct **CDP tier** (`allowCdp`, refused
+  under read-only, opt-in `debugger` permission) enables CSP-bypassing eval + full
+  console capture. See PROTOCOL.md §6a/§6b.
 
 ---
 

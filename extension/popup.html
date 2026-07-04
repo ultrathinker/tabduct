@@ -163,7 +163,7 @@
         </ol>
 
         <h3>What the agent can do</h3>
-        <p>For a tab you have shared, the agent can read the page's text/structure, take a screenshot, click, type, run small in-page scripts, navigate, and open/close tabs. Everything you have <strong>not</strong> shared stays completely invisible — it can't even see the title of an unshared tab. Several safety limits below can narrow this further.</p>
+        <p>For a tab you have shared, the agent can read the page's text and a compact outline of its elements, take a screenshot, click, type, wait for things to load, read the console, navigate, run in-page scripts, and open/close tabs. Most of these work even on strict-CSP sites (GitHub, banks) — see below. Everything you have <strong>not</strong> shared stays completely invisible — it can't even see the title of an unshared tab. Several safety limits below can narrow this further.</p>
 
         <h3>Sharing &amp; how you stay in control</h3>
         <ul>
@@ -188,6 +188,9 @@
           <li><strong>Right-click a page → "⚡ Tabduct: share / unshare this tab"</strong> — the quickest way to toggle one tab.</li>
           <li><strong>Shortcut Ctrl+Shift+Y</strong> toggles sharing for the current tab.</li>
         </ul>
+
+        <h3>Strict-CSP sites &amp; CDP mode (advanced)</h3>
+        <p>Clicking, typing, reading, and waiting work everywhere — they run as injected functions, which a site's Content-Security-Policy can't block. Only <em>arbitrary</em> JavaScript (<code class="inline">execute_script</code>) can be blocked by a strict CSP (GitHub, banks, most SaaS). For that, the <strong>Advanced</strong> settings offer opt-in <strong>CDP mode</strong>: it grants the optional "debugger" permission so eval bypasses CSP, with a <em>developer mode</em> that routes all eval through it and captures the full console (including uncaught errors and network/CSP warnings). It's OFF by default; while on, Chrome shows a "this tab is being debugged" banner (your signal), a "CDP" chip appears in the header, and it still obeys consent — never in read-only.</p>
 
         <h3>Connecting</h3>
         <p>Click <strong>Connect</strong> (or the header dot). Tabduct starts a small server on your own machine — nothing is exposed to the internet — and shows an endpoint URL and a secret token in Settings. Point your agent at those.</p>
