@@ -517,6 +517,35 @@ chrome.runtime.onInstalled.addListener(() => { cleanupTabGroups(); });
 scheduleBadges(); // paint icons on service-worker start (red until connected)
 updateContextMenu(); // reconcile the right-click item with current state on SW start
 
+// The optional "debugger" permission is the source of truth for allowCdp. The
+// popup can only *request* it (needs a user gesture), but Chrome's permission
+// prompt closes the popup, so the code that would persist the setting never runs.
+// Mirror the grant here in the SW (which never closes): onAdded → enable allowCdp;
+// onRemoved → disable + tear down held sessions. Then repaint any open popup.
+chrome.permissions?.onAdded?.addListener(async (p) => {
+  if (!p?.permissions?.includes?.("debugger")) return;
+  await CONSENT.setShareOptions({ allowCdp: true });
+  scheduleBadges();
+  chrome.runtime.sendMessage({ evt: "sharing" }).catch(() => {});
+});
+chrome.permissions?.onRemoved?.addListener(async (p) => {
+  if (!p?.permissions?.includes?.("debugger")) return;
+  await CONSENT.setShareOptions({ allowCdp: false, cdpAlways: false, cdpConsole: false });
+  await detachAllCdp();
+  scheduleBadges();
+  chrome.runtime.sendMessage({ evt: "sharing" }).catch(() => {});
+});
+// Self-heal: a popup that closed mid-prompt may have left the permission granted
+// but allowCdp still false. Reconcile on SW start so the checkbox reflects reality.
+(async () => {
+  try {
+    if (await chrome.permissions.contains({ permissions: ["debugger"] })) {
+      const st = await CONSENT.getState();
+      if (!st.allowCdp) { await CONSENT.setShareOptions({ allowCdp: true }); scheduleBadges(); }
+    }
+  } catch {}
+})();
+
 // One-time migration: hub is now on by default. Clear any previously-stored
 // useHub value exactly once so the new default takes effect; later toggles persist.
 (async () => {
