@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "tabduct-host"
+version = "0.0.1"
+description = "Tabduct native host (Python) — Chrome native-messaging <-> MCP streamable-HTTP."
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.10"
+dependencies = [
+    "mcp>=1.0",
+    "uvicorn>=0.30",
+    "starlette>=0.37",
+]
+
+[project.scripts]
+tabduct-host = "tabduct_host.__main__:main"
+
+[tool.setuptools.packages.find]
+include = ["tabduct_host*"]
