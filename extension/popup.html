@@ -66,10 +66,7 @@
               <input id="label" type="text" placeholder="Chrome" />
             </label>
           </section>
-        </div>
 
-        <!-- RIGHT column: origin filter + sharing defaults + advanced -->
-        <div class="settings-col">
           <section class="setcard">
             <div class="setrow">
               <span id="denyHeading" class="muted">Blocked origins</span>
@@ -86,7 +83,10 @@
             <p id="denyHint" class="hint" hidden>Allow mode with an empty list blocks everything.</p>
             <ul id="denyList" class="shared"></ul>
           </section>
+        </div>
 
+        <!-- RIGHT column: sharing defaults + advanced -->
+        <div class="settings-col">
           <section class="setcard">
             <div class="setrow"><span class="muted">Sharing defaults</span><span class="help" title="Apply to EVERY shared tab (global, not per-tab). Read-only lets the agent read the page and take screenshots but not click, type, navigate, run scripts or open/close tabs. Auto-expire un-shares all tabs after the chosen time. Lock-to-domain keeps a shared tab pinned to its origin (off lets the agent navigate it freely). Don't auto-share leaves tabs the agent opens un-shared until you share them. Tab group gathers shared tabs into a ⚡ group in the strip. Read-only + auto-expire default off; the others default on.">?</span></div>
             <label class="tg" style="margin-top: 0">
