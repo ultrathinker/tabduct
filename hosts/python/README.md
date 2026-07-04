@@ -36,6 +36,14 @@ tabduct_host/
 pyproject.toml
 ```
 
-**Remaining:** a per-OS `register` (native-messaging manifest install) — until then,
-use the Node host's `register` or install the manifest manually pointing at this
-host. Consent, tools, and auth all live in the shared extension / protocol.
+## Register (wire it to Chrome)
+
+```bash
+python hosts/python/tabduct_host/__main__.py register        # or --browser edge|brave|chromium
+python hosts/python/tabduct_host/__main__.py unregister
+```
+
+`register` writes the native-messaging manifest (+ a launcher pinning this Python)
+for macOS/Linux/Windows so Chrome launches this host; the manifest's extension id is
+computed from the shared `extension/manifest.json` key. Consent, tools, and auth all
+live in the shared extension / protocol.

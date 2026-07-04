@@ -20,7 +20,9 @@ hosts/dotnet/**/obj/
 logs/
 *.log
 hosts/node/node_path.txt
-hosts/node/com.tabduct.host.json
+hosts/*/com.tabduct.host.json
+hosts/python/run_host.bat
+hosts/python/run_host.sh
 
 # Local extension private key (KEEP OUT OF GIT — pairs with the manifest `key`)
 extension/key.pem

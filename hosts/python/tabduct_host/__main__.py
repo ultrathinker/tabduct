@@ -182,6 +182,17 @@ class Host:
 
 
 def main() -> None:
+    # CLI: `python -m tabduct_host register|unregister [--browser chrome|edge|brave|chromium]`.
+    argv = sys.argv[1:]
+    if argv and argv[0] in ("register", "unregister"):
+        from tabduct_host import register as _reg
+        browser = "chrome"
+        if "--browser" in argv:
+            i = argv.index("--browser")
+            if i + 1 < len(argv):
+                browser = argv[i + 1]
+        (_reg.register if argv[0] == "register" else _reg.unregister)(browser)
+        return
     _set_binary_stdio()
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)

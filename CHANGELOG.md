@@ -19,8 +19,8 @@ All notable changes to this project are documented here. The format follows
 
 - **Python host** (`hosts/python`, official `mcp` SDK) and **.NET host**
   (`hosts/dotnet`, `ModelContextProtocol` SDK, net10.0) — both pass the full
-  conformance suite. Multi-language is no longer paper-only. (Per-OS `register`
-  for these two is still to come; the Node host's `register` covers install today.)
+  conformance suite, each with its own per-OS `register` (native-messaging manifest
+  install for macOS/Linux/Windows). Multi-language is no longer paper-only.
 
 ### Changed
 - Settings popup redesigned into a widened two-column layout (no vertical scroll).

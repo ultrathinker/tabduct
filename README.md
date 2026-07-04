@@ -141,8 +141,8 @@ Tabduct is defined by **contracts**, not implementations:
 | Host | Status | Notes |
 |------|--------|-------|
 | [`hosts/node`](hosts/node) | ✅ reference impl | zero native deps, Node ≥ 18, MCP SDK wired, conformance-passing |
-| [`hosts/python`](hosts/python) | ✅ passes conformance | official `mcp` SDK; `register` (manifest install) still TODO |
-| [`hosts/dotnet`](hosts/dotnet) | ✅ passes conformance | `ModelContextProtocol` SDK, `net10.0`; `register` still TODO |
+| [`hosts/python`](hosts/python) | ✅ passes conformance | official `mcp` SDK + `register` (macOS/Linux/Windows) |
+| [`hosts/dotnet`](hosts/dotnet) | ✅ passes conformance | `ModelContextProtocol` SDK, `net10.0` + `register` |
 
 New languages need no permission — implement [`protocol/PROTOCOL.md`](protocol/PROTOCOL.md) and pass [`protocol/conformance/`](protocol/conformance/).
 

@@ -38,6 +38,16 @@ Tabduct.Host/
 Tabduct.slnx
 ```
 
-**Remaining:** a per-OS `register` (native-messaging manifest install) — until then,
-use the Node host's `register` or install the manifest manually pointing at the
-built dll. Consent, tools, and auth all live in the shared extension / protocol.
+## Register (wire it to Chrome)
+
+After `dotnet build hosts/dotnet`:
+
+```bash
+dotnet hosts/dotnet/bin/Debug/net10.0/Tabduct.Host.dll register     # or --browser edge|brave|chromium
+dotnet hosts/dotnet/bin/Debug/net10.0/Tabduct.Host.dll unregister
+```
+
+`register` writes the native-messaging manifest pointing at the built apphost
+(`Tabduct.Host.exe`/`Tabduct.Host`) for macOS/Linux/Windows so Chrome launches this
+host; the extension id is computed from the shared `extension/manifest.json` key.
+Consent, tools, and auth all live in the shared extension / protocol.

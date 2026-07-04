@@ -30,8 +30,18 @@ internal static class Program
     private static McpServer _server = null!;
     private static string? _currentInstance;
 
-    private static async Task Main()
+    private static async Task Main(string[] args)
     {
+        // CLI: `Tabduct.Host register|unregister [--browser chrome|edge|brave|chromium]`.
+        if (args.Length > 0 && (args[0] == "register" || args[0] == "unregister"))
+        {
+            var browser = "chrome";
+            var bi = Array.IndexOf(args, "--browser");
+            if (bi >= 0 && bi + 1 < args.Length) browser = args[bi + 1];
+            Register.Run(args[0], browser);
+            return;
+        }
+
         // Keep stdout binary-clean for native-messaging frames: we never write to
         // Console.Out (the raw stream is used by NativeMessaging). Pin UTF-8 so any
         // incidental text writer can't inject a BOM/CRLF into the frame stream.
