@@ -4,7 +4,7 @@
 // invoke chokepoint with per-tab CONSENT enforcement (Feature B), shared-tab
 // badges, the share hotkey, and popup messaging. See PROTOCOL.md + consent.js.
 
-import { HANDLERS } from "./handlers/index.js";
+import { HANDLERS, detachCdpTab, detachAllCdp, startCdpConsole, stopCdpConsole, stopAllCdpConsole, reconcileCdpForce, cdpConsoleTabs } from "./handlers/index.js";
 import * as CONSENT from "./consent.js";
 
 const HOST_NAME = "com.tabduct.host";
@@ -68,6 +68,7 @@ function connect(port = DEFAULT_PORT) {
     hostPort.onDisconnect.addListener(async () => {
       const err = chrome.runtime.lastError;
       hostPort = null; rejectAllPending("native host disconnected");
+      await detachAllCdp(); // port dropped → drop any held debugger sessions (PART 4)
       await setState({ state: err ? "error" : "disconnected", error: err ? err.message : null });
       scheduleBadges(); // port dropped → red icons
     });
@@ -109,6 +110,7 @@ async function disconnect() {
   connGen++; // invalidate any in-flight connect so it can't flip us back to "connected"
   if (hostPort) { try { await request("close", {}, 3000); } catch {} try { hostPort.disconnect(); } catch {} hostPort = null; }
   rejectAllPending("disconnected by user");
+  await detachAllCdp(); // release any held debugger sessions (PART 4)
   await setState({ state: "disconnected", error: null });
   scheduleBadges(); // repaint icons → red (not connected)
   return getConnState();
@@ -177,8 +179,21 @@ async function gate(tool, args) {
   const host = CONSENT.hostOf(tab.url);
   const needCap = (tool === "screenshot" && args?.activate) ? "execute" : undefined; // activating steals focus → treat as write
   const d = CONSENT.evaluate(state, { tool, tabId, host, now: Date.now(), needCap });
-  if (d.revoke) { await CONSENT.unshareTab(tabId); emitEvent({ kind: "permission_revoked", tabId, reason: d.code }); scheduleBadges(); }
-  return { ...d, tabId, host }; // resolved ONCE — the handler reuses this exact tab + authorized host (no TOCTOU re-resolve)
+  if (d.revoke) { await CONSENT.unshareTab(tabId); detachCdpTab(tabId); emitEvent({ kind: "permission_revoked", tabId, reason: d.code }); scheduleBadges(); }
+  // execute_script CDP gating (PART 4): compute the effective engine + whether the
+  // auto CSP→CDP fallback is allowed, from the user's CDP settings. Only when base
+  // consent already allowed the call — otherwise a consent denial (e.g. read-only)
+  // must surface as-is, not be masked by CDP_NOT_PERMITTED. Force/always CDP
+  // requires allowCdp AND not read-only; refused BEFORE any debugger attach.
+  const out = { ...d, tabId, host };
+  if (tool === "execute_script" && d.allow) {
+    const cd = CONSENT.cdpDecision(state, { engine: args?.engine });
+    if (!cd.permitted) return { allow: false, code: cd.code, message: "CDP eval is not enabled (enable 'Allow CDP eval' in the popup, or switch engine to auto/scripting)" };
+    out._engine = cd.engine; // effective engine the handler must run
+    out._allowCdp = state.allowCdp === true; // authorizes the auto CSP→CDP fallback
+    out._cdpAlways = state.allowCdp === true && state.cdpAlways === true; // keep the tab attached (force mode)
+  }
+  return out; // resolved ONCE — the handler reuses this exact tab + authorized host (no TOCTOU re-resolve)
 }
 
 async function handleInvoke(msg) {
@@ -216,10 +231,17 @@ async function handleInvoke(msg) {
 
     // Reuse the exact tab the gate authorized (prevents active-tab TOCTOU).
     const callArgs = decision.tabId == null ? args : { ...args, tabId: decision.tabId };
-    // TOCTOU defense-in-depth: re-check the authorized origin IN-PAGE for script
-    // injection tools — a tab can self-navigate in the ~ms window between gate and
-    // executeScript. _authHost is internal and stripped before reaching the wire.
-    if (tool === "get_page_content" || tool === "execute_script") callArgs._authHost = decision.host ?? null;
+    // TOCTOU defense-in-depth: re-check the authorized origin IN-PAGE for every
+    // script-injection tool — a tab can self-navigate in the ~ms window between
+    // gate and executeScript. _authHost is internal and stripped before reaching
+    // the wire (handlers never return it).
+    if (tool === "get_page_content" || tool === "execute_script" || tool === "wait_for" || tool === "click" || tool === "type" || tool === "get_dom_snapshot" || tool === "get_console_logs") callArgs._authHost = decision.host ?? null;
+    // execute_script engine/CDP flags (PART 4): passed internal-only from the gate.
+    if (tool === "execute_script") {
+      if (decision._engine != null) callArgs._engine = decision._engine;
+      if (decision._allowCdp != null) callArgs._allowCdp = decision._allowCdp;
+      if (decision._cdpAlways != null) callArgs._cdpAlways = decision._cdpAlways;
+    }
     const result = await handler(callArgs);
     // open_tab auto-share is OPT-IN (off by default): only re-share the new tab
     // when the user explicitly disabled the "don't auto-share opened tabs" guard.
@@ -321,7 +343,38 @@ async function refreshBadges() {
     }
     lastBadge = next;
     applyTabGroup(sharedIds, all).catch(() => {});
+    reconcileCdpConsole(sharedIds).catch(() => {}); // best-effort; never blocks badges
   } catch {}
+}
+
+// CDP console capture reconcile (PART 6): attach capture to shared tabs while
+// cdpConsole is on + connected, and stop it everywhere otherwise. Console/Log
+// events only arrive while the debugger is attached with Runtime/Log enabled, so
+// we attach proactively here (not lazily per get_console_logs). Best-effort:
+// every start/stop is guarded in handlers, so this never throws into badges.
+// Serialized (a promise-chain mutex) so overlapping runs — the debounced
+// scheduleBadges plus the direct `await refreshBadges()` in connect/hotkey — can't
+// interleave a start with a concurrent stop and leave a tab in cdpConsoleTabs
+// while actually detached. Each queued run reconciles against its own snapshot;
+// the latest wins, and reconcile is idempotent, so state converges.
+let cdpReconciling = Promise.resolve();
+function reconcileCdpConsole(sharedTabIds) {
+  cdpReconciling = cdpReconciling.then(() => _reconcileCdp(sharedTabIds)).catch(() => {});
+  return cdpReconciling;
+}
+async function _reconcileCdp(sharedTabIds) {
+  const st = await CONSENT.getState();
+  const connected = (await getConnState()).state === "connected";
+  // Console capture: attach to shared tabs while on, stop everywhere otherwise.
+  if (st.allowCdp && st.cdpConsole && connected) {
+    for (const tabId of sharedTabIds) if (!cdpConsoleTabs.has(tabId)) await startCdpConsole(tabId);
+    for (const tabId of [...cdpConsoleTabs]) if (!sharedTabIds.has(tabId)) await stopCdpConsole(tabId);
+  } else {
+    await stopAllCdpConsole();
+  }
+  // Force-hold (cdpAlways) eval sessions: release any not (force-mode && still shared)
+  // so unshare/revoke/disabling cdpAlways promptly drops the debugger + its banner.
+  await reconcileCdpForce(sharedTabIds, st.allowCdp && st.cdpAlways && connected);
 }
 
 // Exact-correlation mask for the group<->sharing sync listener: when WE
@@ -399,7 +452,7 @@ async function sharingStatus() {
   const { useTabGroup, noAutoShareOpened } = await chrome.storage.local.get(["useTabGroup", "noAutoShareOpened"]);
   const { label } = await getIdentity(); // ensures + returns the auto default label
   const allShared = st.tier === "all" ? all.filter((t) => !CONSENT.originBlocked(st, CONSENT.hostOf(t.url))).length : shared.length;
-  return { tier: st.tier, denyOrigins: st.denyOrigins, originMode: st.originMode, sharedCount: allShared, tabs: shared, activeTabId: active?.id, label, useTabGroup: useTabGroup !== false, readOnly: st.readOnly, ttlMs: st.ttlMs, lockToDomain: st.lockToDomain, noAutoShareOpened: noAutoShareOpened !== false };
+  return { tier: st.tier, denyOrigins: st.denyOrigins, originMode: st.originMode, sharedCount: allShared, tabs: shared, activeTabId: active?.id, label, useTabGroup: useTabGroup !== false, readOnly: st.readOnly, ttlMs: st.ttlMs, lockToDomain: st.lockToDomain, noAutoShareOpened: noAutoShareOpened !== false, allowCdp: st.allowCdp, cdpAlways: st.cdpAlways, cdpConsole: st.cdpConsole };
 }
 
 // ---------------------------------------------------------------------------
@@ -416,9 +469,14 @@ chrome.commands?.onCommand.addListener(async (cmd) => {
 });
 
 chrome.tabs.onRemoved.addListener(async (tabId) => {
+  detachCdpTab(tabId); // a held debugger session dies with its tab (PART 4)
   const st = await CONSENT.getState();
   if (st.allow?.[String(tabId)]) { await CONSENT.unshareTab(tabId); emitEvent({ kind: "tab_removed", tabId }); }
 });
+
+// DevTools open on a tab (or the user closing the banner) steals the CDP session
+// from us — forget the bookkeeping so we don't try to detach an already-gone one.
+chrome.debugger?.onDetach?.addListener((source) => { if (source?.tabId != null) detachCdpTab(source.tabId); });
 
 chrome.tabs.onUpdated.addListener((_id, info) => { if (info.status === "complete") scheduleBadges(); });
 
@@ -495,7 +553,18 @@ chrome.runtime.onMessage.addListener((req, _sender, sendResponse) => {
       case "sharing.toggleActive": { const id = await resolveActiveTabId(); if (id != null) { const st = await CONSENT.getState(); if (st.allow?.[String(id)]) await CONSENT.unshareTab(id); else await CONSENT.shareTab(id); } scheduleBadges(); sendResponse(await sharingStatus()); break; }
       case "sharing.unshare": await CONSENT.unshareTab(req.tabId); scheduleBadges(); sendResponse(await sharingStatus()); break;
       case "sharing.tier": await CONSENT.setTier(req.tier); if (req.tier !== "tabs") await cleanupTabGroups(); updateContextMenu(); scheduleBadges(); sendResponse(await sharingStatus()); break;
-      case "sharing.setOptions": await CONSENT.setShareOptions({ readOnly: req.readOnly, ttlMs: req.ttlMs, lockToDomain: req.lockToDomain, noAutoShareOpened: req.noAutoShareOpened }); sendResponse(await sharingStatus()); break;
+      case "sharing.setOptions": {
+        await CONSENT.setShareOptions({ readOnly: req.readOnly, ttlMs: req.ttlMs, lockToDomain: req.lockToDomain, noAutoShareOpened: req.noAutoShareOpened, allowCdp: req.allowCdp, cdpAlways: req.cdpAlways, cdpConsole: req.cdpConsole });
+        // allowCdp OFF = CDP fully off → release every held session immediately.
+        // Other CDP-flag changes (cdpAlways/cdpConsole on OR off) are reconciled by
+        // scheduleBadges → reconcileCdpConsole/Force against the new settings, so
+        // one CDP user is never torn down as collateral and freshly-enabled capture
+        // actually starts even on an idle browser.
+        if (req.allowCdp === false) await detachAllCdp();
+        scheduleBadges();
+        sendResponse(await sharingStatus());
+        break;
+      }
       case "sharing.setOriginMode": await chrome.storage.local.set({ originMode: req.mode === "allow" ? "allow" : "block" }); scheduleBadges(); sendResponse(await sharingStatus()); break;
       case "sharing.revokeAll": await CONSENT.revokeAll(); await cleanupTabGroups(); updateContextMenu(); scheduleBadges(); sendResponse(await sharingStatus()); break;
       case "sharing.setDeny": await CONSENT.setDenyOrigins(req.list ?? []); scheduleBadges(); sendResponse(await sharingStatus()); break;

@@ -30,6 +30,9 @@
     "tabGroups",
     "contextMenus"
   ],
+  "optional_permissions": [
+    "debugger"
+  ],
   "host_permissions": [
     "<all_urls>"
   ],

@@ -45,8 +45,10 @@ origin.
 ### Leak prevention
 `list_tabs` / `get_active_tab` return **only shared tabs**; titles/URLs of
 unshared tabs are never disclosed (a tab title is sensitive data). `open_tab`
-under `tabs` tier auto-adds the new tab (stickyOrigin) so "open a tab and work"
-doesn't require escalating to `all`; denylist still applies.
+under `tabs` tier is **not** auto-shared by default — tabs the agent opens stay
+un-shared until the user shares them; the user can opt into auto-share via the
+"Don't auto-share tabs the agent opens" setting (default on = no auto-share,
+stickyOrigin when opted in). The denylist always applies.
 
 ### Storage
 Per-tab grants + tier → `chrome.storage.session` (tab IDs are meaningless across

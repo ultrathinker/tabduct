@@ -122,8 +122,8 @@ process and OS user shares localhost. So:
 
 **Error codes** (reply `error.code`): `UNKNOWN_TOOL`, `TAB_NOT_FOUND`,
 `TIMEOUT`, `CSP_BLOCKED`, `SCRIPT_ERROR`, `FRAME_TOO_LARGE`, `VERSION_MISMATCH`,
-`INVALID_ARGS`, `INTERNAL`, and the consent codes (§6a) `NOT_SHARED`,
-`ORIGIN_DRIFT`, `ORIGIN_DENIED`, `CAP_NOT_GRANTED`.
+`INVALID_ARGS`, `INTERNAL`, the consent codes (§6a) `NOT_SHARED`, `ORIGIN_DRIFT`,
+`ORIGIN_DENIED`, `CAP_NOT_GRANTED`, and the CDP code (§6b) `CDP_NOT_PERMITTED`.
 
 ## 6a. Consent semantics (Feature B)
 
@@ -145,10 +145,36 @@ Per-tool behaviour a conforming extension MUST implement:
   `ORIGIN_DENIED`; a `stickyOrigin` grant whose tab has navigated away →
   `ORIGIN_DRIFT` (grant auto-revoked).
 - **Create** (`open_tab`): denied under `none`; under `tabs` the created tab is
-  auto-added to the allowlist.
+  **not** auto-shared by default — the user opts in via the "Don't auto-share
+  tabs the agent opens" setting (default on = no auto-share). When the user opts
+  out of that guard, an opened tab is auto-added to the allowlist (stickyOrigin);
+  the denylist still applies in either case.
 
 The extension MAY send `event` notifications (ext→host, no reply) for
 `permission_revoked` and `tab_removed`; hosts MAY ignore them.
+
+## 6b. execute_script engine & CDP eval (PART 4)
+
+`execute_script` takes an optional `engine` (`auto` | `scripting` | `cdp`,
+default `auto`):
+
+- `scripting` — `chrome.scripting` MAIN-world eval only. On a strict-CSP page
+  this surfaces as `CSP_BLOCKED`.
+- `cdp` — force the CDP (`chrome.debugger`) path, which bypasses page CSP. It is
+  **opt-in**: the user must grant the optional `debugger` permission AND enable
+  "Allow CDP eval" in the popup. CDP requires write access (it is refused under
+  read-only). If either condition is unmet the extension replies
+  `CDP_NOT_PERMITTED` **before** attaching the debugger. CDP shows a visible
+  "this tab is being debugged" browser banner — that banner is the user signal
+  that the powerful path is in use.
+- `auto` — try `scripting`; on `CSP_BLOCKED`, fall back to CDP only if the user
+  opted in; otherwise re-throw `CSP_BLOCKED` with a hint to enable CDP.
+
+A global "Always use CDP" developer setting overrides every `engine` to `cdp`
+(only honored when CDP is permitted). The in-page origin re-check (`_authHost`)
+and the 8 MB result cap apply identically on the CDP path. The debugger is
+detached after each call unless "Always use CDP" holds it attached, and is always
+released on disconnect / tab close / consent revoke.
 
 ---
 

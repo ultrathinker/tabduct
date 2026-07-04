@@ -11,6 +11,7 @@
         <span id="count" class="pill"><span id="countText">0 tabs</span><button id="countClear" class="pill-x" title="Unshare all" aria-label="Unshare all" hidden>✕</button></span>
       </div>
       <div class="hdr-right">
+        <span id="cdpChip" class="cdp-chip" hidden title="CDP eval is enabled (bypasses site CSP; shows a debugging banner on touched tabs)">CDP</span>
         <span id="dot" class="dot" data-state="disconnected" title="disconnected" role="button" tabindex="0"></span>
         <button id="gear" class="icon-btn" title="Settings" aria-label="Settings">⚙</button>
       </div>
@@ -33,91 +34,115 @@
       </section>
     </div>
 
-    <!-- Settings layer -->
+    <!-- Settings layer — two-column, widened (PART 5) -->
     <div id="settings" hidden>
-      <section class="card">
-        <div class="row settings-hd">
-          <button id="back" class="icon-btn" title="Back" aria-label="Back">←</button>
-          <span class="muted">Settings</span>
+      <div class="row settings-hd">
+        <button id="back" class="icon-btn" title="Back" aria-label="Back">←</button>
+        <span class="muted">Settings</span>
+      </div>
+
+      <button id="howBtn" class="btn howto-btn">How it works<span class="qmark">?</span></button>
+
+      <div class="settings-grid">
+        <!-- LEFT column: connection + label -->
+        <div class="settings-col">
+          <section class="setcard">
+            <div class="setrow"><span class="muted">Connection</span></div>
+            <label class="field"><span>Port <small class="muted">(0=auto)</small></span><input id="port" type="number" min="0" max="65535" value="0" /></label>
+            <label class="tg">
+              <input type="checkbox" id="hub" />
+              Shared hub (one endpoint for all browsers)
+              <span class="help" title="Exposes ONE stable endpoint (127.0.0.1:12311) with a fixed token that aggregates every browser you connect, so your agent config never changes across reconnects or extra browsers. On by default; turn off only if you specifically want a direct, per-browser endpoint.">?</span>
+            </label>
+            <div id="creds" class="creds" hidden>
+              <span class="muted">MCP endpoint</span><code id="url"></code>
+              <span class="muted">Authorization</span><code id="auth"></code>
+            </div>
+          </section>
+
+          <section class="setcard">
+            <label class="field">
+              <span>Label <span class="help" title="Name for THIS browser instance. Matters only when you run several browsers under the hub — the agent lists them by this label so you can tell them apart. Cosmetic: routing uses a hidden id, not the label.">?</span></span>
+              <input id="label" type="text" placeholder="Chrome" />
+            </label>
+          </section>
         </div>
 
-        <button id="howBtn" class="btn howto-btn">How it works<span class="qmark">?</span></button>
+        <!-- RIGHT column: origin filter + sharing defaults + advanced -->
+        <div class="settings-col">
+          <section class="setcard">
+            <div class="setrow">
+              <span id="denyHeading" class="muted">Blocked origins</span>
+              <select id="originMode">
+                <option value="block">Block listed</option>
+                <option value="allow">Allow only listed</option>
+              </select>
+              <span class="help" title="The origin list. In 'Block listed' mode these sites are NEVER shared — overrides every sharing mode, even 'Everything'. In 'Allow only listed' mode ONLY these sites can be shared; an empty allow list blocks everything. Add a host like mail.google.com or *.bank.com. Port and scheme are ignored — the host is the unit of trust. Persists across restarts.">?</span>
+            </div>
+            <div class="actions">
+              <input id="denyInput" type="text" placeholder="mail.google.com or *.bank.com" />
+              <button id="denyAdd" class="btn small ghost">Add</button>
+            </div>
+            <p id="denyHint" class="hint" hidden>Allow mode with an empty list blocks everything.</p>
+            <ul id="denyList" class="shared"></ul>
+          </section>
 
-        <div class="setrow"><span class="muted">Connection</span></div>
-        <label class="field"><span>Port <small class="muted">(0=auto)</small></span><input id="port" type="number" min="0" max="65535" value="0" /></label>
-        <label class="tg">
-          <input type="checkbox" id="hub" />
-          Shared hub (one endpoint for all browsers)
-          <span class="help" title="Exposes ONE stable endpoint (127.0.0.1:12311) with a fixed token that aggregates every browser you connect, so your agent config never changes across reconnects or extra browsers. On by default; turn off only if you specifically want a direct, per-browser endpoint.">?</span>
-        </label>
-        <div id="creds" class="creds" hidden>
-          <span class="muted">MCP endpoint</span><code id="url"></code>
-          <span class="muted">Authorization</span><code id="auth"></code>
+          <section class="setcard">
+            <div class="setrow"><span class="muted">Sharing defaults</span><span class="help" title="Apply to EVERY shared tab (global, not per-tab). Read-only lets the agent read the page and take screenshots but not click, type, navigate, run scripts or open/close tabs. Auto-expire un-shares all tabs after the chosen time. Lock-to-domain keeps a shared tab pinned to its origin (off lets the agent navigate it freely). Don't auto-share leaves tabs the agent opens un-shared until you share them. Tab group gathers shared tabs into a ⚡ group in the strip. Read-only + auto-expire default off; the others default on.">?</span></div>
+            <label class="tg" style="margin-top: 0">
+              <input type="checkbox" id="readOnly" />
+              Read-only (agent can look, not act)
+            </label>
+            <label class="field">
+              <span>Auto-expire shares</span>
+              <select id="ttl">
+                <option value="0">off</option>
+                <option value="300000">5m</option>
+                <option value="900000">15m</option>
+                <option value="1800000">30m</option>
+                <option value="3600000">1h</option>
+                <option value="7200000">2h</option>
+                <option value="18000000">5h</option>
+                <option value="36000000">10h</option>
+              </select>
+            </label>
+            <label class="tg">
+              <input type="checkbox" id="lockToDomain" checked />
+              Lock shared tabs to their domain (prevent navigating to other sites)
+              <span class="help" title="When on (default), a shared tab that navigates to a different site loses access (ORIGIN_DRIFT). Turn off to let the agent navigate a shared tab freely across sites. Off is riskier: a shared tab could follow you into sensitive pages.">?</span>
+            </label>
+            <label class="tg">
+              <input type="checkbox" id="noAutoShareOpened" checked />
+              Don't auto-share tabs the agent opens
+              <span class="help" title="When on (default), tabs the agent creates with open_tab are NOT shared automatically — you must share them yourself. Turn off to auto-share every tab the agent opens (sticky to its opening origin).">?</span>
+            </label>
+            <label class="tg">
+              <input type="checkbox" id="tabGroup" />
+              Mark shared tabs with a "⚡" tab group
+              <span class="help" title="Puts your shared tabs into a coloured '⚡' tab group in the tab strip, so you can see at a glance which tabs the agent can access. May rearrange your tabs.">?</span>
+            </label>
+          </section>
+
+          <section class="setcard">
+            <div class="setrow"><span class="muted">Advanced</span><span class="help" title="CDP eval runs truly arbitrary JavaScript via the Chrome DevTools Protocol, bypassing a page's Content-Security-Policy. It is the fallback for execute_script on strict-CSP sites (GitHub, banks, most SaaS). It is OFF by default: you opt in per-browser, and Chrome shows a visible 'this tab is being debugged' banner on any tab it touches — that banner is your signal that the powerful path is in use. Consent (sharing + not read-only) still applies.">?</span></div>
+            <label class="tg" style="margin-top: 0">
+              <input type="checkbox" id="allowCdp" />
+              Allow CDP eval (bypasses site CSP; shows a debugging banner)
+              <span class="help" title="Grants the optional 'debugger' permission and lets execute_script fall back to CDP (DevTools Protocol) when the page's CSP blocks normal eval. Off by default. Disabling also releases any held debugger sessions.">?</span>
+            </label>
+            <label class="tg">
+              <input type="checkbox" id="cdpAlways" />
+              Always use CDP (developer mode — banner on every touched tab)
+              <span class="help" title="Developer mode: route EVERY execute_script through CDP (never chrome.scripting), so the banner stays up and eval is never CSP-blocked. Requires 'Allow CDP eval'. Keeps the debugger attached between calls.">?</span>
+            </label>
+            <label class="tg">
+              <input type="checkbox" id="cdpConsole" />
+              Capture full console &amp; errors via CDP (keeps the debugging banner up)
+              <span class="help" title="Developer mode: while a tab is shared, attach CDP and record console.* calls, uncaught exceptions, and browser log entries (network/CSP/deprecation) — so get_console_logs returns the full picture, including errors from before you asked. Requires 'Allow CDP eval'. The 'being debugged' banner stays up on shared tabs while this is on.">?</span>
+            </label>
+          </section>
         </div>
-
-        <hr class="sep" />
-
-        <label class="field">
-          <span>Label <span class="help" title="Name for THIS browser instance. Matters only when you run several browsers under the hub — the agent lists them by this label so you can tell them apart. Cosmetic: routing uses a hidden id, not the label.">?</span></span>
-          <input id="label" type="text" placeholder="Chrome" />
-        </label>
-
-        <div class="setblock">
-          <div class="setrow">
-            <span id="denyHeading" class="muted">Blocked origins</span>
-            <select id="originMode">
-              <option value="block">Block listed</option>
-              <option value="allow">Allow only listed</option>
-            </select>
-            <span class="help" title="The origin list. In 'Block listed' mode these sites are NEVER shared — overrides every sharing mode, even 'Everything'. In 'Allow only listed' mode ONLY these sites can be shared; an empty allow list blocks everything. Add a host like mail.google.com or *.bank.com. Port and scheme are ignored — the host is the unit of trust. Persists across restarts.">?</span>
-          </div>
-          <div class="actions">
-            <input id="denyInput" type="text" placeholder="mail.google.com or *.bank.com" />
-            <button id="denyAdd" class="btn small ghost">Add</button>
-          </div>
-          <p id="denyHint" class="hint" hidden>Allow mode with an empty list blocks everything.</p>
-          <ul id="denyList" class="shared"></ul>
-        </div>
-
-        <label class="tg">
-          <input type="checkbox" id="tabGroup" />
-          Mark shared tabs with a "⚡" tab group
-          <span class="help" title="Puts your shared tabs into a coloured '⚡' tab group in the tab strip, so you can see at a glance which tabs the agent can access. May rearrange your tabs.">?</span>
-        </label>
-
-        <hr class="sep" />
-
-        <div class="setblock">
-          <div class="setrow"><span class="muted">Sharing defaults</span><span class="help" title="Apply to EVERY shared tab (global, not per-tab). Read-only lets the agent read the page and take screenshots but not click, type, navigate, run scripts or open/close tabs. Auto-expire un-shares all tabs after the chosen time. Lock-to-domain keeps a shared tab pinned to its origin (off lets the agent navigate it freely). Don't auto-share leaves tabs the agent opens un-shared until you share them. Read-only + auto-expire default off; the other two default on.">?</span></div>
-          <label class="tg" style="margin-top: 0">
-            <input type="checkbox" id="readOnly" />
-            Read-only (agent can look, not act)
-          </label>
-          <label class="field">
-            <span>Auto-expire shares</span>
-            <select id="ttl">
-              <option value="0">off</option>
-              <option value="300000">5m</option>
-              <option value="900000">15m</option>
-              <option value="1800000">30m</option>
-              <option value="3600000">1h</option>
-              <option value="7200000">2h</option>
-              <option value="18000000">5h</option>
-              <option value="36000000">10h</option>
-            </select>
-          </label>
-          <label class="tg">
-            <input type="checkbox" id="lockToDomain" checked />
-            Lock shared tabs to their domain (prevent navigating to other sites)
-            <span class="help" title="When on (default), a shared tab that navigates to a different site loses access (ORIGIN_DRIFT). Turn off to let the agent navigate a shared tab freely across sites. Off is riskier: a shared tab could follow you into sensitive pages.">?</span>
-          </label>
-          <label class="tg">
-            <input type="checkbox" id="noAutoShareOpened" checked />
-            Don't auto-share tabs the agent opens
-            <span class="help" title="When on (default), tabs the agent creates with open_tab are NOT shared automatically — you must share them yourself. Turn off to auto-share every tab the agent opens (sticky to its opening origin).">?</span>
-          </label>
-        </div>
-      </section>
+      </div>
     </div>
 
     <!-- How-it-works layer -->
@@ -181,7 +206,7 @@
     }
   }
 }</pre>
-        <p>Replace the port and token with the values shown in Settings once connected (the shared hub uses port <code class="inline">12311</code>; a single browser uses whatever port it reports). Reload your agent and it will discover the Tabduct tools: <code class="inline">list_tabs</code>, <code class="inline">get_active_tab</code>, <code class="inline">get_page_content</code>, <code class="inline">screenshot</code>, <code class="inline">navigate</code>, <code class="inline">open_tab</code>, <code class="inline">close_tab</code>, <code class="inline">activate_tab</code> and <code class="inline">execute_script</code>.</p>
+        <p>Replace the port and token with the values shown in Settings once connected (the shared hub uses port <code class="inline">12311</code>; a single browser uses whatever port it reports). Reload your agent and it will discover the Tabduct tools: <code class="inline">list_tabs</code>, <code class="inline">get_active_tab</code>, <code class="inline">get_page_content</code>, <code class="inline">get_dom_snapshot</code>, <code class="inline">screenshot</code>, <code class="inline">wait_for</code>, <code class="inline">click</code>, <code class="inline">type</code>, <code class="inline">navigate</code>, <code class="inline">open_tab</code>, <code class="inline">close_tab</code>, <code class="inline">activate_tab</code>, <code class="inline">get_console_logs</code> and <code class="inline">execute_script</code>.</p>
 
         <h3>Running several browsers or profiles</h3>
         <p>Install Tabduct in each Chrome profile you want to use — each Google account / profile is separate, so share and connect in each one. With the hub on, they all appear behind the one endpoint and the agent tells them apart by their <strong>Label</strong> (auto-named like <code class="inline">Chrome-abcd</code>). Give each a clear name in Settings — e.g. <code class="inline">Work</code> and <code class="inline">Personal</code> — so the agent (and you) never confuse them.</p>

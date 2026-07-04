@@ -20,6 +20,10 @@ export const CREATE = new Set(["open_tab"]);
 export const REQUIRED_CAP = {
   get_page_content: "read", screenshot: "read",
   navigate: "execute", execute_script: "execute", close_tab: "execute", activate_tab: "execute", open_tab: "execute",
+  // CSP-safe interaction/wait tools (PART 1) + console capture (PART 2):
+  // waits/reads are "read" (no page mutation); click/type mutate → "execute".
+  wait_for: "read", get_dom_snapshot: "read", get_console_logs: "read",
+  click: "execute", type: "execute",
 };
 
 // Hostname only (drops port), lowercased by URL, trailing FQDN dot stripped —
@@ -118,6 +122,23 @@ export function visibleTabIds(state, tabs, now) {
   });
 }
 
+// CDP eval gating (PART 4) — PURE (no chrome refs), unit-tested.
+// Decides whether execute_script may use the CDP engine, from the user's two
+// global CDP settings + the requested engine. cdpAlways implies allowCdp (it is
+// ignored when allowCdp is false). Force/engine=cdp requires BOTH allowCdp AND
+// not read-only; otherwise the gate refuses CDP (CDP_NOT_PERMITTED) BEFORE the
+// debugger is attached. Returns { permitted, engine } (engine = the effective
+// engine to run: "auto" | "scripting" | "cdp").
+export function cdpDecision(state, { engine } = {}) {
+  const allowCdp = state.allowCdp === true;
+  const cdpAlways = allowCdp && state.cdpAlways === true; // cdpAlways implies allowCdp
+  const req = engine === "scripting" || engine === "cdp" ? engine : "auto";
+  const effective = cdpAlways ? "cdp" : req;
+  if (effective !== "cdp") return { permitted: true, engine: effective };
+  if (!allowCdp || state.readOnly) return { permitted: false, engine: effective, code: "CDP_NOT_PERMITTED" };
+  return { permitted: true, engine: "cdp" };
+}
+
 // ---------------------------------------------------------------------------
 // Chrome-bound store — mutators serialized via `serial()`
 
@@ -130,7 +151,7 @@ export async function getState() {
   // Read both stores in one shot so a concurrent mutator can't yield a mixed snapshot.
   const [sess, loc] = await Promise.all([
     chrome.storage.session.get("consent"),
-    chrome.storage.local.get(["denyOrigins", "shareReadOnly", "shareTtlMs", "originMode", "lockToDomain"]),
+    chrome.storage.local.get(["denyOrigins", "shareReadOnly", "shareTtlMs", "originMode", "lockToDomain", "allowCdp", "cdpAlways", "cdpConsole"]),
   ]);
   const s = sess.consent ?? { tier: "none", allow: {} };
   const { denyOrigins = [], shareReadOnly = false, shareTtlMs = 0 } = loc;
@@ -139,6 +160,9 @@ export async function getState() {
     denyOrigins, readOnly: !!shareReadOnly, ttlMs: Number(shareTtlMs) || 0,
     originMode: loc.originMode === "allow" ? "allow" : "block", // "block" default → list is a denylist
     lockToDomain: loc.lockToDomain !== false, // default true: shared tabs can't navigate to other origins
+    // CDP settings (PART 4) — all DEFAULT FALSE (storage.local, opt-in from the popup).
+    // cdpConsole is only effective when allowCdp is true (ignored otherwise, same as cdpAlways).
+    allowCdp: !!loc.allowCdp, cdpAlways: !!loc.cdpAlways, cdpConsole: !!loc.cdpConsole,
   };
 }
 async function saveConsent(next) {
@@ -173,13 +197,17 @@ export function shareTab(tabId) {
   });
 }
 // Global share defaults (apply to every tab, not per-tab). Persisted in storage.local.
-export function setShareOptions({ readOnly, ttlMs, lockToDomain, noAutoShareOpened } = {}) {
+// Also carries the CDP opt-ins (allowCdp / cdpAlways / cdpConsole) — all DEFAULT FALSE.
+export function setShareOptions({ readOnly, ttlMs, lockToDomain, noAutoShareOpened, allowCdp, cdpAlways, cdpConsole } = {}) {
   return serial(async () => {
     const patch = {};
     if (readOnly !== undefined) patch.shareReadOnly = !!readOnly;
     if (ttlMs !== undefined) patch.shareTtlMs = Number(ttlMs) || 0;
     if (lockToDomain !== undefined) patch.lockToDomain = !!lockToDomain;
     if (noAutoShareOpened !== undefined) patch.noAutoShareOpened = !!noAutoShareOpened;
+    if (allowCdp !== undefined) patch.allowCdp = !!allowCdp;
+    if (cdpAlways !== undefined) patch.cdpAlways = !!cdpAlways;
+    if (cdpConsole !== undefined) patch.cdpConsole = !!cdpConsole;
     await chrome.storage.local.set(patch);
     return getState();
   });

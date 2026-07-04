@@ -58,6 +58,13 @@ function renderSharing(s) {
   $("ttl").value = String(s.ttlMs || 0);
   $("lockToDomain").checked = s.lockToDomain !== false;
   $("noAutoShareOpened").checked = s.noAutoShareOpened !== false;
+  // CDP opt-ins (PART 4) — always visible indicator (chip) when the powerful path is on.
+  $("allowCdp").checked = !!s.allowCdp;
+  $("cdpAlways").checked = !!s.cdpAlways;
+  $("cdpAlways").disabled = !s.allowCdp; // sub-option meaningful only when the master is on
+  $("cdpConsole").checked = !!s.cdpConsole;
+  $("cdpConsole").disabled = !s.allowCdp; // meaningful only when the master is on (like cdpAlways)
+  $("cdpChip").hidden = !s.allowCdp;
   // Origin list MODE: block (default) → list is a denylist; allow → only listed hosts shared.
   const allow = s.originMode === "allow";
   $("originMode").value = allow ? "allow" : "block";
@@ -110,6 +117,25 @@ $("readOnly").addEventListener("change", async () => renderSharing(await send({ 
 $("ttl").addEventListener("change", async () => renderSharing(await send({ cmd: "sharing.setOptions", ttlMs: Number($("ttl").value) || 0 })));
 $("lockToDomain").addEventListener("change", async () => renderSharing(await send({ cmd: "sharing.setOptions", lockToDomain: $("lockToDomain").checked })));
 $("noAutoShareOpened").addEventListener("change", async () => renderSharing(await send({ cmd: "sharing.setOptions", noAutoShareOpened: $("noAutoShareOpened").checked })));
+// CDP opt-in: enabling requests the optional "debugger" permission (user gesture
+// here in the popup); if denied, revert the checkbox. Disabling also clears
+// cdpAlways/cdpConsole and tells the background to release any held sessions.
+$("allowCdp").addEventListener("change", async () => {
+  if ($("allowCdp").checked) {
+    let granted = false; try { granted = await chrome.permissions.request({ permissions: ["debugger"] }); } catch {}
+    if (!granted) { // user declined the permission prompt → stay off
+      $("allowCdp").checked = false; $("cdpAlways").disabled = true; $("cdpConsole").disabled = true; $("cdpChip").hidden = true; return;
+    }
+    renderSharing(await send({ cmd: "sharing.setOptions", allowCdp: true }));
+  } else {
+    $("cdpAlways").checked = false;
+    $("cdpConsole").checked = false;
+    renderSharing(await send({ cmd: "sharing.setOptions", allowCdp: false, cdpAlways: false, cdpConsole: false }));
+    try { await chrome.permissions.remove({ permissions: ["debugger"] }); } catch {} // give the powerful permission back, not just the setting
+  }
+});
+$("cdpAlways").addEventListener("change", async () => renderSharing(await send({ cmd: "sharing.setOptions", cdpAlways: $("cdpAlways").checked })));
+$("cdpConsole").addEventListener("change", async () => renderSharing(await send({ cmd: "sharing.setOptions", cdpConsole: $("cdpConsole").checked })));
 $("originMode").addEventListener("change", async () => renderSharing(await send({ cmd: "sharing.setOriginMode", mode: $("originMode").value })));
 $("revokeAll").addEventListener("click", async () => renderSharing(await send({ cmd: "sharing.revokeAll" })));
 $("tabGroup").addEventListener("change", async () => renderSharing(await send({ cmd: "sharing.setTabGroup", on: $("tabGroup").checked })));
@@ -126,20 +152,17 @@ chrome.runtime.onMessage.addListener((m) => {
   if (m?.evt === "status") renderConn(m);
   if (m?.evt === "sharing") send({ cmd: "sharing.status" }).then(renderSharing);
 });
-// Layer switching: gear → Settings, back → main.
-$("gear").addEventListener("click", () => { $("main").hidden = true; $("settings").hidden = false; });
-$("back").addEventListener("click", () => { $("settings").hidden = true; $("main").hidden = false; });
-// How-it-works overlay: widen the popup and hide the header while open.
+// Layer switching: main ⇄ Settings (two-column, widened) ⇄ How-it-works.
+// Each helper owns exactly one body-width class so leaving a layer always
+// restores the popup width (PART 5).
 const header = document.querySelector("header");
-$("howBtn").addEventListener("click", () => {
-  document.body.classList.add("wide"); header.hidden = true;
-  $("settings").hidden = true; $("howto").hidden = false;
-  window.scrollTo(0, 0);
-});
-$("howClose").addEventListener("click", () => {
-  document.body.classList.remove("wide"); header.hidden = false;
-  $("howto").hidden = true; $("settings").hidden = false;
-});
+const showMain = () => { document.body.classList.remove("wide", "wide-settings"); header.hidden = false; $("main").hidden = false; $("settings").hidden = true; $("howto").hidden = true; window.scrollTo(0, 0); };
+const showSettings = () => { document.body.classList.remove("wide"); document.body.classList.add("wide-settings"); header.hidden = false; $("main").hidden = true; $("settings").hidden = false; $("howto").hidden = true; window.scrollTo(0, 0); };
+const showHowto = () => { document.body.classList.remove("wide-settings"); document.body.classList.add("wide"); header.hidden = true; $("main").hidden = true; $("settings").hidden = true; $("howto").hidden = false; window.scrollTo(0, 0); };
+$("gear").addEventListener("click", showSettings);
+$("back").addEventListener("click", showMain);
+$("howBtn").addEventListener("click", showHowto);
+$("howClose").addEventListener("click", showSettings);
 
 send({ cmd: "status" }).then(renderConn);
 send({ cmd: "sharing.status" }).then(renderSharing);

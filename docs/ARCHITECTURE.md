@@ -93,6 +93,26 @@ surfaces the block cleanly as `CSP_BLOCKED`. The real fix — `chrome.userScript
 "Allow user scripts" toggle. That trade (min version + onboarding step) is
 tracked in [ROADMAP.md](ROADMAP.md) as a pre-1.0 must.
 
+## CDP console capture (cdpConsole, developer mode)
+
+`get_console_logs` has two capture paths. The default is a CSP-safe injected
+console monkeypatch (MAIN world, no debugger) — but it only sees `console.*`
+calls made *after* it installs, and misses uncaught exceptions and browser log
+entries (network/CSP/deprecation warnings). When the user opts into **"Capture
+full console & errors via CDP"** (requires "Allow CDP eval"), the extension
+proactively attaches the Chrome DevTools Protocol debugger to every shared tab
+with `Runtime` + `Log` domains enabled and buffers every
+`Runtime.consoleAPICalled`, `Runtime.exceptionThrown`, and `Log.entryAdded`
+event. `get_console_logs` then returns that full buffer (the result's `source`
+field is `"cdp"`; otherwise `"inject"`). The trade-off is the same one as force
+mode: the browser keeps a visible **"this tab is being debugged" banner** up on
+every shared tab while capture is on. Attachment is reconciled in
+`refreshBadges()`: turning the option on attaches capture to all shared tabs,
+sharing a new tab attaches it, and unsharing/closing/disabling stops it. A tab
+may be held attached by two independent reasons (cdpEval force mode and console
+capture); detach is gated on a shared `cdpHeld(tabId)` predicate so neither
+path tears the other's session down.
+
 ## Repo map
 
 ```

@@ -85,9 +85,10 @@
       "inputSchema": {
         "type": "object",
         "properties": {
-          "code": { "type": "string", "description": "JS source; must `return` the value to hand back. Runs in the page (MAIN) world. Result is capped at 1MB (truncated flag set if exceeded)." },
+          "code": { "type": "string", "description": "JS source; must `return` the value to hand back. Runs in the page (MAIN) world. Result is capped at 8MB (truncated flag set if exceeded)." },
           "tabId": { "type": "integer", "description": "Target tab; omit for active tab." },
-          "args": { "type": "array", "items": {}, "description": "Optional JSON-serializable args exposed as `args` to the code.", "default": [] }
+          "args": { "type": "array", "items": {}, "description": "Optional JSON-serializable args exposed as `args` to the code.", "default": [] },
+          "engine": { "type": "string", "enum": ["auto", "scripting", "cdp"], "default": "auto", "description": "auto=chrome.scripting, fall back to CDP on CSP_BLOCKED if CDP is enabled; cdp=force CDP (requires the debugger permission + 'Allow CDP eval')." }
         },
         "required": ["code"],
         "additionalProperties": false
@@ -103,6 +104,73 @@
           "activate": { "type": "boolean", "default": false, "description": "If the tab is not active, activate it before capturing (side effect: changes focus)." },
           "format": { "type": "string", "enum": ["png", "jpeg"], "default": "png" },
           "quality": { "type": "integer", "minimum": 0, "maximum": 100, "description": "JPEG quality (ignored for png)." }
+        },
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "wait_for",
+      "description": "Wait until a condition is met in a shared tab (a CSS selector appears, the URL contains a substring, or the page reaches a load state), bounded by a timeout. At least one of selector/urlContains/loadState is required. CSP-safe: uses injected functions, never string eval (so it works on strict-CSP sites).",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "tabId": { "type": "integer", "description": "Target tab; omit for active tab." },
+          "selector": { "type": "string", "description": "CSS selector that must match an element before resolving." },
+          "urlContains": { "type": "string", "description": "Resolve when location.href contains this substring." },
+          "loadState": { "type": "string", "enum": ["complete"], "description": "Resolve when document.readyState equals this (only 'complete' is supported)." },
+          "timeoutMs": { "type": "integer", "minimum": 0, "maximum": 25000, "default": 10000, "description": "Max time to wait in ms; capped at 25000. Resolves as soon as a condition holds; throws TIMEOUT otherwise." }
+        },
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "click",
+      "description": "Click an element in a shared tab by CSS selector. CSP-safe: injects a function (page CSP blocks string eval, not extension-injected functions).",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "tabId": { "type": "integer", "description": "Target tab; omit for active tab." },
+          "selector": { "type": "string", "description": "CSS selector of the element to click." }
+        },
+        "required": ["selector"],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "type",
+      "description": "Type text into an input/textarea/contenteditable element in a shared tab by CSS selector. Dispatches input/change events so frameworks (React/Vue) notice the change. CSP-safe (injected function).",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "tabId": { "type": "integer", "description": "Target tab; omit for active tab." },
+          "selector": { "type": "string", "description": "CSS selector of the element to type into." },
+          "text": { "type": "string", "description": "Text to enter." },
+          "clear": { "type": "boolean", "default": false, "description": "Replace the current value (true) instead of appending (false)." }
+        },
+        "required": ["selector", "text"],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "get_dom_snapshot",
+      "description": "Return a compact text outline of a shared tab's visible interactive/structural elements (a/button/input/textarea/select/[role]/headings/nav/form etc.), each with a label and a reasonably stable CSS selector — enough to choose click/type targets on strict-CSP sites without arbitrary JS. CSP-safe (injected function).",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "tabId": { "type": "integer", "description": "Target tab; omit for active tab." },
+          "maxChars": { "type": "integer", "minimum": 0, "maximum": 200000, "default": 40000, "description": "Truncate the outline to this many chars (0 = no limit, hard cap 200000)." }
+        },
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "get_console_logs",
+      "description": "Return console logs captured from a shared tab (log/info/warn/error/debug). When the user has enabled 'Capture full console & errors via CDP' (developer mode), this returns the FULL CDP-captured picture: console.* calls, uncaught exceptions, and browser Log entries (network/CSP/deprecation), recorded continuously from the moment the tab was shared — including errors emitted before you asked. Otherwise it falls back to best-effort injected console capture: installed on the FIRST call (so logs emitted before that call may be missing) and reset when the page navigates. The capture source is reported in the result's `source` field ('cdp' or 'inject'). CSP-safe: neither path uses string eval.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "tabId": { "type": "integer", "description": "Target tab; omit for active tab." },
+          "clear": { "type": "boolean", "default": false, "description": "Clear the captured buffer after returning it." }
         },
         "additionalProperties": false
       }

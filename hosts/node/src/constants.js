@@ -44,6 +44,8 @@ export const ERR = {
   ORIGIN_DRIFT: "ORIGIN_DRIFT",
   ORIGIN_DENIED: "ORIGIN_DENIED",
   CAP_NOT_GRANTED: "CAP_NOT_GRANTED",
+  // CDP eval (PART 4) — opt-in arbitrary-JS engine on strict-CSP sites.
+  CDP_NOT_PERMITTED: "CDP_NOT_PERMITTED",
   // Hub (Feature A, Phase 3)
   AMBIGUOUS_INSTANCE: "AMBIGUOUS_INSTANCE",
   INSTANCE_GONE: "INSTANCE_GONE",

@@ -20,7 +20,6 @@ h1 { font-size: 15px; margin: 0; letter-spacing: .2px; }
 .settings-hd { gap: 8px; justify-content: flex-start; }
 .help { display: inline-flex; align-items: center; justify-content: center; width: 14px; height: 14px; border-radius: 50%; border: 1px solid var(--border); color: var(--muted); font-size: 10px; font-weight: 700; cursor: help; text-transform: none; letter-spacing: 0; }
 .help:hover { color: var(--fg); border-color: var(--muted); }
-.setblock { margin-bottom: 8px; }
 .setrow { display: flex; align-items: center; gap: 6px; margin-bottom: 6px; }
 
 .card { background: var(--card); border: 1px solid var(--border); border-radius: 10px; padding: 10px; margin-bottom: 10px; }
@@ -67,6 +66,14 @@ input[type="text"] { flex: 1; min-width: 0; }
 .howto-btn:hover { background: var(--claude-hover); }
 .qmark { display: inline-flex; align-items: center; justify-content: center; width: 16px; height: 16px; margin-left: 8px; border-radius: 50%; border: 1.5px solid rgba(255, 255, 255, .85); font-size: 11px; font-weight: 700; }
 body.wide { width: 440px; }
+/* Settings (PART 5): widen to a two-column layout so everything is visible with no
+   vertical scroll. Restored by removing the class when leaving Settings. */
+body.wide-settings { width: 580px; }
+.settings-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; align-items: start; }
+.settings-col { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+.setcard { background: var(--card); border: 1px solid var(--border); border-radius: 10px; padding: 10px; }
+.setcard .shared { max-height: 120px; } /* origin list fits the column without dominating */
+.cdp-chip { display: inline-flex; align-items: center; padding: 1px 7px; border-radius: 999px; font-size: 10px; font-weight: 700; letter-spacing: .3px; background: #b45309; color: #fff; border: 1px solid rgba(255, 255, 255, .4); }
 .howto-hd { position: sticky; top: 0; z-index: 1; display: flex; align-items: center; justify-content: space-between; padding: 4px 0 10px; margin-bottom: 4px; background: var(--bg); border-bottom: 1px solid var(--border); }
 .howto-hd h2 { margin: 0; font-size: 16px; letter-spacing: .2px; }
 .howto-body { padding-top: 4px; }
@@ -91,7 +98,6 @@ body.wide { width: 440px; }
 .status[data-state="disconnected"], .status[data-state="error"] { background: var(--danger); }
 .status[data-state="connected"] { background: var(--ok); }
 .status[data-state="connecting"] { background: #d97706; }
-.sep { border: 0; border-top: 1px solid var(--border); margin: 12px 0; }
 .creds { display: flex; flex-direction: column; gap: 3px; }
 code { padding: 5px 8px; border: 1px solid var(--border); border-radius: 6px; font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 12px; word-break: break-all; }
 

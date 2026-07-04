@@ -2,7 +2,7 @@
 // Unit test for the PURE consent decision logic (no Chrome). Covers the
 // security-critical cases from PROTOCOL.md §6a.
 
-import { evaluate, denyMatch, originBlocked, visibleTabIds, hostOf, normalizeDenyRule } from "../extension/consent.js";
+import { evaluate, denyMatch, originBlocked, visibleTabIds, hostOf, normalizeDenyRule, REQUIRED_CAP, cdpDecision } from "../extension/consent.js";
 
 let fails = 0;
 const eq = (a, b, m) => { const p = JSON.stringify(a) === JSON.stringify(b); console.log(`${p ? "ok" : "FAIL"}: ${m}${p ? "" : ` (got ${JSON.stringify(a)}, want ${JSON.stringify(b)})`}`); if (!p) fails++; };
@@ -126,6 +126,44 @@ eq(normalizeDenyRule("*.BANK.com:8443"), "*.bank.com", "normalize rule: wildcard
 const ROSHOT = { tier: "tabs", readOnly: true, allow: { "8": { host: "x.com", mode: "stickyOrigin" } }, denyOrigins: [] };
 eq(code(evaluate(ROSHOT, { tool: "screenshot", tabId: 8, host: "x.com" })), "ALLOW", "read-only: plain screenshot allowed");
 eq(code(evaluate(ROSHOT, { tool: "screenshot", tabId: 8, host: "x.com", needCap: "execute" })), "CAP_NOT_GRANTED", "read-only: screenshot+activate denied");
+
+// PART 1/2 tools: REQUIRED_CAP tiers — read tools allowed under read-only, execute tools denied.
+eq(REQUIRED_CAP.click, "execute", "REQUIRED_CAP: click needs execute");
+eq(REQUIRED_CAP.type, "execute", "REQUIRED_CAP: type needs execute");
+eq(REQUIRED_CAP.wait_for, "read", "REQUIRED_CAP: wait_for needs read");
+eq(REQUIRED_CAP.get_dom_snapshot, "read", "REQUIRED_CAP: get_dom_snapshot needs read");
+eq(REQUIRED_CAP.get_console_logs, "read", "REQUIRED_CAP: get_console_logs needs read");
+const ROTOOLS = { tier: "tabs", readOnly: true, allow: { "3": { host: "x.com", mode: "stickyOrigin" } }, denyOrigins: [] };
+eq(code(evaluate(ROTOOLS, { tool: "wait_for", tabId: 3, host: "x.com" })), "ALLOW", "read-only: wait_for allowed");
+eq(code(evaluate(ROTOOLS, { tool: "get_dom_snapshot", tabId: 3, host: "x.com" })), "ALLOW", "read-only: get_dom_snapshot allowed");
+eq(code(evaluate(ROTOOLS, { tool: "get_console_logs", tabId: 3, host: "x.com" })), "ALLOW", "read-only: get_console_logs allowed");
+eq(code(evaluate(ROTOOLS, { tool: "click", tabId: 3, host: "x.com" })), "CAP_NOT_GRANTED", "read-only: click denied");
+eq(code(evaluate(ROTOOLS, { tool: "type", tabId: 3, host: "x.com" })), "CAP_NOT_GRANTED", "read-only: type denied");
+// execute tools allowed when not read-only
+const RWTOOLS = { tier: "tabs", allow: { "3": { host: "x.com", mode: "stickyOrigin" } }, denyOrigins: [] };
+eq(code(evaluate(RWTOOLS, { tool: "click", tabId: 3, host: "x.com" })), "ALLOW", "read-write: click allowed");
+eq(code(evaluate(RWTOOLS, { tool: "type", tabId: 3, host: "x.com" })), "ALLOW", "read-write: type allowed");
+
+// PART 4: cdpDecision() — pure CDP gating (engine selection + permit rules).
+// cdpAlways implies allowCdp; force/always CDP requires allowCdp AND not read-only.
+eq(cdpDecision({ allowCdp: false }, { engine: "auto" }).engine, "auto", "cdp: auto when cdp off");
+eq(cdpDecision({ allowCdp: false }, { engine: "cdp" }).permitted, false, "cdp: force-cdp refused when cdp off");
+eq(cdpDecision({ allowCdp: false }, { engine: "cdp" }).code, "CDP_NOT_PERMITTED", "cdp: force-cdp → CDP_NOT_PERMITTED");
+eq(cdpDecision({ allowCdp: true }, { engine: "cdp" }).permitted, true, "cdp: force-cdp allowed when cdp on");
+eq(cdpDecision({ allowCdp: true }, { engine: "cdp" }).engine, "cdp", "cdp: force-cdp effective engine cdp");
+eq(cdpDecision({ allowCdp: true, readOnly: true }, { engine: "cdp" }).permitted, false, "cdp: force-cdp refused under read-only");
+eq(cdpDecision({ allowCdp: true, cdpAlways: true }, { engine: "auto" }).engine, "cdp", "cdp: cdpAlways overrides auto → cdp");
+eq(cdpDecision({ allowCdp: true, cdpAlways: true }, { engine: "scripting" }).engine, "cdp", "cdp: cdpAlways overrides scripting → cdp");
+eq(cdpDecision({ allowCdp: true, cdpAlways: true }, { engine: "auto" }).permitted, true, "cdp: cdpAlways permitted when cdp on");
+// cdpAlways is IGNORED when allowCdp is false (never silently enable CDP)
+eq(cdpDecision({ allowCdp: false, cdpAlways: true }, { engine: "auto" }).engine, "auto", "cdp: cdpAlways ignored when cdp off");
+eq(cdpDecision({ allowCdp: false, cdpAlways: true }, { engine: "auto" }).permitted, true, "cdp: non-cdp auto still permitted when cdp off");
+// scripting engine is always permitted (no CDP involved) regardless of settings
+eq(cdpDecision({ allowCdp: false }, { engine: "scripting" }), { permitted: true, engine: "scripting" }, "cdp: scripting always permitted");
+eq(cdpDecision({ allowCdp: false, readOnly: true }, { engine: "scripting" }).permitted, true, "cdp: scripting permitted under read-only (consent handles the cap)");
+// unknown engine normalizes to auto
+eq(cdpDecision({ allowCdp: false }, { engine: "weird" }).engine, "auto", "cdp: unknown engine → auto");
+eq(cdpDecision({ allowCdp: false }, {}).engine, "auto", "cdp: missing engine → auto");
 
 console.log(fails ? `\nCONSENT TESTS FAILED (${fails})` : "\nCONSENT TESTS PASSED");
 process.exit(fails ? 1 : 0);
