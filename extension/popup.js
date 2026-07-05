@@ -4,7 +4,7 @@ const $ = (id) => document.getElementById(id);
 const send = (msg) => chrome.runtime.sendMessage(msg);
 
 // ---- Connection ----
-const LABELS = { disconnected: "Disconnected", connecting: "Connecting…", connected: "Connected", error: "Error" };
+const LABELS = { disconnected: "Stopped", connecting: "Starting…", connected: "Running", error: "Error" };
 
 chrome.storage.local.get("port").then(({ port }) => { if (port) $("port").value = port; });
 $("port").addEventListener("input", () => {
@@ -17,7 +17,7 @@ function renderConn(s) {
   const connected = state === "connected";
   const text = s?.error ? `Error: ${s.error}` : (LABELS[state] ?? state);
   $("dot").dataset.state = state;
-  $("dot").title = connected ? "Connected — click to disconnect" : `${text} — click to connect`;
+  $("dot").title = connected ? "Running — click to stop" : `${text} — click to start`;
   $("connArea").hidden = connected; // when connected, the header dot is the sole indicator
   $("shareArea").hidden = !connected; // sharing is meaningless until connected
   $("toggle").disabled = state === "connecting";

@@ -54,7 +54,7 @@ npm run register        # installs the native-messaging manifest for your OS + b
 `register` writes the manifest to the right place automatically — `~/Library/Application Support/…/NativeMessagingHosts` on macOS, `~/.config/…/NativeMessagingHosts` on Linux, or an `HKCU` registry key on Windows (and makes the launcher executable on POSIX). Then:
 
 1. Open `chrome://extensions` → enable **Developer mode** → **Load unpacked** → select the **`extension/`** folder.
-2. Click the **Tabduct** toolbar icon → **Connect** (the header dot turns green).
+2. Click the **Tabduct** toolbar icon → **Start** (launches the local server; the header dot turns green). Click the dot again to **Stop** it.
 3. Open **Settings (⚙)** → copy the **MCP endpoint** and **Authorization** token.
 4. Paste them into your agent's MCP config (below) and reload the agent.
 5. **Share** what the agent may touch: **Share Current Tab**, or **Share Everything**. That's it.
@@ -105,7 +105,7 @@ can't even read their title.
 ## Security & consent
 
 The endpoint is **token-authenticated** — not merely bound to localhost (which
-every local process shares). On Connect the extension mints a bearer token; the
+every local process shares). On Start the extension mints a bearer token; the
 host requires `Authorization: Bearer <token>` on every request, rejects
 `Origin`-bearing requests, and pins the `Host` header (DNS-rebinding defense).
 
@@ -126,7 +126,7 @@ which is also where to report a vulnerability (please don't open a public issue)
 ## Multiple browsers & profiles
 
 Install Tabduct in each Chrome profile you use (each Google account / profile is
-separate). Connect each; with the hub on they all sit behind the one endpoint, and
+separate). Start each; with the hub on they all sit behind the one endpoint, and
 the agent tells them apart by their **Label** (auto-named like `Chrome-abcd` —
 rename to `Work` / `Personal` in Settings).
 

@@ -12,7 +12,7 @@
       </div>
       <div class="hdr-right">
         <span id="cdpChip" class="cdp-chip" hidden title="CDP mode is ENABLED (the 'Allow CDP eval' toggle is on) — this is a capability indicator, not live usage. Nothing is attached until an eval actually needs CDP; Chrome's yellow 'this tab is being debugged' banner is the real-time signal that CDP is running right now. Turn the toggle off to hide this chip.">CDP</span>
-        <span id="dot" class="dot" data-state="disconnected" title="disconnected" role="button" tabindex="0"></span>
+        <span id="dot" class="dot" data-state="disconnected" title="stopped" role="button" tabindex="0"></span>
         <button id="gear" class="icon-btn" title="Settings" aria-label="Settings">⚙</button>
       </div>
     </header>
@@ -21,8 +21,8 @@
     <div id="main">
       <section class="card">
         <div id="connArea">
-          <p id="status" class="status" data-state="disconnected">Disconnected</p>
-          <button id="toggle" class="btn">Connect</button>
+          <p id="status" class="status" data-state="disconnected">Stopped</p>
+          <button id="toggle" class="btn">Start</button>
         </div>
         <div id="shareArea" hidden>
           <button id="shareThis" class="btn share">Share Current Tab</button>
@@ -157,7 +157,7 @@
 
         <h3>Quick start</h3>
         <ol>
-          <li><strong>Connect</strong> — click the button (or the header dot); it turns green.</li>
+          <li><strong>Start</strong> — click the button (or the header dot); it turns green.</li>
           <li><strong>Point your agent at it</strong> — open Settings (⚙), copy the <strong>MCP endpoint</strong> + <strong>Authorization</strong> token into your agent's MCP config (template below), reload the agent.</li>
           <li><strong>Share</strong> — <strong>Share Current Tab</strong> for one tab, or <strong>Share Everything</strong>. The agent can now work with what you shared, and nothing else.</li>
         </ol>
@@ -182,8 +182,8 @@
 
         <h3>Marking shared tabs &amp; indicators</h3>
         <ul>
-          <li><strong>Header dot:</strong> green = connected, red = not connected. Click it to disconnect.</li>
-          <li><strong>Toolbar icon:</strong> plain = idle; green dot = the current tab is shared; red dot = Tabduct isn't connected.</li>
+          <li><strong>Header dot:</strong> green = running, red = stopped. Click it to start / stop.</li>
+          <li><strong>Toolbar icon:</strong> plain = idle; green dot = the current tab is shared; red dot = Tabduct is stopped.</li>
           <li><strong>"⚡" tab group</strong> (Settings, on by default): shared tabs are gathered into a coloured ⚡ group. It's two-way — drag a tab <em>into</em> the group to share it, drag it <em>out</em> to unshare.</li>
           <li><strong>Right-click a page → "⚡ Tabduct: share / unshare this tab"</strong> — the quickest way to toggle one tab.</li>
           <li><strong>Shortcut Ctrl+Shift+Y</strong> toggles sharing for the current tab.</li>
@@ -192,8 +192,8 @@
         <h3>Strict-CSP sites &amp; CDP mode (advanced)</h3>
         <p>Clicking, typing, reading, and waiting work everywhere — they run as injected functions, which a site's Content-Security-Policy can't block. Only <em>arbitrary</em> JavaScript (<code class="inline">execute_script</code>) can be blocked by a strict CSP (GitHub, banks, most SaaS). For that, the <strong>Advanced</strong> settings offer opt-in <strong>CDP mode</strong>: eval bypasses CSP via the DevTools Protocol, with a <em>developer mode</em> that routes all eval through it and captures the full console (including uncaught errors and network/CSP warnings). It's OFF by default — nothing attaches until you flip the toggle. (Chrome does not allow requesting "debugger" at runtime, so it's a required permission granted at install; the toggle is what actually authorizes attaching.) While on, Chrome shows a "this tab is being debugged" banner (your signal), a "CDP" chip appears in the header, and it still obeys consent — never in read-only.</p>
 
-        <h3>Connecting</h3>
-        <p>Click <strong>Connect</strong> (or the header dot). Tabduct starts a small server on your own machine — nothing is exposed to the internet — and shows an endpoint URL and a secret token in Settings. Point your agent at those.</p>
+        <h3>Starting Tabduct</h3>
+        <p>Click <strong>Start</strong> (or the header dot). Tabduct launches a small server on your own machine — nothing is exposed to the internet — and shows an endpoint URL and a secret token in Settings. Point your agent at those. Click the dot again to <strong>Stop</strong> it (the server process exits).</p>
         <p><strong>Shared hub</strong> is on by default: Tabduct exposes one fixed endpoint (<code class="inline">127.0.0.1:12311</code>) with a stable token, so your agent config never changes — and every browser you connect appears behind that single endpoint. You can turn the hub off in Settings if you'd rather point the agent at a direct, per-browser endpoint.</p>
 
         <h3>Configuring your agent (MCP)</h3>
@@ -209,10 +209,10 @@
     }
   }
 }</pre>
-        <p>Replace the port and token with the values shown in Settings once connected (the shared hub uses port <code class="inline">12311</code>; a single browser uses whatever port it reports). Reload your agent and it will discover the Tabduct tools: <code class="inline">list_tabs</code>, <code class="inline">get_active_tab</code>, <code class="inline">get_page_content</code>, <code class="inline">get_dom_snapshot</code>, <code class="inline">screenshot</code>, <code class="inline">wait_for</code>, <code class="inline">click</code>, <code class="inline">type</code>, <code class="inline">navigate</code>, <code class="inline">open_tab</code>, <code class="inline">close_tab</code>, <code class="inline">activate_tab</code>, <code class="inline">get_console_logs</code> and <code class="inline">execute_script</code>.</p>
+        <p>Replace the port and token with the values shown in Settings once running (the shared hub uses port <code class="inline">12311</code>; a single browser uses whatever port it reports). Reload your agent and it will discover the Tabduct tools: <code class="inline">list_tabs</code>, <code class="inline">get_active_tab</code>, <code class="inline">get_page_content</code>, <code class="inline">get_dom_snapshot</code>, <code class="inline">screenshot</code>, <code class="inline">wait_for</code>, <code class="inline">click</code>, <code class="inline">type</code>, <code class="inline">navigate</code>, <code class="inline">open_tab</code>, <code class="inline">close_tab</code>, <code class="inline">activate_tab</code>, <code class="inline">get_console_logs</code> and <code class="inline">execute_script</code>.</p>
 
         <h3>Running several browsers or profiles</h3>
-        <p>Install Tabduct in each Chrome profile you want to use — each Google account / profile is separate, so share and connect in each one. With the hub on, they all appear behind the one endpoint and the agent tells them apart by their <strong>Label</strong> (auto-named like <code class="inline">Chrome-abcd</code>). Give each a clear name in Settings — e.g. <code class="inline">Work</code> and <code class="inline">Personal</code> — so the agent (and you) never confuse them.</p>
+        <p>Install Tabduct in each Chrome profile you want to use — each Google account / profile is separate, so share and start in each one. With the hub on, they all appear behind the one endpoint and the agent tells them apart by their <strong>Label</strong> (auto-named like <code class="inline">Chrome-abcd</code>). Give each a clear name in Settings — e.g. <code class="inline">Work</code> and <code class="inline">Personal</code> — so the agent (and you) never confuse them.</p>
 
         <h3>Good to know</h3>
         <ul>
