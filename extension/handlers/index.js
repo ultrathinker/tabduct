@@ -519,11 +519,10 @@ function fmtCdpArg(a) {
 }
 
 // Buffers every console/exception/Log event for tabs we're capturing. Registered
-// LAZILY (idempotent): the `debugger` API is undefined until the optional
-// permission is granted, so we register on module load if already granted, from
-// ensureCdpListeners() whenever we attach, and via permissions.onAdded when the
-// permission is granted mid-session (else events would be dropped until the SW
-// recycles). Levels are normalized to the inject path's vocabulary ("warn").
+// idempotently on module load (the `debugger` permission is required, so the API
+// is always present) and again from ensureCdpListeners() whenever we attach. The
+// permissions.onAdded hook is a harmless belt-and-suspenders in case the permission
+// model ever changes. Levels are normalized to the inject path's vocabulary ("warn").
 let _cdpListenersOn = false;
 function ensureCdpListeners() {
   if (_cdpListenersOn || !chrome.debugger?.onEvent) return;

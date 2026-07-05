@@ -28,9 +28,7 @@
     "storage",
     "alarms",
     "tabGroups",
-    "contextMenus"
-  ],
-  "optional_permissions": [
+    "contextMenus",
     "debugger"
   ],
   "host_permissions": [

@@ -161,9 +161,11 @@ default `auto`):
 - `scripting` — `chrome.scripting` MAIN-world eval only. On a strict-CSP page
   this surfaces as `CSP_BLOCKED`.
 - `cdp` — force the CDP (`chrome.debugger`) path, which bypasses page CSP. It is
-  **opt-in**: the user must grant the optional `debugger` permission AND enable
-  "Allow CDP eval" in the popup. CDP requires write access (it is refused under
-  read-only). If either condition is unmet the extension replies
+  **opt-in**: the user must enable "Allow CDP eval" in the popup. (Chrome forbids
+  `debugger` as an optional/runtime permission, so it is a **required** permission
+  granted at install; the toggle — not a permission prompt — is the actual opt-in,
+  and nothing attaches until it is on.) CDP requires write access (it is refused
+  under read-only). If either condition is unmet the extension replies
   `CDP_NOT_PERMITTED` **before** attaching the debugger. CDP shows a visible
   "this tab is being debugged" browser banner — that banner is the user signal
   that the powerful path is in use.

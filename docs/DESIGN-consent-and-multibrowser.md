@@ -90,8 +90,10 @@ leaking the title.
 - **v0.1 (shipped):** read-only is now a **global** setting; the origin list is a
   **block *or* allow** filter; **lock-to-domain** (sticky) is a toggle; opened tabs
   are not auto-shared by default; and a distinct **CDP tier** (`allowCdp`, refused
-  under read-only, opt-in `debugger` permission) enables CSP-bypassing eval + full
-  console capture. See PROTOCOL.md §6a/§6b.
+  under read-only) enables CSP-bypassing eval + full console capture. (Chrome
+  forbids `debugger` as an optional/runtime permission, so it is a required
+  permission granted at install; the `allowCdp` toggle is the opt-in, and nothing
+  attaches until it is on.) See PROTOCOL.md §6a/§6b.
 
 ---
 

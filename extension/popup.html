@@ -128,7 +128,7 @@
             <label class="tg" style="margin-top: 0">
               <input type="checkbox" id="allowCdp" />
               Allow CDP eval (bypasses site CSP; shows a debugging banner)
-              <span class="help" title="Grants the optional 'debugger' permission and lets execute_script fall back to CDP (DevTools Protocol) when the page's CSP blocks normal eval. Off by default. Disabling also releases any held debugger sessions.">?</span>
+              <span class="help" title="Lets execute_script fall back to CDP (DevTools Protocol) when the page's CSP blocks normal eval. Off by default — nothing attaches until you turn this on. (Chrome forbids requesting 'debugger' at runtime, so it is a required permission granted at install; this toggle is what actually authorizes attaching.) Disabling releases any held debugger sessions.">?</span>
             </label>
             <label class="tg">
               <input type="checkbox" id="cdpAlways" />
@@ -190,7 +190,7 @@
         </ul>
 
         <h3>Strict-CSP sites &amp; CDP mode (advanced)</h3>
-        <p>Clicking, typing, reading, and waiting work everywhere — they run as injected functions, which a site's Content-Security-Policy can't block. Only <em>arbitrary</em> JavaScript (<code class="inline">execute_script</code>) can be blocked by a strict CSP (GitHub, banks, most SaaS). For that, the <strong>Advanced</strong> settings offer opt-in <strong>CDP mode</strong>: it grants the optional "debugger" permission so eval bypasses CSP, with a <em>developer mode</em> that routes all eval through it and captures the full console (including uncaught errors and network/CSP warnings). It's OFF by default; while on, Chrome shows a "this tab is being debugged" banner (your signal), a "CDP" chip appears in the header, and it still obeys consent — never in read-only.</p>
+        <p>Clicking, typing, reading, and waiting work everywhere — they run as injected functions, which a site's Content-Security-Policy can't block. Only <em>arbitrary</em> JavaScript (<code class="inline">execute_script</code>) can be blocked by a strict CSP (GitHub, banks, most SaaS). For that, the <strong>Advanced</strong> settings offer opt-in <strong>CDP mode</strong>: eval bypasses CSP via the DevTools Protocol, with a <em>developer mode</em> that routes all eval through it and captures the full console (including uncaught errors and network/CSP warnings). It's OFF by default — nothing attaches until you flip the toggle. (Chrome does not allow requesting "debugger" at runtime, so it's a required permission granted at install; the toggle is what actually authorizes attaching.) While on, Chrome shows a "this tab is being debugged" banner (your signal), a "CDP" chip appears in the header, and it still obeys consent — never in read-only.</p>
 
         <h3>Connecting</h3>
         <p>Click <strong>Connect</strong> (or the header dot). Tabduct starts a small server on your own machine — nothing is exposed to the internet — and shows an endpoint URL and a secret token in Settings. Point your agent at those.</p>

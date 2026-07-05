@@ -10,12 +10,14 @@ All notable changes to this project are documented here. The format follows
 - **CSP-safe interaction tools** — `click`, `type`, `wait_for`, `get_dom_snapshot`,
   and `get_console_logs`, implemented as injected functions so they work even on
   strict-CSP sites (GitHub, banks, SaaS) with no extra permission.
-- **Optional CDP mode** (`debugger` optional permission, opt-in, default off):
-  `execute_script` gains an `engine` (auto/scripting/cdp) with a CSP-blocked → CDP
-  fallback; a developer-mode toggle that routes all eval through CDP; and full
+- **CDP mode** (opt-in via an in-popup toggle, default off): `execute_script` gains
+  an `engine` (auto/scripting/cdp) with a CSP-blocked → CDP fallback; a
+  developer-mode toggle that routes all eval through CDP; and full
   console/exception/browser-log capture surfaced through `get_console_logs`. Gated
-  by consent (never under read-only), signalled by a "CDP" header chip and Chrome's
-  "being debugged" banner.
+  by the `allowCdp` toggle + consent (never under read-only), signalled by a "CDP"
+  header chip and Chrome's "being debugged" banner. Note: Chrome does not allow
+  `debugger` as an optional/runtime permission, so it is declared as a required
+  permission (granted at install) — but nothing attaches until the toggle is on.
 
 - **Python host** (`hosts/python`, official `mcp` SDK) and **.NET host**
   (`hosts/dotnet`, `ModelContextProtocol` SDK, net10.0) — both pass the full

@@ -117,21 +117,20 @@ $("readOnly").addEventListener("change", async () => renderSharing(await send({ 
 $("ttl").addEventListener("change", async () => renderSharing(await send({ cmd: "sharing.setOptions", ttlMs: Number($("ttl").value) || 0 })));
 $("lockToDomain").addEventListener("change", async () => renderSharing(await send({ cmd: "sharing.setOptions", lockToDomain: $("lockToDomain").checked })));
 $("noAutoShareOpened").addEventListener("change", async () => renderSharing(await send({ cmd: "sharing.setOptions", noAutoShareOpened: $("noAutoShareOpened").checked })));
-// CDP opt-in: enabling requests the optional "debugger" permission (user gesture
-// here in the popup); if denied, revert the checkbox. Disabling also clears
-// cdpAlways/cdpConsole and tells the background to release any held sessions.
+// CDP opt-in is a pure setting toggle. The "debugger" permission cannot be an
+// optional/runtime permission (Chrome forbids it — chrome.permissions.request
+// would silently return false with no prompt), so it is declared as a required
+// permission and granted at install. Nothing attaches until allowCdp is on AND
+// consent applies (sharing + not read-only); Chrome's "being debugged" banner is
+// the real-time signal. Disabling clears cdpAlways/cdpConsole and tells the
+// background to release any held sessions.
 $("allowCdp").addEventListener("change", async () => {
   if ($("allowCdp").checked) {
-    let granted = false; try { granted = await chrome.permissions.request({ permissions: ["debugger"] }); } catch {}
-    if (!granted) { // user declined the permission prompt → stay off
-      $("allowCdp").checked = false; $("cdpAlways").disabled = true; $("cdpConsole").disabled = true; $("cdpChip").hidden = true; return;
-    }
     renderSharing(await send({ cmd: "sharing.setOptions", allowCdp: true }));
   } else {
     $("cdpAlways").checked = false;
     $("cdpConsole").checked = false;
     renderSharing(await send({ cmd: "sharing.setOptions", allowCdp: false, cdpAlways: false, cdpConsole: false }));
-    try { await chrome.permissions.remove({ permissions: ["debugger"] }); } catch {} // give the powerful permission back, not just the setting
   }
 });
 $("cdpAlways").addEventListener("change", async () => renderSharing(await send({ cmd: "sharing.setOptions", cdpAlways: $("cdpAlways").checked })));

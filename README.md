@@ -117,7 +117,7 @@ the browser). All of these are in the popup:
 - **Read-only** — the agent may look but never click, type, navigate, run scripts, or open/close tabs.
 - **Auto-expire** — un-shares everything after a chosen time (5 min … 10 h).
 - **Don't auto-share tabs the agent opens** (default on).
-- **CDP mode** (Advanced, opt-in, default off) — grants the optional `debugger` permission so `execute_script` can bypass a page's CSP, with an optional "developer mode" that routes all eval through it and full console/error capture. Chrome shows a "being debugged" banner while it's in use; still gated by consent (never in read-only).
+- **CDP mode** (Advanced, opt-in, default off) — lets `execute_script` bypass a page's CSP via the DevTools Protocol, with an optional "developer mode" that routes all eval through it and full console/error capture. Chrome forbids requesting `debugger` at runtime, so it's a **required** permission granted at install — but **nothing attaches until you flip this toggle on**, and use is still gated by consent (never in read-only). Chrome shows a "being debugged" banner whenever it's actually in use.
 - Sharing lives in session storage → it resets when the browser restarts.
 
 The full trust model and honest limitations are in [`SECURITY.md`](SECURITY.md) —
