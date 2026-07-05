@@ -96,12 +96,16 @@
     },
     {
       "name": "screenshot",
-      "description": "Capture the visible area of a tab. Only the ACTIVE tab of a window can be captured; pass a background tabId with activate=true to bring it forward first. Returned to the agent as an MCP image.",
+      "description": "Capture a tab as an image (returned to the agent as an MCP image). Three modes: (1) default — the visible viewport; (2) fullPage:true — the whole page top-to-bottom (uses CDP Page.captureScreenshot when 'Allow CDP eval' is on, else falls back to scroll-and-stitch); (3) scroll first — pass selector or scrollTo to bring a specific element/position into view, then capture the viewport. Full-page height is capped (maxHeightPx, hard cap 16384) so infinite-scroll pages can't produce a runaway image. Only the ACTIVE tab of a window can be captured; pass a background tabId with activate=true to bring it forward first.",
       "inputSchema": {
         "type": "object",
         "properties": {
           "tabId": { "type": "integer", "description": "Target tab; omit for active tab." },
           "activate": { "type": "boolean", "default": false, "description": "If the tab is not active, activate it before capturing (side effect: changes focus)." },
+          "fullPage": { "type": "boolean", "default": false, "description": "Capture the entire scrollable page, not just the viewport." },
+          "selector": { "type": "string", "description": "Scroll this element into view before a viewport capture (ignored when fullPage is true)." },
+          "scrollTo": { "type": "integer", "minimum": 0, "description": "Scroll to this vertical pixel offset before a viewport capture (ignored when fullPage is true)." },
+          "maxHeightPx": { "type": "integer", "minimum": 256, "default": 15000, "description": "Full-page height cap in CSS px (hard cap 16384, Chromium's bitmap limit). If the page is taller, the image is truncated to this height." },
           "format": { "type": "string", "enum": ["png", "jpeg"], "default": "png" },
           "quality": { "type": "integer", "minimum": 0, "maximum": 100, "description": "JPEG quality (ignored for png)." }
         },
@@ -172,6 +176,38 @@
           "tabId": { "type": "integer", "description": "Target tab; omit for active tab." },
           "clear": { "type": "boolean", "default": false, "description": "Clear the captured buffer after returning it." }
         },
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "list_network_requests",
+      "description": "List network requests captured from a shared tab (method, url, status, resource type, size, duration). Requires the user to have enabled 'Capture console, errors & network via CDP' (developer mode) — otherwise returns an empty list with source:'off' and a hint. Recorded continuously from the moment the tab was shared. Results are newest-last; pass a returned requestId to get_network_request for headers and the response body. CSP-safe (CDP).",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "tabId": { "type": "integer", "description": "Target tab; omit for active tab." },
+          "urlContains": { "type": "string", "description": "Only requests whose URL contains this substring." },
+          "method": { "type": "string", "description": "Filter by HTTP method (GET/POST/…), case-insensitive." },
+          "resourceType": { "type": "string", "description": "Filter by resource type (Document, XHR, Fetch, Script, Stylesheet, Image, Font, Media, WebSocket, …), case-insensitive." },
+          "statusMin": { "type": "integer", "description": "Only responses with HTTP status >= this (e.g. 400 to see failures)." },
+          "limit": { "type": "integer", "minimum": 1, "maximum": 500, "default": 50, "description": "Return at most this many, most-recent first-dropped (i.e. the newest `limit`)." },
+          "clear": { "type": "boolean", "default": false, "description": "Clear the captured buffer after returning it." }
+        },
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "get_network_request",
+      "description": "Return full detail for ONE captured network request by its requestId (from list_network_requests): request/response headers, status, timing, remote IP, and (optionally) the response body. Requires network capture to be enabled and the tab still attached. The body may be base64 for binary responses and is size-capped; it can be unavailable if Chrome has already evicted it from its buffer. SECURITY: headers and bodies may contain credentials (Authorization, Cookie, Set-Cookie, tokens) — treat the result as secret and never echo it to an untrusted destination.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "tabId": { "type": "integer", "description": "Target tab; omit for active tab." },
+          "requestId": { "type": "string", "description": "The requestId from list_network_requests." },
+          "includeBody": { "type": "boolean", "default": true, "description": "Also fetch the response body (may fail if the body is no longer buffered)." },
+          "maxBodyBytes": { "type": "integer", "minimum": 0, "default": 512000, "description": "Truncate the body to this many bytes. 0 = use the 2MB hard cap (the hard cap always applies)." }
+        },
+        "required": ["requestId"],
         "additionalProperties": false
       }
     }

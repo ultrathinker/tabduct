@@ -25,7 +25,10 @@ const POLL_MS = 3_000;
 const CALL_TIMEOUT_MS = INVOKE_TIMEOUT_MS + 3_000; // slightly above the instance's own invoke timeout
 // Read-only tools are safe to re-issue after a lost transport; everything else may
 // have already taken effect, so we don't retry it (avoids double open/close/navigate).
-const IDEMPOTENT_TOOLS = new Set(["list_tabs", "get_active_tab", "get_page_content", "screenshot"]);
+// NOTE: list_network_requests is intentionally NOT here — with clear:true it is
+// destructive (a retry after a lost reply would return an already-cleared buffer,
+// silently dropping the captured data). get_network_request is a pure read.
+const IDEMPOTENT_TOOLS = new Set(["list_tabs", "get_active_tab", "get_page_content", "screenshot", "get_network_request"]);
 
 const textResult = (o) => ({ content: [{ type: "text", text: JSON.stringify(o) }] });
 const errResult = (code, msg) => ({ isError: true, content: [{ type: "text", text: `${code}: ${msg}` }] });

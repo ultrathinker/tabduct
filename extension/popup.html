@@ -83,6 +83,15 @@
             <p id="denyHint" class="hint" hidden>Allow mode with an empty list blocks everything.</p>
             <ul id="denyList" class="shared"></ul>
           </section>
+
+          <section class="setcard">
+            <div class="setrow"><span class="muted">Screenshot</span><span class="help" title="Capture the current tab and open the image in a new tab, where you can save it. 'Full page' captures the whole page top-to-bottom (height-capped so infinite-scroll pages can't run away) — it uses CDP if 'Allow CDP eval' is on, otherwise scroll-and-stitch.">?</span></div>
+            <div class="actions">
+              <button id="shotVisible" class="btn small ghost">📷 Visible area</button>
+              <button id="shotFull" class="btn small ghost">📷 Full page</button>
+            </div>
+            <p id="shotHint" class="hint" hidden></p>
+          </section>
         </div>
 
         <!-- RIGHT column: sharing defaults + advanced -->
@@ -137,8 +146,8 @@
             </label>
             <label class="tg">
               <input type="checkbox" id="cdpConsole" />
-              Capture full console &amp; errors via CDP (keeps the debugging banner up)
-              <span class="help" title="Developer mode: while a tab is shared, attach CDP and record console.* calls, uncaught exceptions, and browser log entries (network/CSP/deprecation) — so get_console_logs returns the full picture, including errors from before you asked. Requires 'Allow CDP eval'. The 'being debugged' banner stays up on shared tabs while this is on.">?</span>
+              Capture full console, errors &amp; network via CDP (keeps the debugging banner up)
+              <span class="help" title="Developer mode: while a tab is shared, attach CDP and record console.* calls, uncaught exceptions, browser log entries (CSP/deprecation) AND network requests — so get_console_logs returns the full picture (including errors from before you asked) and list_network_requests / get_network_request can inspect traffic, headers and response bodies. Requires 'Allow CDP eval'. The 'being debugged' banner stays up on shared tabs while this is on.">?</span>
             </label>
           </section>
         </div>
@@ -209,7 +218,7 @@
     }
   }
 }</pre>
-        <p>Replace the port and token with the values shown in Settings once running (the shared hub uses port <code class="inline">12311</code>; a single browser uses whatever port it reports). Reload your agent and it will discover the Tabduct tools: <code class="inline">list_tabs</code>, <code class="inline">get_active_tab</code>, <code class="inline">get_page_content</code>, <code class="inline">get_dom_snapshot</code>, <code class="inline">screenshot</code>, <code class="inline">wait_for</code>, <code class="inline">click</code>, <code class="inline">type</code>, <code class="inline">navigate</code>, <code class="inline">open_tab</code>, <code class="inline">close_tab</code>, <code class="inline">activate_tab</code>, <code class="inline">get_console_logs</code> and <code class="inline">execute_script</code>.</p>
+        <p>Replace the port and token with the values shown in Settings once running (the shared hub uses port <code class="inline">12311</code>; a single browser uses whatever port it reports). Reload your agent and it will discover the Tabduct tools: <code class="inline">list_tabs</code>, <code class="inline">get_active_tab</code>, <code class="inline">get_page_content</code>, <code class="inline">get_dom_snapshot</code>, <code class="inline">screenshot</code>, <code class="inline">wait_for</code>, <code class="inline">click</code>, <code class="inline">type</code>, <code class="inline">navigate</code>, <code class="inline">open_tab</code>, <code class="inline">close_tab</code>, <code class="inline">activate_tab</code>, <code class="inline">get_console_logs</code>, <code class="inline">list_network_requests</code>, <code class="inline">get_network_request</code> and <code class="inline">execute_script</code>.</p>
 
         <h3>Running several browsers or profiles</h3>
         <p>Install Tabduct in each Chrome profile you want to use — each Google account / profile is separate, so share and start in each one. With the hub on, they all appear behind the one endpoint and the agent tells them apart by their <strong>Label</strong> (auto-named like <code class="inline">Chrome-abcd</code>). Give each a clear name in Settings — e.g. <code class="inline">Work</code> and <code class="inline">Personal</code> — so the agent (and you) never confuse them.</p>

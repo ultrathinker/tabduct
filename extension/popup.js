@@ -156,6 +156,23 @@ $("denyAdd").addEventListener("click", async () => {
   $("denyInput").value = "";
 });
 
+// ---- Screenshot (manual capture → opens a viewer tab you can save from) ----
+async function capture(fullPage) {
+  const hint = $("shotHint");
+  hint.hidden = false; hint.classList.remove("warn");
+  hint.textContent = fullPage ? "Capturing full page…" : "Capturing…";
+  $("shotVisible").disabled = true; $("shotFull").disabled = true;
+  try {
+    const res = await send({ cmd: "screenshot.capture", fullPage });
+    if (res?.ok) { hint.textContent = "Opened in a new tab."; window.close(); }
+    else { hint.classList.add("warn"); hint.textContent = `Failed: ${res?.error || "unknown error"}`; }
+  } finally {
+    $("shotVisible").disabled = false; $("shotFull").disabled = false;
+  }
+}
+$("shotVisible").addEventListener("click", () => capture(false));
+$("shotFull").addEventListener("click", () => capture(true));
+
 // Live refresh (hotkey / background changes) + initial paint.
 chrome.runtime.onMessage.addListener((m) => {
   if (m?.evt === "status") renderConn(m);

@@ -23,6 +23,8 @@ export const REQUIRED_CAP = {
   // CSP-safe interaction/wait tools (PART 1) + console capture (PART 2):
   // waits/reads are "read" (no page mutation); click/type mutate → "execute".
   wait_for: "read", get_dom_snapshot: "read", get_console_logs: "read",
+  // Network inspection (PART 7): pure reads of the CDP-captured request log.
+  list_network_requests: "read", get_network_request: "read",
   click: "execute", type: "execute",
 };
 

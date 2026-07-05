@@ -5,6 +5,8 @@
 // JSON-serializable result, or throw. To signal a specific wire error code,
 // throw via err(CODE, message).
 
+import { getState as getConsentState, originBlocked, hostOf } from "./consent.js";
+
 function err(code, message) {
   const e = new Error(message);
   e.code = code;
@@ -174,15 +176,31 @@ export const HANDLERS = {
   async screenshot(args) {
     const tabId = await resolveTabId(args);
     let tab = await chrome.tabs.get(tabId);
-    if (!tab.active) {
-      if (!args?.activate) {
-        throw err("INVALID_ARGS", `tab ${tabId} is not active; captureVisibleTab only sees the active tab — pass activate:true or activate_tab first`);
-      }
+    const authHost = args._authHost ?? null;
+    const format = args?.format === "jpeg" ? "jpeg" : "png";
+    const mimeType = format === "jpeg" ? "image/jpeg" : "image/png";
+    // CDP full-page (Page.captureScreenshot) works on the attached target regardless
+    // of which tab is active; every other path uses captureVisibleTab and so needs
+    // the target to be the window's ACTIVE tab.
+    const usesVisible = !(args.fullPage && args._allowCdp);
+    if (usesVisible && !tab.active) {
+      if (!args?.activate) throw err("INVALID_ARGS", `tab ${tabId} is not active; captureVisibleTab only sees the active tab — pass activate:true or activate_tab first`);
       await chrome.tabs.update(tabId, { active: true });
       await chrome.windows.update(tab.windowId, { focused: true });
       tab = await chrome.tabs.get(tabId);
     }
-    const format = args?.format ?? "png";
+
+    if (args.fullPage) {
+      const maxHeightPx = clampMaxHeight(args.maxHeightPx);
+      // CDP when the user enabled it (clean single-shot); else scroll-and-stitch.
+      if (args._allowCdp) return await cdpFullPageScreenshot(tabId, authHost, format, args.quality, maxHeightPx);
+      return await stitchFullPage(tab, authHost, format, args.quality, maxHeightPx);
+    }
+
+    // Viewport capture, optionally scrolled to a target/offset first.
+    if (args.selector || typeof args.scrollTo === "number") {
+      await scrollTab(tabId, authHost, args.selector || null, typeof args.scrollTo === "number" ? args.scrollTo : null);
+    }
     const opts = { format };
     if (format === "jpeg" && typeof args?.quality === "number") opts.quality = args.quality;
     // captureVisibleTab is WINDOW-scoped — it grabs whatever tab is active in the
@@ -193,7 +211,7 @@ export const HANDLERS = {
     if (await activeIs() !== tabId) throw err("INTERNAL", "target tab is not the active tab; retry");
     const dataUrl = await chrome.tabs.captureVisibleTab(tab.windowId, opts);
     if (await activeIs() !== tabId) throw err("INTERNAL", "active tab changed during capture; retry");
-    return { mimeType: format === "jpeg" ? "image/jpeg" : "image/png", dataUrl };
+    return { mimeType, dataUrl };
   },
 
   // CSP-safe interaction/wait tools (PART 1) + console capture (PART 2).
@@ -403,7 +421,244 @@ export const HANDLERS = {
     if (r && r.__originMismatch) throw err("ORIGIN_DRIFT", "tab navigated away from the authorized origin");
     return { logs: r?.logs || [], source: "inject", note: "capture starts when first requested; earlier logs may be missing" };
   },
+
+  // Network inspection (PART 7) — read the CDP-captured request log for a shared
+  // tab. Bundled under the SAME opt-in as console capture (cdpConsole): when that
+  // is on, background's reconcile enables the Network domain on each shared tab and
+  // buffers requests into cdpNet (see ensureCdpListeners + startCdpConsole). No
+  // separate consent gate: capture only runs while the tab is attached, and these
+  // tools are "read" (allowed in read-only). Origin re-checked like get_console_logs.
+  async list_network_requests(args) {
+    const tabId = await resolveTabId(args);
+    if (!cdpConsoleTabs.has(tabId)) return { requests: [], source: "off", note: "network capture is off — enable 'Capture console, errors & network via CDP' in the Tabduct popup (Advanced)" };
+    await assertNetOrigin(tabId, args._authHost ?? null);
+    const m = cdpNet.get(tabId);
+    let list = m ? [...m.values()] : [];
+    const { urlContains, method, resourceType, statusMin } = args;
+    if (urlContains) list = list.filter((r) => (r.url || "").includes(urlContains));
+    if (method) { const mm = String(method).toUpperCase(); list = list.filter((r) => (r.method || "").toUpperCase() === mm); }
+    if (resourceType) { const rt = String(resourceType).toLowerCase(); list = list.filter((r) => (r.resourceType || "").toLowerCase() === rt); }
+    if (typeof statusMin === "number") list = list.filter((r) => typeof r.status === "number" && r.status >= statusMin);
+    // Denylist over HISTORICAL buffered data (M1): the CDP buffer keeps filling across
+    // navigations, so with lockToDomain off a shared tab may have visited a denied
+    // origin — never hand that origin's traffic to the agent, even after it navigated
+    // back to an allowed one. (assertNetOrigin only guards the CURRENT url.)
+    const cstate = await getConsentState();
+    list = list.filter((r) => !originBlocked(cstate, hostOf(r.url)));
+    const total = list.length;
+    const limit = Math.min(Math.max(Number(args.limit) || 50, 1), 500);
+    const requests = list.slice(-limit).map(netSummary); // newest-last; take the newest `limit`
+    if (args.clear && m) m.clear();
+    return { requests, total, returned: requests.length, source: "cdp" };
+  },
+
+  async get_network_request(args) {
+    const tabId = await resolveTabId(args);
+    if (!args.requestId || typeof args.requestId !== "string") throw err("INVALID_ARGS", "get_network_request requires a string requestId");
+    if (!cdpConsoleTabs.has(tabId)) throw err("CDP_NOT_PERMITTED", "network capture is off — enable 'Capture console, errors & network via CDP' in the Tabduct popup (Advanced)");
+    await assertNetOrigin(tabId, args._authHost ?? null);
+    const rec = cdpNet.get(tabId)?.get(args.requestId);
+    if (!rec) throw err("SCRIPT_ERROR", `no captured request with id ${args.requestId} (it may have been evicted from the buffer)`);
+    // Denylist over historical buffered data (M1) — same reasoning as list_network_requests.
+    const cstate = await getConsentState();
+    if (originBlocked(cstate, hostOf(rec.url))) throw err("ORIGIN_DENIED", "destination not allowed by consent policy");
+    let body = null, bodyBase64 = false, bodyTruncated = false, bodyError = null;
+    if (args.includeBody !== false) {
+      try {
+        const r = await chrome.debugger.sendCommand({ tabId }, "Network.getResponseBody", { requestId: args.requestId });
+        body = r?.body ?? null; bodyBase64 = !!r?.base64Encoded;
+        const HARD = 2_000_000; // hard cap regardless of maxBodyBytes (protects the wire frame)
+        const cap = args.maxBodyBytes === 0 ? HARD : Math.min(Number(args.maxBodyBytes) || 512_000, HARD);
+        if (typeof body === "string" && body.length > cap) { body = body.slice(0, cap); bodyTruncated = true; }
+      } catch (e) { bodyError = String(e?.message ?? e); } // body no longer buffered / not applicable (e.g. redirects)
+    }
+    return { request: rec, body, bodyBase64, bodyTruncated, bodyError };
+  },
 };
+
+// Origin re-check for the network tools: the CDP buffer keeps filling across a
+// navigation, so a drifted lock-to-domain tab could otherwise leak another
+// origin's traffic. Mirrors the get_console_logs CDP-path check.
+async function assertNetOrigin(tabId, authHost) {
+  if (!authHost) return;
+  let h = null;
+  try { h = (new URL((await chrome.tabs.get(tabId)).url).hostname || "").toLowerCase().replace(/\.$/, ""); } catch {}
+  if (h !== authHost) throw err("ORIGIN_DRIFT", "tab navigated away from the authorized origin");
+}
+
+// Compact per-request summary for list_network_requests (drops headers; those live
+// in get_network_request).
+function netSummary(r) {
+  return {
+    requestId: r.requestId, method: r.method, url: r.url, resourceType: r.resourceType,
+    status: r.status ?? null, statusText: r.statusText ?? null, mimeType: r.mimeType ?? null,
+    fromCache: !!r.fromCache, sizeBytes: r.encodedDataLength ?? null,
+    durationMs: r.startedMs != null && r.endedMs != null ? r.endedMs - r.startedMs : null,
+    failed: !!r.failed, errorText: r.errorText ?? null, pending: !r.finished,
+    redirects: r.redirects?.length || 0,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Screenshot helpers (PART 8) — full-page (CDP + scroll-stitch fallback) and
+// scroll-to-target. Full-page height is HARD-capped (clampMaxHeight) so an
+// infinite-scroll page can never drive a runaway capture; the stitch loop also
+// stops on no-scroll-progress, a segment cap, and a wall-clock deadline.
+
+const SHOT_HARD_MAX_PX = 16384; // Chromium's practical bitmap/skia dimension limit
+
+function clampMaxHeight(v) {
+  const n = Number(v);
+  const d = Number.isFinite(n) && n > 0 ? n : 15000;
+  return Math.max(256, Math.min(d, SHOT_HARD_MAX_PX));
+}
+
+// Base64 data URL from a Blob WITHOUT FileReader (unavailable in service workers).
+async function blobToDataUrl(blob, mimeType) {
+  const bytes = new Uint8Array(await blob.arrayBuffer());
+  let bin = "";
+  const CH = 0x8000; // chunk to avoid String.fromCharCode arg-count limits
+  for (let i = 0; i < bytes.length; i += CH) bin += String.fromCharCode.apply(null, bytes.subarray(i, i + CH));
+  return `data:${mimeType};base64,${btoa(bin)}`;
+}
+
+// Measure the page (self-navigation re-checked in-page like every injected tool).
+async function measurePage(tabId, authHost) {
+  const r = (await chrome.scripting.executeScript({
+    target: { tabId }, args: [authHost],
+    func: (authHost) => {
+      if (authHost) { const h = (location.hostname || "").toLowerCase().replace(/\.$/, ""); if (h !== authHost) return { __originMismatch: true }; }
+      const de = document.documentElement, b = document.body;
+      const scrollHeight = Math.max(de.scrollHeight, b ? b.scrollHeight : 0, de.clientHeight || 0);
+      return { scrollHeight, clientHeight: window.innerHeight || de.clientHeight || 0, dpr: window.devicePixelRatio || 1, originalScrollY: window.scrollY };
+    },
+  }))?.[0]?.result;
+  if (r?.__originMismatch) throw err("ORIGIN_DRIFT", "tab navigated away from the authorized origin");
+  if (!r) throw err("SCRIPT_ERROR", "could not measure page");
+  return r;
+}
+
+async function scrollToY(tabId, authHost, y) {
+  const r = (await chrome.scripting.executeScript({
+    target: { tabId }, args: [y, authHost],
+    func: (y, authHost) => {
+      if (authHost) { const h = (location.hostname || "").toLowerCase().replace(/\.$/, ""); if (h !== authHost) return { __originMismatch: true }; }
+      window.scrollTo(0, y);
+      return { scrollY: window.scrollY };
+    },
+  }))?.[0]?.result;
+  if (r?.__originMismatch) throw err("ORIGIN_DRIFT", "tab navigated away from the authorized origin");
+  return r?.scrollY ?? 0;
+}
+
+// Scroll a selector/offset into view before a viewport capture.
+async function scrollTab(tabId, authHost, selector, y) {
+  const r = (await chrome.scripting.executeScript({
+    target: { tabId }, args: [selector, y, authHost],
+    func: (sel, y, authHost) => {
+      if (authHost) { const h = (location.hostname || "").toLowerCase().replace(/\.$/, ""); if (h !== authHost) return { __originMismatch: true }; }
+      if (sel) { const el = document.querySelector(sel); if (!el) return { __notfound: true }; el.scrollIntoView({ block: "center", inline: "center" }); }
+      else if (y != null) window.scrollTo(0, y);
+      return { ok: true };
+    },
+  }))?.[0]?.result;
+  if (r?.__originMismatch) throw err("ORIGIN_DRIFT", "tab navigated away from the authorized origin");
+  if (r?.__notfound) throw err("SCRIPT_ERROR", `no element matches ${selector}`);
+  await new Promise((res) => setTimeout(res, 150)); // let it paint/settle
+}
+
+// CDP single-shot full-page capture. Attaches the debugger (idempotent, tolerant
+// of an already-held console/eval session) and reuses cdpInFlight/cdpHeld so it
+// never detaches a session another CDP user still needs.
+async function cdpFullPageScreenshot(tabId, authHost, format, quality, maxHeightPx) {
+  if (!chrome.debugger) throw err("CDP_NOT_PERMITTED", "debugger API unavailable");
+  if (!(await chrome.permissions.contains({ permissions: ["debugger"] }))) throw err("CDP_NOT_PERMITTED", "debugger permission not granted");
+  await assertNetOrigin(tabId, authHost); // reuse the tab-URL origin check
+  // Increment BEFORE attach (L2): between attach and the increment cdpHeld() is
+  // false, so a concurrent stopCdpConsole/detach could otherwise pull the session.
+  cdpInFlight.set(tabId, (cdpInFlight.get(tabId) || 0) + 1);
+  try {
+    try { await chrome.debugger.attach({ tabId }, "1.3"); }
+    catch (e) { if (!/already|another debugger/i.test(e?.message || "")) throw err("SCRIPT_ERROR", `debugger attach failed: ${e?.message ?? e}`); }
+    try { await chrome.debugger.sendCommand({ tabId }, "Page.enable"); } catch {}
+    const metrics = await chrome.debugger.sendCommand({ tabId }, "Page.getLayoutMetrics");
+    const size = metrics?.cssContentSize; // CSS px (matches clip scale:1); Chrome >=116 always provides it (L3/L4)
+    if (!size) throw err("INTERNAL", "Page.getLayoutMetrics returned no cssContentSize");
+    const width = Math.max(1, Math.ceil(size.width || 0));
+    const fullHeight = Math.max(1, Math.ceil(size.height || 0));
+    const capped = Math.min(fullHeight, maxHeightPx);
+    const fmt = format === "jpeg" ? "jpeg" : "png";
+    const params = { format: fmt, captureBeyondViewport: true, fromSurface: true, clip: { x: 0, y: 0, width, height: capped, scale: 1 } };
+    if (fmt === "jpeg" && typeof quality === "number") params.quality = quality;
+    const shot = await chrome.debugger.sendCommand({ tabId }, "Page.captureScreenshot", params);
+    if (!shot?.data) throw err("INTERNAL", "CDP captureScreenshot returned no data");
+    const mimeType = fmt === "jpeg" ? "image/jpeg" : "image/png";
+    return { mimeType, dataUrl: `data:${mimeType};base64,${shot.data}`, fullPage: true, via: "cdp", capturedHeightPx: capped, fullHeightPx: fullHeight, truncated: fullHeight > capped };
+  } finally {
+    const n = (cdpInFlight.get(tabId) || 1) - 1;
+    if (n <= 0) cdpInFlight.delete(tabId); else cdpInFlight.set(tabId, n);
+    if (!cdpHeld(tabId)) { try { await chrome.debugger.detach({ tabId }); } catch {} }
+  }
+}
+
+// Scroll-and-stitch full-page fallback (no CDP). Bounded on every axis: fixed
+// target height (never grows with the page → infinite scroll is safe), a segment
+// cap, a no-progress break, a device-pixel canvas cap, and a wall-clock deadline.
+async function stitchFullPage(tab, authHost, format, quality, maxHeightPx) {
+  const tabId = tab.id;
+  const { scrollHeight, clientHeight, dpr, originalScrollY } = await measurePage(tabId, authHost);
+  const fmt = format === "jpeg" ? "jpeg" : "png";
+  const mimeType = fmt === "jpeg" ? "image/jpeg" : "image/png";
+  const vh = Math.max(1, clientHeight);
+  // The stitched canvas is in DEVICE pixels (captureVisibleTab returns device px),
+  // so the CSS-px target MUST be capped by SHOT_HARD_MAX_PX / dpr. Otherwise on a
+  // HiDPI display (DPR 2 → 4K/retina/Windows scaling) segments below the device cap
+  // would be drawn off-canvas and silently clipped (bug H1). Cap is FIXED before the
+  // loop, so a growing/infinite page can never extend it.
+  const devHint = Math.max(1, dpr || 1);
+  const cssCap = Math.min(maxHeightPx, Math.floor(SHOT_HARD_MAX_PX / devHint));
+  const targetCss = Math.min(scrollHeight, cssCap);
+  let truncated = scrollHeight > targetCss; // page taller than what we can capture
+  const MAX_SEGMENTS = 40;
+  const deadline = Date.now() + 20000;
+  const capOpts = { format: fmt };
+  if (fmt === "jpeg" && typeof quality === "number") capOpts.quality = quality;
+
+  let canvas = null, ctx = null, devPerCss = devHint, hDev = 0;
+  let lastY = -1, segments = 0, capturedCss = 0;
+  try {
+    for (let y = 0; y < targetCss; y += vh) {
+      if (Date.now() > deadline || segments >= MAX_SEGMENTS) { truncated = true; break; }
+      const actualY = await scrollToY(tabId, authHost, y);
+      if (segments > 0 && actualY <= lastY) break; // no progress → bottom reached / scroll pinned
+      lastY = actualY;
+      await new Promise((r) => setTimeout(r, 120)); // let fixed/lazy content settle
+      const activeId = (await chrome.tabs.query({ active: true, windowId: tab.windowId }))[0]?.id;
+      if (activeId !== tabId) throw err("INTERNAL", "target tab is not active during full-page capture; retry");
+      const dataUrl = await chrome.tabs.captureVisibleTab(tab.windowId, capOpts);
+      const bmp = await createImageBitmap(await (await fetch(dataUrl)).blob());
+      if (!canvas) {
+        devPerCss = bmp.height / vh || devHint; // MEASURED device px per CSS px (accounts for browser zoom)
+        hDev = Math.min(Math.round(targetCss * devPerCss), SHOT_HARD_MAX_PX);
+        canvas = new OffscreenCanvas(bmp.width, hDev);
+        ctx = canvas.getContext("2d");
+      }
+      const offDev = Math.round(actualY * devPerCss);
+      if (offDev >= hDev) { truncated = true; bmp.close?.(); break; } // would fall off the capped canvas → stop, and don't lie about it
+      ctx.drawImage(bmp, 0, offDev); // draw at the ACTUAL offset (handles the clamped last segment's overlap)
+      bmp.close?.();
+      segments++;
+      capturedCss = Math.min(targetCss, actualY + vh, Math.floor(hDev / devPerCss)); // real pixels-in-canvas, not just logical progress (bug H2)
+      if (actualY + vh >= scrollHeight) break; // reached the original bottom
+    }
+  } finally {
+    await scrollToY(tabId, authHost, originalScrollY).catch(() => {}); // restore the user's scroll position
+  }
+  if (!canvas) throw err("INTERNAL", "full-page capture produced no frames");
+  const blob = await canvas.convertToBlob({ type: mimeType, quality: fmt === "jpeg" && typeof quality === "number" ? quality / 100 : undefined });
+  const dataUrl = await blobToDataUrl(blob, mimeType);
+  return { mimeType, dataUrl, fullPage: true, via: "stitch", capturedHeightPx: Math.round(capturedCss), fullHeightPx: scrollHeight, truncated: truncated || capturedCss < scrollHeight };
+}
 
 // ---------------------------------------------------------------------------
 // CDP eval (PART 4) — runs truly arbitrary JS where chrome.scripting MAIN-world
@@ -427,6 +682,12 @@ const cdpInFlight = new Map(); // tabId -> in-flight cdpEval count (folds into c
 // the shared set against the captured set (it never mutates it directly).
 export const cdpConsoleTabs = new Set(); // tabIds we hold attached for console capture
 const cdpLogs = new Map(); // tabId -> ring buffer array (cap 500 entries)
+// Network capture (PART 7): per-tab Map(requestId -> record), insertion-ordered so
+// listing newest-last is just iteration order. Filled by the Network.* branch of
+// ensureCdpListeners while the tab is captured (same lifecycle as cdpLogs). Capped
+// at NET_CAP requests per tab (oldest evicted).
+const cdpNet = new Map(); // tabId -> Map(requestId -> record)
+const NET_CAP = 300;
 
 export async function cdpEval(tabId, code, callArgs, authHost, { hold } = {}) {
   if (!chrome.debugger) throw err("CDP_NOT_PERMITTED", "debugger API unavailable");
@@ -481,6 +742,7 @@ export async function detachCdpTab(tabId) {
   cdpAttached.delete(tabId);
   cdpConsoleTabs.delete(tabId);
   cdpLogs.delete(tabId);
+  cdpNet.delete(tabId);
   if (!cdpHeld(tabId)) { try { await chrome.debugger.detach({ tabId }); } catch {} }
 }
 // Release cdpAlways force-holds that are no longer wanted: a held tab is kept
@@ -501,6 +763,7 @@ export async function detachAllCdp() {
   cdpAttached.clear();
   cdpConsoleTabs.clear();
   cdpLogs.clear();
+  cdpNet.clear();
 }
 
 // ---------------------------------------------------------------------------
@@ -530,6 +793,43 @@ function ensureCdpListeners() {
   chrome.debugger.onEvent.addListener((source, method, params) => {
     const tabId = source?.tabId;
     if (tabId == null) return;
+    // Network capture (PART 7): correlate the request lifecycle by requestId into
+    // cdpNet. Only tabs we're capturing for have a buffer; others (cdpEval-only
+    // attaches) don't enable the Network domain, so no events arrive for them.
+    if (method.startsWith("Network.")) {
+      const m = cdpNet.get(tabId);
+      if (!m) return;
+      if (method === "Network.requestWillBeSent") {
+        const req = params.request || {};
+        // CDP re-fires requestWillBeSent with the SAME requestId on HTTP redirects
+        // (carrying params.redirectResponse). Preserve the original start time and
+        // record the redirect chain instead of clobbering the whole record (L1).
+        const prev = m.get(params.requestId);
+        const redirects = prev?.redirects ? prev.redirects.slice() : [];
+        if (params.redirectResponse) redirects.push({ url: prev?.url ?? params.redirectResponse.url, status: params.redirectResponse.status });
+        m.set(params.requestId, {
+          requestId: params.requestId, url: req.url, method: req.method,
+          resourceType: params.type || prev?.resourceType || "Other", requestHeaders: req.headers || {},
+          startedMs: prev?.startedMs ?? Date.now(), finished: false,
+          redirects: redirects.length ? redirects : undefined,
+        });
+        if (m.size > NET_CAP) { const oldest = m.keys().next().value; m.delete(oldest); } // evict oldest
+      } else if (method === "Network.responseReceived") {
+        const rec = m.get(params.requestId); if (!rec) return;
+        const resp = params.response || {};
+        rec.status = resp.status; rec.statusText = resp.statusText; rec.mimeType = resp.mimeType;
+        rec.responseHeaders = resp.headers || {}; rec.remoteIP = resp.remoteIPAddress || null;
+        rec.fromCache = !!resp.fromDiskCache; rec.resourceType = params.type || rec.resourceType;
+      } else if (method === "Network.loadingFinished") {
+        const rec = m.get(params.requestId); if (!rec) return;
+        rec.finished = true; rec.endedMs = Date.now(); rec.encodedDataLength = params.encodedDataLength;
+      } else if (method === "Network.loadingFailed") {
+        const rec = m.get(params.requestId); if (!rec) return;
+        rec.finished = true; rec.failed = true; rec.errorText = params.errorText;
+        rec.canceled = !!params.canceled; rec.endedMs = Date.now(); rec.resourceType = params.type || rec.resourceType;
+      }
+      return;
+    }
     let entry;
     if (method === "Runtime.consoleAPICalled") {
       const t = params.type; // log|warning|error|info|debug|…
@@ -566,6 +866,10 @@ export async function startCdpConsole(tabId) {
     catch (e) { if (!/already|another debugger/i.test(e?.message || "")) return; }
     await chrome.debugger.sendCommand({ tabId }, "Runtime.enable");
     await chrome.debugger.sendCommand({ tabId }, "Log.enable");
+    // Network capture (PART 7) is bundled under the same opt-in. Buffer sizes keep
+    // recent response bodies retrievable via Network.getResponseBody without
+    // unbounded memory. Enable is best-effort — console still works if it fails.
+    try { await chrome.debugger.sendCommand({ tabId }, "Network.enable", { maxTotalBufferSize: 10_000_000, maxResourceBufferSize: 5_000_000 }); if (!cdpNet.has(tabId)) cdpNet.set(tabId, new Map()); } catch {}
     cdpConsoleTabs.add(tabId);
     if (!cdpLogs.has(tabId)) cdpLogs.set(tabId, []);
   } catch {}
@@ -577,8 +881,10 @@ export async function stopCdpConsole(tabId) {
   cdpConsoleTabs.delete(tabId);
   try { await chrome.debugger.sendCommand({ tabId }, "Log.disable"); } catch {}
   try { await chrome.debugger.sendCommand({ tabId }, "Runtime.disable"); } catch {}
+  try { await chrome.debugger.sendCommand({ tabId }, "Network.disable"); } catch {}
   if (!cdpHeld(tabId)) { try { await chrome.debugger.detach({ tabId }); } catch {} }
   cdpLogs.delete(tabId);
+  cdpNet.delete(tabId);
 }
 
 // Stop capture on every tab (cdpConsole disabled / connection dropped).
