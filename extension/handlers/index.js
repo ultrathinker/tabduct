@@ -154,8 +154,8 @@ export const HANDLERS = {
       // for real DOM/table scrapes.
       const CAP = 8_000_000;
       let s; try { s = JSON.stringify(wrapped.value); } catch { s = undefined; }
-      if (s !== undefined && s.length > CAP) return { result: s.slice(0, CAP), truncated: true, note: "result truncated to 8MB" };
-      return { result: wrapped.value };
+      if (s !== undefined && s.length > CAP) return { result: s.slice(0, CAP), truncated: true, note: "result truncated to 8MB", via: "scripting" };
+      return { result: wrapped.value, via: "scripting" };
     };
 
     try {
@@ -459,8 +459,8 @@ export async function cdpEval(tabId, code, callArgs, authHost, { hold } = {}) {
     // Same 8MB cap as the scripting path so a huge return can't drop the reply.
     const CAP = 8_000_000;
     let s; try { s = JSON.stringify(value); } catch { s = undefined; }
-    if (s !== undefined && s.length > CAP) return { result: s.slice(0, CAP), truncated: true, note: "result truncated to 8MB" };
-    return { result: value };
+    if (s !== undefined && s.length > CAP) return { result: s.slice(0, CAP), truncated: true, note: "result truncated to 8MB", via: "cdp" };
+    return { result: value, via: "cdp" };
   } finally {
     const n = (cdpInFlight.get(tabId) || 1) - 1;
     if (n <= 0) cdpInFlight.delete(tabId); else cdpInFlight.set(tabId, n);
