@@ -3,6 +3,9 @@
 const $ = (id) => document.getElementById(id);
 const send = (msg) => chrome.runtime.sendMessage(msg);
 
+// Show the extension version at the bottom of Settings (also confirms which build loaded).
+try { $("ver").textContent = `Tabduct v${chrome.runtime.getManifest().version}`; } catch {}
+
 // ---- Connection ----
 const LABELS = { disconnected: "Stopped", connecting: "Starting…", connected: "Running", error: "Error" };
 
@@ -157,21 +160,23 @@ $("denyAdd").addEventListener("click", async () => {
 });
 
 // ---- Screenshot (manual capture → opens a viewer tab you can save from) ----
-async function capture(fullPage) {
+async function capture() {
   const hint = $("shotHint");
   hint.hidden = false; hint.classList.remove("warn");
-  hint.textContent = fullPage ? "Capturing full page…" : "Capturing…";
-  $("shotVisible").disabled = true; $("shotFull").disabled = true;
+  hint.textContent = "Capturing…";
+  $("shotVisible").disabled = true;
   try {
-    const res = await send({ cmd: "screenshot.capture", fullPage });
+    const res = await send({ cmd: "screenshot.capture" });
     if (res?.ok) { hint.textContent = "Opened in a new tab."; window.close(); }
     else { hint.classList.add("warn"); hint.textContent = `Failed: ${res?.error || "unknown error"}`; }
+  } catch (e) {
+    // A rejected/never-answered message must not leave the hint stuck on "Capturing…".
+    hint.classList.add("warn"); hint.textContent = `Failed: ${e?.message || e}`;
   } finally {
-    $("shotVisible").disabled = false; $("shotFull").disabled = false;
+    $("shotVisible").disabled = false;
   }
 }
-$("shotVisible").addEventListener("click", () => capture(false));
-$("shotFull").addEventListener("click", () => capture(true));
+$("shotVisible").addEventListener("click", () => capture());
 
 // Live refresh (hotkey / background changes) + initial paint.
 chrome.runtime.onMessage.addListener((m) => {

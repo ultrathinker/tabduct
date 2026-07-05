@@ -96,16 +96,14 @@
     },
     {
       "name": "screenshot",
-      "description": "Capture a tab as an image (returned to the agent as an MCP image). Three modes: (1) default — the visible viewport; (2) fullPage:true — the whole page top-to-bottom (uses CDP Page.captureScreenshot when 'Allow CDP eval' is on, else falls back to scroll-and-stitch); (3) scroll first — pass selector or scrollTo to bring a specific element/position into view, then capture the viewport. Full-page height is capped (maxHeightPx, hard cap 16384) so infinite-scroll pages can't produce a runaway image. Only the ACTIVE tab of a window can be captured; pass a background tabId with activate=true to bring it forward first.",
+      "description": "Capture the VISIBLE area of a tab as an image (returned to the agent as an MCP image). To capture a specific part of a long page, first scroll it into view: pass `selector` (scroll an element into view) or `scrollTo` (scroll to a Y offset), then it captures the resulting viewport. (Whole-page/full-length capture is intentionally not supported — it is unreliable on modern virtualized/infinite pages; scroll-and-shoot instead.) Only the ACTIVE tab of a window can be captured; pass a background tabId with activate=true to bring it forward first.",
       "inputSchema": {
         "type": "object",
         "properties": {
           "tabId": { "type": "integer", "description": "Target tab; omit for active tab." },
           "activate": { "type": "boolean", "default": false, "description": "If the tab is not active, activate it before capturing (side effect: changes focus)." },
-          "fullPage": { "type": "boolean", "default": false, "description": "Capture the entire scrollable page, not just the viewport." },
-          "selector": { "type": "string", "description": "Scroll this element into view before a viewport capture (ignored when fullPage is true)." },
-          "scrollTo": { "type": "integer", "minimum": 0, "description": "Scroll to this vertical pixel offset before a viewport capture (ignored when fullPage is true)." },
-          "maxHeightPx": { "type": "integer", "minimum": 256, "default": 15000, "description": "Full-page height cap in CSS px (hard cap 16384, Chromium's bitmap limit). If the page is taller, the image is truncated to this height." },
+          "selector": { "type": "string", "description": "Scroll this element into view before capturing the viewport." },
+          "scrollTo": { "type": "integer", "minimum": 0, "description": "Scroll to this vertical pixel offset before capturing the viewport." },
           "format": { "type": "string", "enum": ["png", "jpeg"], "default": "png" },
           "quality": { "type": "integer", "minimum": 0, "maximum": 100, "description": "JPEG quality (ignored for png)." }
         },

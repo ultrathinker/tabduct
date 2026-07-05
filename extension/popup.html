@@ -43,9 +43,10 @@
 
       <button id="howBtn" class="btn howto-btn">How it works<span class="qmark">?</span></button>
 
+      <!-- CSS multi-column (see .settings-grid): cards auto-balance across 2 columns by
+           height, so adding/removing a card never overflows the popup and re-introduces a
+           scrollbar. Just add <section class="setcard"> here — no manual column assignment. -->
       <div class="settings-grid">
-        <!-- LEFT column: connection + label -->
-        <div class="settings-col">
           <section class="setcard">
             <div class="setrow"><span class="muted">Connection</span></div>
             <label class="field"><span>Port <small class="muted">(0=auto)</small></span><input id="port" type="number" min="0" max="65535" value="0" /></label>
@@ -85,17 +86,13 @@
           </section>
 
           <section class="setcard">
-            <div class="setrow"><span class="muted">Screenshot</span><span class="help" title="Capture the current tab and open the image in a new tab, where you can save it. 'Full page' captures the whole page top-to-bottom (height-capped so infinite-scroll pages can't run away) — it uses CDP if 'Allow CDP eval' is on, otherwise scroll-and-stitch.">?</span></div>
+            <div class="setrow"><span class="muted">Screenshot</span><span class="help" title="Capture the current tab's visible area and open the image in a new tab, where you can save it (right-click → Save image, or the Download link).">?</span></div>
             <div class="actions">
-              <button id="shotVisible" class="btn small ghost">📷 Visible area</button>
-              <button id="shotFull" class="btn small ghost">📷 Full page</button>
+              <button id="shotVisible" class="btn small ghost">📷 Screenshot</button>
             </div>
             <p id="shotHint" class="hint" hidden></p>
           </section>
-        </div>
 
-        <!-- RIGHT column: sharing defaults + advanced -->
-        <div class="settings-col">
           <section class="setcard">
             <div class="setrow"><span class="muted">Sharing defaults</span><span class="help" title="Apply to EVERY shared tab (global, not per-tab). Read-only lets the agent read the page and take screenshots but not click, type, navigate, run scripts or open/close tabs. Auto-expire un-shares all tabs after the chosen time. Lock-to-domain keeps a shared tab pinned to its origin (off lets the agent navigate it freely). Don't auto-share leaves tabs the agent opens un-shared until you share them. Tab group gathers shared tabs into a ⚡ group in the strip. Read-only + auto-expire default off; the others default on.">?</span></div>
             <label class="tg" style="margin-top: 0">
@@ -150,8 +147,8 @@
               <span class="help" title="Developer mode: while a tab is shared, attach CDP and record console.* calls, uncaught exceptions, browser log entries (CSP/deprecation) AND network requests — so get_console_logs returns the full picture (including errors from before you asked) and list_network_requests / get_network_request can inspect traffic, headers and response bodies. Requires 'Allow CDP eval'. The 'being debugged' banner stays up on shared tabs while this is on.">?</span>
             </label>
           </section>
-        </div>
       </div>
+      <div id="ver" class="ver"></div>
     </div>
 
     <!-- How-it-works layer -->

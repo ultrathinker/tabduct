@@ -5,22 +5,31 @@
     <title>Tabduct — Screenshot</title>
     <style>
       :root { color-scheme: light dark; }
-      body { margin: 0; font: 13px system-ui, sans-serif; background: #1e1e1e; color: #eee; }
-      .bar { position: sticky; top: 0; display: flex; gap: 12px; align-items: center; padding: 10px 14px; background: #111; border-bottom: 1px solid #333; }
-      .bar .meta { color: #aaa; font-size: 12px; }
-      .bar .meta.warn { color: #f5a623; }
-      .bar a.btn { margin-left: auto; background: #2ecc71; color: #063; text-decoration: none; padding: 6px 14px; border-radius: 6px; font-weight: 600; }
-      .wrap { padding: 16px; text-align: center; }
-      img { max-width: 100%; height: auto; box-shadow: 0 2px 12px rgba(0, 0, 0, .5); background: #fff; }
+      html, body { margin: 0; }
+      /* Top-aligned, horizontally centered, scrolls when the image is bigger than the
+         window. Download link stacked above. */
+      body { min-height: 100vh; background: #17171b; display: flex; flex-direction: column; align-items: center; gap: 12px; padding: 20px; box-sizing: border-box; }
+      .dl { color: #ff8a8a; font: 12px system-ui, sans-serif; text-decoration: none; padding: 5px 14px; border: 1px solid rgba(255, 45, 45, .55); border-radius: 999px; position: sticky; top: 0; }
+      .dl:hover { background: rgba(255, 45, 45, .18); color: #fff; }
+      /* Size is set in PIXELS by viewer.js (fit-to-width on load) so Ctrl+wheel browser
+         zoom actually enlarges it (vw/vh would re-clamp and never grow). Click toggles
+         fit ↔ actual size. Thick glowing RED frame marks it as a screenshot, not the page. */
+      #img {
+        display: block; border: 6px solid #ff2d2d; border-radius: 4px;
+        box-shadow: 0 0 0 2px rgba(255, 45, 45, .35), 0 0 28px 8px rgba(255, 45, 45, .7);
+        cursor: zoom-in;
+      }
+      #img.actual { cursor: zoom-out; }
+      .msg { color: #ccc; font: 13px system-ui, sans-serif; padding: 24px; }
     </style>
   </head>
   <body>
-    <div class="bar">
-      <strong>Tabduct screenshot</strong>
-      <span id="meta" class="meta"></span>
-      <a id="dl" class="btn" download hidden>Download</a>
-    </div>
-    <div class="wrap"><img id="img" alt="screenshot" hidden /></div>
+    <!-- Download link above; you can also right-click the image for Chrome's native
+         "Save image as…" / "Copy image". Click the image to toggle fit ↔ actual size;
+         Ctrl+mouse-wheel zooms. -->
+    <a id="dl" class="dl" download hidden>⬇ Download</a>
+    <img id="img" alt="screenshot" hidden />
+    <div id="msg" class="msg" hidden></div>
     <script src="viewer.js"></script>
   </body>
 </html>

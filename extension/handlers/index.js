@@ -5,7 +5,7 @@
 // JSON-serializable result, or throw. To signal a specific wire error code,
 // throw via err(CODE, message).
 
-import { getState as getConsentState, originBlocked, hostOf } from "./consent.js";
+import { getState as getConsentState, originBlocked, hostOf } from "../consent.js";
 
 function err(code, message) {
   const e = new Error(message);
@@ -179,25 +179,15 @@ export const HANDLERS = {
     const authHost = args._authHost ?? null;
     const format = args?.format === "jpeg" ? "jpeg" : "png";
     const mimeType = format === "jpeg" ? "image/jpeg" : "image/png";
-    // CDP full-page (Page.captureScreenshot) works on the attached target regardless
-    // of which tab is active; every other path uses captureVisibleTab and so needs
-    // the target to be the window's ACTIVE tab.
-    const usesVisible = !(args.fullPage && args._allowCdp);
-    if (usesVisible && !tab.active) {
+    // captureVisibleTab only sees the window's ACTIVE tab.
+    if (!tab.active) {
       if (!args?.activate) throw err("INVALID_ARGS", `tab ${tabId} is not active; captureVisibleTab only sees the active tab — pass activate:true or activate_tab first`);
       await chrome.tabs.update(tabId, { active: true });
       await chrome.windows.update(tab.windowId, { focused: true });
       tab = await chrome.tabs.get(tabId);
     }
 
-    if (args.fullPage) {
-      const maxHeightPx = clampMaxHeight(args.maxHeightPx);
-      // CDP when the user enabled it (clean single-shot); else scroll-and-stitch.
-      if (args._allowCdp) return await cdpFullPageScreenshot(tabId, authHost, format, args.quality, maxHeightPx);
-      return await stitchFullPage(tab, authHost, format, args.quality, maxHeightPx);
-    }
-
-    // Viewport capture, optionally scrolled to a target/offset first.
+    // Optionally scroll a selector/offset into view first, then capture the viewport.
     if (args.selector || typeof args.scrollTo === "number") {
       await scrollTab(tabId, authHost, args.selector || null, typeof args.scrollTo === "number" ? args.scrollTo : null);
     }
@@ -499,58 +489,6 @@ function netSummary(r) {
   };
 }
 
-// ---------------------------------------------------------------------------
-// Screenshot helpers (PART 8) — full-page (CDP + scroll-stitch fallback) and
-// scroll-to-target. Full-page height is HARD-capped (clampMaxHeight) so an
-// infinite-scroll page can never drive a runaway capture; the stitch loop also
-// stops on no-scroll-progress, a segment cap, and a wall-clock deadline.
-
-const SHOT_HARD_MAX_PX = 16384; // Chromium's practical bitmap/skia dimension limit
-
-function clampMaxHeight(v) {
-  const n = Number(v);
-  const d = Number.isFinite(n) && n > 0 ? n : 15000;
-  return Math.max(256, Math.min(d, SHOT_HARD_MAX_PX));
-}
-
-// Base64 data URL from a Blob WITHOUT FileReader (unavailable in service workers).
-async function blobToDataUrl(blob, mimeType) {
-  const bytes = new Uint8Array(await blob.arrayBuffer());
-  let bin = "";
-  const CH = 0x8000; // chunk to avoid String.fromCharCode arg-count limits
-  for (let i = 0; i < bytes.length; i += CH) bin += String.fromCharCode.apply(null, bytes.subarray(i, i + CH));
-  return `data:${mimeType};base64,${btoa(bin)}`;
-}
-
-// Measure the page (self-navigation re-checked in-page like every injected tool).
-async function measurePage(tabId, authHost) {
-  const r = (await chrome.scripting.executeScript({
-    target: { tabId }, args: [authHost],
-    func: (authHost) => {
-      if (authHost) { const h = (location.hostname || "").toLowerCase().replace(/\.$/, ""); if (h !== authHost) return { __originMismatch: true }; }
-      const de = document.documentElement, b = document.body;
-      const scrollHeight = Math.max(de.scrollHeight, b ? b.scrollHeight : 0, de.clientHeight || 0);
-      return { scrollHeight, clientHeight: window.innerHeight || de.clientHeight || 0, dpr: window.devicePixelRatio || 1, originalScrollY: window.scrollY };
-    },
-  }))?.[0]?.result;
-  if (r?.__originMismatch) throw err("ORIGIN_DRIFT", "tab navigated away from the authorized origin");
-  if (!r) throw err("SCRIPT_ERROR", "could not measure page");
-  return r;
-}
-
-async function scrollToY(tabId, authHost, y) {
-  const r = (await chrome.scripting.executeScript({
-    target: { tabId }, args: [y, authHost],
-    func: (y, authHost) => {
-      if (authHost) { const h = (location.hostname || "").toLowerCase().replace(/\.$/, ""); if (h !== authHost) return { __originMismatch: true }; }
-      window.scrollTo(0, y);
-      return { scrollY: window.scrollY };
-    },
-  }))?.[0]?.result;
-  if (r?.__originMismatch) throw err("ORIGIN_DRIFT", "tab navigated away from the authorized origin");
-  return r?.scrollY ?? 0;
-}
-
 // Scroll a selector/offset into view before a viewport capture.
 async function scrollTab(tabId, authHost, selector, y) {
   const r = (await chrome.scripting.executeScript({
@@ -565,99 +503,6 @@ async function scrollTab(tabId, authHost, selector, y) {
   if (r?.__originMismatch) throw err("ORIGIN_DRIFT", "tab navigated away from the authorized origin");
   if (r?.__notfound) throw err("SCRIPT_ERROR", `no element matches ${selector}`);
   await new Promise((res) => setTimeout(res, 150)); // let it paint/settle
-}
-
-// CDP single-shot full-page capture. Attaches the debugger (idempotent, tolerant
-// of an already-held console/eval session) and reuses cdpInFlight/cdpHeld so it
-// never detaches a session another CDP user still needs.
-async function cdpFullPageScreenshot(tabId, authHost, format, quality, maxHeightPx) {
-  if (!chrome.debugger) throw err("CDP_NOT_PERMITTED", "debugger API unavailable");
-  if (!(await chrome.permissions.contains({ permissions: ["debugger"] }))) throw err("CDP_NOT_PERMITTED", "debugger permission not granted");
-  await assertNetOrigin(tabId, authHost); // reuse the tab-URL origin check
-  // Increment BEFORE attach (L2): between attach and the increment cdpHeld() is
-  // false, so a concurrent stopCdpConsole/detach could otherwise pull the session.
-  cdpInFlight.set(tabId, (cdpInFlight.get(tabId) || 0) + 1);
-  try {
-    try { await chrome.debugger.attach({ tabId }, "1.3"); }
-    catch (e) { if (!/already|another debugger/i.test(e?.message || "")) throw err("SCRIPT_ERROR", `debugger attach failed: ${e?.message ?? e}`); }
-    try { await chrome.debugger.sendCommand({ tabId }, "Page.enable"); } catch {}
-    const metrics = await chrome.debugger.sendCommand({ tabId }, "Page.getLayoutMetrics");
-    const size = metrics?.cssContentSize; // CSS px (matches clip scale:1); Chrome >=116 always provides it (L3/L4)
-    if (!size) throw err("INTERNAL", "Page.getLayoutMetrics returned no cssContentSize");
-    const width = Math.max(1, Math.ceil(size.width || 0));
-    const fullHeight = Math.max(1, Math.ceil(size.height || 0));
-    const capped = Math.min(fullHeight, maxHeightPx);
-    const fmt = format === "jpeg" ? "jpeg" : "png";
-    const params = { format: fmt, captureBeyondViewport: true, fromSurface: true, clip: { x: 0, y: 0, width, height: capped, scale: 1 } };
-    if (fmt === "jpeg" && typeof quality === "number") params.quality = quality;
-    const shot = await chrome.debugger.sendCommand({ tabId }, "Page.captureScreenshot", params);
-    if (!shot?.data) throw err("INTERNAL", "CDP captureScreenshot returned no data");
-    const mimeType = fmt === "jpeg" ? "image/jpeg" : "image/png";
-    return { mimeType, dataUrl: `data:${mimeType};base64,${shot.data}`, fullPage: true, via: "cdp", capturedHeightPx: capped, fullHeightPx: fullHeight, truncated: fullHeight > capped };
-  } finally {
-    const n = (cdpInFlight.get(tabId) || 1) - 1;
-    if (n <= 0) cdpInFlight.delete(tabId); else cdpInFlight.set(tabId, n);
-    if (!cdpHeld(tabId)) { try { await chrome.debugger.detach({ tabId }); } catch {} }
-  }
-}
-
-// Scroll-and-stitch full-page fallback (no CDP). Bounded on every axis: fixed
-// target height (never grows with the page → infinite scroll is safe), a segment
-// cap, a no-progress break, a device-pixel canvas cap, and a wall-clock deadline.
-async function stitchFullPage(tab, authHost, format, quality, maxHeightPx) {
-  const tabId = tab.id;
-  const { scrollHeight, clientHeight, dpr, originalScrollY } = await measurePage(tabId, authHost);
-  const fmt = format === "jpeg" ? "jpeg" : "png";
-  const mimeType = fmt === "jpeg" ? "image/jpeg" : "image/png";
-  const vh = Math.max(1, clientHeight);
-  // The stitched canvas is in DEVICE pixels (captureVisibleTab returns device px),
-  // so the CSS-px target MUST be capped by SHOT_HARD_MAX_PX / dpr. Otherwise on a
-  // HiDPI display (DPR 2 → 4K/retina/Windows scaling) segments below the device cap
-  // would be drawn off-canvas and silently clipped (bug H1). Cap is FIXED before the
-  // loop, so a growing/infinite page can never extend it.
-  const devHint = Math.max(1, dpr || 1);
-  const cssCap = Math.min(maxHeightPx, Math.floor(SHOT_HARD_MAX_PX / devHint));
-  const targetCss = Math.min(scrollHeight, cssCap);
-  let truncated = scrollHeight > targetCss; // page taller than what we can capture
-  const MAX_SEGMENTS = 40;
-  const deadline = Date.now() + 20000;
-  const capOpts = { format: fmt };
-  if (fmt === "jpeg" && typeof quality === "number") capOpts.quality = quality;
-
-  let canvas = null, ctx = null, devPerCss = devHint, hDev = 0;
-  let lastY = -1, segments = 0, capturedCss = 0;
-  try {
-    for (let y = 0; y < targetCss; y += vh) {
-      if (Date.now() > deadline || segments >= MAX_SEGMENTS) { truncated = true; break; }
-      const actualY = await scrollToY(tabId, authHost, y);
-      if (segments > 0 && actualY <= lastY) break; // no progress → bottom reached / scroll pinned
-      lastY = actualY;
-      await new Promise((r) => setTimeout(r, 120)); // let fixed/lazy content settle
-      const activeId = (await chrome.tabs.query({ active: true, windowId: tab.windowId }))[0]?.id;
-      if (activeId !== tabId) throw err("INTERNAL", "target tab is not active during full-page capture; retry");
-      const dataUrl = await chrome.tabs.captureVisibleTab(tab.windowId, capOpts);
-      const bmp = await createImageBitmap(await (await fetch(dataUrl)).blob());
-      if (!canvas) {
-        devPerCss = bmp.height / vh || devHint; // MEASURED device px per CSS px (accounts for browser zoom)
-        hDev = Math.min(Math.round(targetCss * devPerCss), SHOT_HARD_MAX_PX);
-        canvas = new OffscreenCanvas(bmp.width, hDev);
-        ctx = canvas.getContext("2d");
-      }
-      const offDev = Math.round(actualY * devPerCss);
-      if (offDev >= hDev) { truncated = true; bmp.close?.(); break; } // would fall off the capped canvas → stop, and don't lie about it
-      ctx.drawImage(bmp, 0, offDev); // draw at the ACTUAL offset (handles the clamped last segment's overlap)
-      bmp.close?.();
-      segments++;
-      capturedCss = Math.min(targetCss, actualY + vh, Math.floor(hDev / devPerCss)); // real pixels-in-canvas, not just logical progress (bug H2)
-      if (actualY + vh >= scrollHeight) break; // reached the original bottom
-    }
-  } finally {
-    await scrollToY(tabId, authHost, originalScrollY).catch(() => {}); // restore the user's scroll position
-  }
-  if (!canvas) throw err("INTERNAL", "full-page capture produced no frames");
-  const blob = await canvas.convertToBlob({ type: mimeType, quality: fmt === "jpeg" && typeof quality === "number" ? quality / 100 : undefined });
-  const dataUrl = await blobToDataUrl(blob, mimeType);
-  return { mimeType, dataUrl, fullPage: true, via: "stitch", capturedHeightPx: Math.round(capturedCss), fullHeightPx: scrollHeight, truncated: truncated || capturedCss < scrollHeight };
 }
 
 // ---------------------------------------------------------------------------

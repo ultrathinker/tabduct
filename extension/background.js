@@ -193,10 +193,6 @@ async function gate(tool, args) {
     out._allowCdp = state.allowCdp === true; // authorizes the auto CSP→CDP fallback
     out._cdpAlways = state.allowCdp === true && state.cdpAlways === true; // keep the tab attached (force mode)
   }
-  // Full-page screenshot: authorize the clean CDP path when the user enabled CDP AND
-  // not read-only (read-only must stay debugger-free per PROTOCOL §6b — M2). Otherwise
-  // the handler falls back to scroll-and-stitch (no debugger, works in read-only too).
-  if (tool === "screenshot" && d.allow && args?.fullPage) out._allowCdp = state.allowCdp === true && !state.readOnly;
   return out; // resolved ONCE — the handler reuses this exact tab + authorized host (no TOCTOU re-resolve)
 }
 
@@ -246,8 +242,6 @@ async function handleInvoke(msg) {
       if (decision._allowCdp != null) callArgs._allowCdp = decision._allowCdp;
       if (decision._cdpAlways != null) callArgs._cdpAlways = decision._cdpAlways;
     }
-    // Full-page screenshot CDP authorization (PART 8): internal-only from the gate.
-    if (tool === "screenshot" && decision._allowCdp != null) callArgs._allowCdp = decision._allowCdp;
     const result = await handler(callArgs);
     // open_tab auto-share is OPT-IN (off by default): only re-share the new tab
     // when the user explicitly disabled the "don't auto-share opened tabs" guard.
@@ -461,33 +455,42 @@ async function sharingStatus() {
   return { tier: st.tier, denyOrigins: st.denyOrigins, originMode: st.originMode, sharedCount: allShared, tabs: shared, activeTabId: active?.id, label, useTabGroup: useTabGroup !== false, readOnly: st.readOnly, ttlMs: st.ttlMs, lockToDomain: st.lockToDomain, noAutoShareOpened: noAutoShareOpened !== false, allowCdp: st.allowCdp, cdpAlways: st.cdpAlways, cdpConsole: st.cdpConsole };
 }
 
-// Manual screenshot from the popup (Feature: PART 8): capture the active tab, stash
-// the image in session storage, and open the viewer page. User-initiated from the
-// extension UI → no per-tab consent gate (the user is explicitly asking to capture
-// the tab in front of them). Full-page uses the clean CDP path only if the user
-// enabled 'Allow CDP eval', otherwise the handler scroll-and-stitches.
-async function captureToViewer(fullPage) {
+// Large screenshots are handed to the viewer tab in memory (NOT chrome.storage, whose
+// ~10MB quota a large PNG can exceed). id -> {dataUrl, ...}; the viewer pulls it via the
+// "screenshot.get" message and it's deleted on read (or after a 2-min safety timeout).
+const pendingShots = new Map();
+
+// Manual screenshot from the popup: capture the active tab's visible area and open the
+// viewer page. User-initiated from the extension UI → no per-tab consent gate (the user
+// is explicitly asking to capture the tab in front of them).
+async function captureToViewer() {
   try {
-    const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
-    if (!tab) return { ok: false, error: "no active tab" };
-    const st = await CONSENT.getState();
-    const args = { tabId: tab.id, fullPage, format: "png", _authHost: null };
-    if (fullPage) args._allowCdp = st.allowCdp === true;
-    const result = await HANDLERS.screenshot(args);
-    const ts = Date.now();
-    // Per-capture key (L6): two rapid captures must not clobber each other's image
-    // before their viewers read it. The viewer opens with ?k=<ts> and reads/deletes
-    // exactly its own key.
-    const key = `screenshotView_${ts}`;
-    try {
-      await chrome.storage.session.set({ [key]: {
-        dataUrl: result.dataUrl, mimeType: result.mimeType, fullPage: !!result.fullPage,
-        via: result.via || "visible", truncated: !!result.truncated,
-        capturedHeightPx: result.capturedHeightPx ?? null, fullHeightPx: result.fullHeightPx ?? null,
-        title: tab.title || "", url: tab.url || "", ts,
-      } });
-    } catch { return { ok: false, error: "image too large to hand off (try a shorter page, or use the MCP screenshot tool)" }; }
-    await chrome.tabs.create({ url: chrome.runtime.getURL(`viewer.html?k=${ts}`) });
+    // Resolve the user's active tab. When the action popup is open, the popup can be
+    // the "last focused window", so fall back to currentWindow, then to any normal
+    // window's active tab — otherwise this used to return no tab / capture the wrong one.
+    let [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+    if (!tab || tab.windowId == null) [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    if (!tab) {
+      const wins = await chrome.windows.getAll({ populate: true, windowTypes: ["normal"] });
+      tab = wins.map((w) => w.tabs?.find((t) => t.active)).find(Boolean);
+    }
+    if (!tab) return { ok: false, error: "no active tab found" };
+    // Hard timeout so a wedged capture can NEVER hang the popup silently — it surfaces
+    // as a clear error instead of an eternal "Capturing…".
+    const result = await Promise.race([
+      HANDLERS.screenshot({ tabId: tab.id, format: "png", _authHost: null }),
+      new Promise((_, rej) => setTimeout(() => rej(new Error("capture timed out after 8000ms")), 8000)),
+    ]);
+    const id = String(Date.now());
+    // Hand the image to the viewer tab IN MEMORY (chrome.storage.session has a ~10MB
+    // quota). The viewer pulls it by id via "screenshot.get" the moment it loads; the SW
+    // that just captured is still alive. Auto-expire so a never-opened viewer can't leak.
+    pendingShots.set(id, {
+      dataUrl: result.dataUrl, mimeType: result.mimeType,
+      title: tab.title || "", url: tab.url || "", ts: Number(id),
+    });
+    setTimeout(() => pendingShots.delete(id), 120000);
+    await chrome.tabs.create({ url: chrome.runtime.getURL(`viewer.html?k=${id}`) });
     return { ok: true };
   } catch (e) {
     return { ok: false, error: e?.message ?? String(e) };
@@ -610,7 +613,8 @@ chrome.runtime.onMessage.addListener((req, _sender, sendResponse) => {
       case "sharing.setLabel": { const v = String(req.label || "").trim().slice(0, 40); await chrome.storage.local.set({ instanceLabel: v || `Chrome-${labelSuffix()}` }); sendResponse(await sharingStatus()); break; }
       case "sharing.setTabGroup": await chrome.storage.local.set({ useTabGroup: !!req.on }); if (!req.on) await cleanupTabGroups(); scheduleBadges(); sendResponse(await sharingStatus()); break;
       case "sharing.activate": try { await chrome.tabs.update(req.tabId, { active: true }); const t = await chrome.tabs.get(req.tabId); await chrome.windows.update(t.windowId, { focused: true }); } catch {} sendResponse(await sharingStatus()); break;
-      case "screenshot.capture": sendResponse(await captureToViewer(!!req.fullPage)); break;
+      case "screenshot.capture": sendResponse(await captureToViewer()); break;
+      case "screenshot.get": { const v = pendingShots.get(String(req.k)); if (v) pendingShots.delete(String(req.k)); sendResponse(v || null); break; }
       default: sendResponse({ state: "disconnected" });
     }
   })();

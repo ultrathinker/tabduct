@@ -73,9 +73,15 @@ body.wide { width: 440px; }
 /* Settings (PART 5): widen to a two-column layout so everything is visible with no
    vertical scroll. Restored by removing the class when leaving Settings. */
 body.wide-settings { width: 580px; }
-.settings-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; align-items: start; }
-.settings-col { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
-.setcard { background: var(--card); border: 1px solid var(--border); border-radius: 10px; padding: 10px; }
+/* Multi-column (masonry-ish) layout: the browser BALANCES the setcards across two
+   columns by height, so the tallest column is minimized automatically. Adding or
+   removing a card just redistributes — the settings panel never grows past Chrome's
+   ~600px popup height cap, so the vertical scrollbar never comes back. `break-inside`
+   keeps each card whole; `margin-bottom` provides the inter-card gap (multicol has no
+   row-gap). This replaces the old fixed 2-column grid that overflowed whenever a card
+   was added. */
+.settings-grid { column-count: 2; column-gap: 10px; }
+.setcard { background: var(--card); border: 1px solid var(--border); border-radius: 10px; padding: 10px; margin-bottom: 10px; break-inside: avoid; -webkit-column-break-inside: avoid; }
 .setcard .shared { max-height: 100px; } /* origin list scrolls internally so it never grows the column past the popup */
 .cdp-chip { display: inline-flex; align-items: center; padding: 1px 7px; border-radius: 999px; font-size: 10px; font-weight: 700; letter-spacing: .3px; background: #b45309; color: #fff; border: 1px solid rgba(255, 255, 255, .4); }
 /* Developer mode (Always use CDP and/or Capture console via CDP) → debugger stays
@@ -124,3 +130,4 @@ select { background: var(--card); color: var(--fg); border: 1px solid var(--bord
 select option { background: var(--bg); color: var(--fg); } /* keeps options readable in dark mode */
 .hint { color: var(--muted); font-size: 11px; margin: 4px 0 0; }
 .tg { display: flex; align-items: center; gap: 6px; margin-top: 10px; color: var(--muted); font-size: 12px; cursor: pointer; }
+.ver { text-align: center; color: var(--muted); font-size: 10px; letter-spacing: .3px; margin-top: 12px; opacity: .8; }
