@@ -64,7 +64,17 @@ function renderSharing(s) {
   $("cdpAlways").disabled = !s.allowCdp; // sub-option meaningful only when the master is on
   $("cdpConsole").checked = !!s.cdpConsole;
   $("cdpConsole").disabled = !s.allowCdp; // meaningful only when the master is on (like cdpAlways)
-  $("cdpChip").hidden = !s.allowCdp;
+  // Header chip: hidden when CDP is off; amber when the capability is enabled
+  // (attaches only on demand); red when a developer-mode sub-option keeps the
+  // debugger attached continuously. Each state carries its own explaining hint.
+  const cdpOn = !!s.allowCdp;
+  const cdpDev = cdpOn && (!!s.cdpAlways || !!s.cdpConsole);
+  const chip = $("cdpChip");
+  chip.hidden = !cdpOn;
+  chip.classList.toggle("cdp-chip-dev", cdpDev);
+  chip.title = cdpDev
+    ? "⚠ CDP DEVELOPER MODE (red): 'Always use CDP' and/or 'Capture full console via CDP' is on, so the debugger stays ATTACHED to shared tabs continuously and Chrome's 'being debugged' banner stays up the whole time — heavier and more intrusive than on-demand use. Turn those sub-options off to drop back to on-demand (amber), or turn off 'Allow CDP eval' to disable CDP entirely."
+    : "CDP ENABLED (amber): the 'Allow CDP eval' toggle is on. This is a capability indicator, not live usage — nothing attaches until an eval actually needs CDP (e.g. a strict-CSP site), and the banner only appears while it's briefly in use. Turn the toggle off to hide this chip.";
   // Origin list MODE: block (default) → list is a denylist; allow → only listed hosts shared.
   const allow = s.originMode === "allow";
   $("originMode").value = allow ? "allow" : "block";

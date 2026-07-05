@@ -74,6 +74,9 @@ body.wide-settings { width: 580px; }
 .setcard { background: var(--card); border: 1px solid var(--border); border-radius: 10px; padding: 10px; }
 .setcard .shared { max-height: 100px; } /* origin list scrolls internally so it never grows the column past the popup */
 .cdp-chip { display: inline-flex; align-items: center; padding: 1px 7px; border-radius: 999px; font-size: 10px; font-weight: 700; letter-spacing: .3px; background: #b45309; color: #fff; border: 1px solid rgba(255, 255, 255, .4); }
+/* Developer mode (Always use CDP and/or Capture console via CDP) → debugger stays
+   attached continuously, banner stays up. Escalate the chip from amber to red. */
+.cdp-chip.cdp-chip-dev { background: #b91c1c; }
 .howto-hd { position: sticky; top: 0; z-index: 1; display: flex; align-items: center; justify-content: space-between; padding: 4px 0 10px; margin-bottom: 4px; background: var(--bg); border-bottom: 1px solid var(--border); }
 .howto-hd h2 { margin: 0; font-size: 16px; letter-spacing: .2px; }
 .howto-body { padding-top: 4px; }
