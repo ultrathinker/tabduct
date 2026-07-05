@@ -109,7 +109,7 @@ ignored (forward-compat).
 **Auth (mandatory).** Binding `127.0.0.1` is NOT access control — every local
 process and OS user shares localhost. So:
 
-1. On Connect, the **extension generates a random `token`** and sends it in the
+1. On Start, the **extension generates a random `token`** and sends it in the
    `open` payload. The popup displays it so the user pastes the full endpoint
    (`http://127.0.0.1:<port>/mcp` + `Authorization: Bearer <token>`) into their
    agent's MCP config.
@@ -178,6 +178,10 @@ and the 8 MB result cap apply identically on the CDP path. The debugger is
 detached after each call unless "Always use CDP" holds it attached, and is always
 released on disconnect / tab close / consent revoke.
 
+The `execute_script` result carries a `via` field — `"cdp"` or `"scripting"` —
+alongside `result`, so a caller can tell which engine actually ran the code
+(e.g. to confirm the CDP fallback fired on a strict-CSP page).
+
 ---
 
 ## 7. Ports & multiple browsers
@@ -189,15 +193,15 @@ binds a free port and echoes it in the `open` reply. Each host records
 (§9a); an agent gets a ready `--mcp-config` for every live instance via
 `tabduct instances`. The popup MAY pin a fixed port instead; `12310` is the
 documented default/fallback. A busy pinned port fails the `open` reply with
-`INTERNAL` so the popup can show it and re-enable Connect.
+`INTERNAL` so the popup can show it and re-enable the Start button.
 
 ### 9a. Discovery
 
 Per-instance files under `~/.tabduct/instances/` (dir `0700`, files `0600` — they
 hold the bearer token). Written on `open`, removed on clean shutdown; readers and
 a self-heal-on-write drop entries whose `pid` is dead (survives SIGKILL). The
-final multi-browser story (one stable endpoint) is the hub (roadmap Phase 3);
-discovery is the zero-config interim.
+final multi-browser story (one stable endpoint) is the hub (Phase 3, shipped and
+on by default); discovery is the zero-config interim.
 
 ---
 

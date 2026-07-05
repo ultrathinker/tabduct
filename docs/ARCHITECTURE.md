@@ -20,9 +20,9 @@
                 ▼
 ┌─────────────────────────────────────────────────────────────────┐
 │ Tabduct EXTENSION  (MV3, the one shared JS impl)                  │
-│   • background.js: connectNative, Connect/Disconnect, dispatch     │
+│   • background.js: connectNative, start/stop (open/close), dispatch │
 │   • handlers/: implement each tool via chrome.tabs / chrome.scripting│
-│   • popup: status + port + Connect button                          │
+│   • popup: status + port + Start button                            │
 └───────────────┬───────────────────────────────────────────────────┘
                 │  chrome.scripting.executeScript / chrome.tabs / captureVisibleTab
                 ▼
@@ -53,14 +53,14 @@
 
 - **Auth is mandatory, not the bind address.** `127.0.0.1` is shared by every
   local process and OS user, so binding local is *not* access control. The
-  extension mints a random bearer token on Connect; the host requires
+  extension mints a random bearer token on Start; the host requires
   `Authorization: Bearer <token>` on every MCP request, rejects any request that
   carries an `Origin` header, and verifies the `Host` header
   (DNS-rebinding defense). CORS is belt-and-braces only. See PROTOCOL.md §6.
 - The host makes **no external network calls** — enforced by contract and
   checked in conformance.
 - **Inherent risk:** whatever agent you connect gets a handle on your logged-in
-  browser. That's the feature. Keep the server *on-demand* (Connect + per-session
+  browser. That's the feature. Keep the server *on-demand* (Start + per-session
   agent launcher) so it isn't ambient.
 - **Prompt-injection risk (must state honestly):** content returned by
   `get_page_content` / `execute_script` is attacker-authored input to the agent,
@@ -93,13 +93,18 @@ so it could never succeed.) Tabduct addresses this on three levels:
    `get_dom_snapshot`, `get_page_content`, and the console hook run as injected
    *functions* (not string eval), which a page's CSP does not block — so the common
    interaction/read cases work everywhere, with no extra permission or banner.
-2. **Optional CDP mode** (opt-in `debugger` permission, default off) runs arbitrary
+2. **CDP mode** (opt-in via the *Allow CDP eval* toggle, default off) runs arbitrary
    `execute_script` via the DevTools Protocol with `allowUnsafeEvalBlockedByCSP`,
-   bypassing CSP. `execute_script`'s `engine` is `auto|scripting|cdp` (auto falls
-   back to CDP on `CSP_BLOCKED` when enabled); a developer-mode toggle forces CDP
+   bypassing CSP. Chrome forbids `debugger` as an optional/runtime permission, so it
+   is a **required** permission granted at install; the toggle — not a permission
+   prompt — is the actual opt-in, and nothing attaches until it is on.
+   `execute_script`'s `engine` is `auto|scripting|cdp` (auto falls back to CDP on
+   `CSP_BLOCKED` when enabled) and the result carries a `via:"cdp"|"scripting"` marker
+   so the caller can tell which path ran; a developer-mode toggle forces CDP
    everywhere; and full console/exception/Log capture rides the same attach. Gated
    by consent (never under read-only), signalled by Chrome's "being debugged"
-   banner. See PROTOCOL.md §6b and the cdpConsole section below.
+   banner (and a red header chip in the persistent developer-mode variants). See
+   PROTOCOL.md §6b and the cdpConsole section below.
 3. **`chrome.userScripts`** (roadmap, Chrome 135+) — the banner-free, CSP-proof eval
    for once the min version is raised + a user "Allow user scripts" toggle is
    surfaced; `engine:auto` should prefer it over CDP when available. Tracked in
@@ -136,8 +141,8 @@ tabduct/
 ├── extension/           # the one shared MV3 extension (JS)
 ├── hosts/
 │   ├── node/                reference host (build first)
-│   ├── python/              mcp SDK — passes conformance (register TODO)
-│   └── dotnet/              ModelContextProtocol SDK — passes conformance (register TODO)
+│   ├── python/              mcp SDK — passes conformance, per-OS register
+│   └── dotnet/              ModelContextProtocol SDK — passes conformance, per-OS register
 ├── scripts/             # gen-key etc.
 └── docs/
 ```

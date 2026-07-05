@@ -20,7 +20,7 @@ Pre-1.0: only the latest `main` is supported. Pin a commit if you need stability
 - **Local only.** The host binds `127.0.0.1`. There are no outbound calls, no
   server, and no telemetry — nothing ever leaves your machine.
 - **Token-authenticated.** Binding localhost is *not* access control (every local
-  process shares it). On Connect the extension mints a random bearer token; the
+  process shares it). On Start the extension mints a random bearer token; the
   host requires `Authorization: Bearer <token>` on every request, rejects requests
   carrying an `Origin` header, and pins the `Host` header (DNS-rebinding defense).
 - **Default-deny consent, enforced in the extension.** The extension is the sole
@@ -49,6 +49,16 @@ Pre-1.0: only the latest `main` is supported. Pin a commit if you need stability
 - **`execute_script` runs arbitrary JS** in shared tabs (MAIN world). It's the
   keystone capability and also the most powerful — use read-only or Allow mode if
   you don't want it, and see the Chrome Web Store note below.
+- **CDP mode & the `debugger` permission.** To bypass a page's CSP for arbitrary
+  `execute_script` (and to capture the full console incl. uncaught errors), Tabduct
+  can use the Chrome DevTools Protocol. Chrome does **not** allow `debugger` as an
+  optional/runtime permission, so it is declared as a **required** permission — the
+  install prompt therefore warns that the extension can debug the browser, even
+  though CDP is **off by default**. Nothing attaches until you enable *Allow CDP
+  eval* in the popup; it is refused under read-only; Chrome shows a "this tab is
+  being debugged" banner whenever CDP is actually in use, and a red header chip
+  marks the persistent developer-mode variants (*Always use CDP* / *Capture full
+  console via CDP*).
 - **Hub trust is same-OS-user.** The hub aggregates whatever registers under
   `~/.tabduct`; a process running as you could register a fake "browser" (prompt
   injection vector) — and the token is only withheld from a port squatter because
@@ -57,7 +67,8 @@ Pre-1.0: only the latest `main` is supported. Pin a commit if you need stability
   authorization and script execution is caught by an in-page origin re-check; for
   free-navigation (`anyOrigin`) grants this can rarely fail safe as `ORIGIN_DRIFT`.
 - **Not on the Chrome Web Store.** Manifest V3 forbids runtime arbitrary code, so
-  `execute_script` can't ship as-is to the store — install unpacked / from source.
+  `execute_script` can't ship as-is to the store; the required `debugger` permission
+  adds further review friction. Install unpacked / from source.
 
 ## What Tabduct never does
 

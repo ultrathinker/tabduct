@@ -30,7 +30,7 @@ node bin/tabduct.js register --browser edge|brave|chromium
 ```
 
 Then load `../../extension` unpacked in `chrome://extensions`, click the Tabduct
-icon → **Connect**, open **Settings** and paste the shown MCP endpoint + token into
+icon → **Start**, open **Settings** and paste the shown MCP endpoint + token into
 your agent's config. The shared hub endpoint is `http://127.0.0.1:12311/mcp`.
 
 ## CLI

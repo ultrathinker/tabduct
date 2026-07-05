@@ -407,10 +407,11 @@ export const HANDLERS = {
 
 // ---------------------------------------------------------------------------
 // CDP eval (PART 4) — runs truly arbitrary JS where chrome.scripting MAIN-world
-// eval is CSP-blocked, WITHOUT forcing the debugger permission and WITHOUT
-// weakening consent. The debugger permission is OPTIONAL (requested from the
-// popup on opt-in) and re-checked at every call; consent for CDP is gated in
-// background.js before this is reached (state.allowCdp + not read-only).
+// eval is CSP-blocked, WITHOUT weakening consent. The debugger permission is
+// REQUIRED (Chrome forbids requesting it at runtime, so it is granted at install;
+// nothing attaches until 'Allow CDP eval' is on) and re-checked at every call;
+// consent for CDP is gated in background.js before this is reached
+// (state.allowCdp + not read-only).
 //
 // Attach lifecycle: in force mode (cdpAlways) we KEEP the tab attached between
 // calls (avoids the "is being debugged" banner flickering on/off); otherwise we

@@ -32,12 +32,13 @@ A **fake extension** harness drives the host over stdio (§1 framing) and assert
    host fails the call with `FRAME_TOO_LARGE` instead of writing to stdout.
 7. **Shutdown** — close the host's stdin → host stops the server and exits 0.
 
-## Layout (planned)
+## Layout
 
 ```
 conformance/
-├── vectors/          # canonical framed-message fixtures (bytes in/out)
-├── run.mjs           # reference runner (spawns a host binary, drives stdio+HTTP)
+├── run.mjs           # host conformance runner (spawns a host binary, drives stdio+HTTP)
+├── run-hub.mjs       # hub conformance runner
+├── vectors/          # canonical framed-message fixtures (bytes in/out) — future
 └── README.md
 ```
 
@@ -47,7 +48,9 @@ Node, Python, and .NET hosts identically:
 ```bash
 node run.mjs -- node ../../hosts/node/src/index.js
 node run.mjs -- python ../../hosts/python/tabduct_host/__main__.py
-node run.mjs -- dotnet run --project ../../hosts/dotnet
+# .NET: build first and run the built dll (never `dotnet run` — it prints build
+# output onto stdout and corrupts the native-messaging frame stream)
+dotnet build ../../hosts/dotnet && node run.mjs -- dotnet ../../hosts/dotnet/bin/Debug/net10.0/Tabduct.Host.dll
 ```
 
 `run.mjs` (host conformance) and `run-hub.mjs` (hub conformance) are implemented

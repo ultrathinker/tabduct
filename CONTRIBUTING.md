@@ -12,7 +12,7 @@ git clone https://github.com/ultrathinker/tabduct.git && cd tabduct
 npm install
 npm run register            # install the native-messaging manifest for your OS/browser
 # chrome://extensions → Developer mode → Load unpacked → ./extension
-# click the Tabduct icon → Connect
+# click the Tabduct icon → Start
 ```
 
 Diagnose the host with `npm run doctor`.
