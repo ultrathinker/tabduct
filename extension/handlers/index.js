@@ -199,6 +199,10 @@ export const HANDLERS = {
     // authorized tab is the active one immediately before AND after the capture.
     const activeIs = async () => (await chrome.tabs.query({ active: true, windowId: tab.windowId }))[0]?.id;
     if (await activeIs() !== tabId) throw err("INTERNAL", "target tab is not the active tab; retry");
+    // TOCTOU: the shared tab could have self-navigated to a sensitive/unshared origin
+    // between the consent gate and now. captureVisibleTab grabs whatever is currently
+    // rendered, so re-check the authorized origin in-page right before capturing.
+    await assertVisibleOrigin(tabId, authHost);
     const dataUrl = await chrome.tabs.captureVisibleTab(tab.windowId, opts);
     if (await activeIs() !== tabId) throw err("INTERNAL", "active tab changed during capture; retry");
     return { mimeType, dataUrl };
@@ -467,12 +471,29 @@ export const HANDLERS = {
 };
 
 // Origin re-check for the network tools: the CDP buffer keeps filling across a
-// navigation, so a drifted lock-to-domain tab could otherwise leak another
-// origin's traffic. Mirrors the get_console_logs CDP-path check.
+// navigation, so a drifted lock-to-domain tab could otherwise leak another origin's
+// traffic. Checks the committed URL AND a PENDING (not-yet-committed) navigation — during
+// a pending nav `tab.url` still shows the old authorized origin while CDP already buffers
+// requests for the new destination (a data-leak window). Mirrors the get_console_logs check.
 async function assertNetOrigin(tabId, authHost) {
   if (!authHost) return;
-  let h = null;
-  try { h = (new URL((await chrome.tabs.get(tabId)).url).hostname || "").toLowerCase().replace(/\.$/, ""); } catch {}
+  let tab = null;
+  try { tab = await chrome.tabs.get(tabId); } catch {}
+  const cur = hostOf(tab?.url);
+  const pending = tab?.pendingUrl ? hostOf(tab.pendingUrl) : null;
+  if (cur !== authHost || (pending && pending !== authHost)) throw err("ORIGIN_DRIFT", "tab navigated away from the authorized origin");
+}
+
+// Origin re-check IN-PAGE, used right before a screenshot capture. captureVisibleTab is
+// not an injected function, so it can't fold the origin check into the action the way the
+// other tools do — this is the tightest TOCTOU guard available: verify the authorized
+// origin is still what's rendered immediately before grabbing the pixels.
+async function assertVisibleOrigin(tabId, authHost) {
+  if (!authHost) return;
+  const h = (await chrome.scripting.executeScript({
+    target: { tabId },
+    func: () => (location.hostname || "").toLowerCase().replace(/\.$/, ""),
+  }))?.[0]?.result;
   if (h !== authHost) throw err("ORIGIN_DRIFT", "tab navigated away from the authorized origin");
 }
 
