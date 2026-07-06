@@ -4,12 +4,21 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims for
 [Semantic Versioning](https://semver.org/) once it reaches 1.0.
 
-## [Unreleased]
+## [1.2.0] — 2026-07-06
 
 ### Added
 - **CSP-safe interaction tools** — `click`, `type`, `wait_for`, `get_dom_snapshot`,
   and `get_console_logs`, implemented as injected functions so they work even on
   strict-CSP sites (GitHub, banks, SaaS) with no extra permission.
+- **Network inspection** — `list_network_requests` and `get_network_request` (method,
+  status, timing, request/response headers, response body), captured via CDP under the
+  same opt-in as console capture.
+- **"Set up with your AI"** — a one-click panel (a one-time button on first run, plus a
+  permanent one in Settings) with a copy-paste prompt that walks your AI coding agent
+  (Claude Code, Cursor, any MCP client) through connecting Tabduct as an MCP server.
+- Screenshot tool gained optional `selector` / `scrollTo` to scroll a target into view
+  before capturing the viewport.
+- Extension version shown at the bottom of the Settings screen.
 - **CDP mode** (opt-in via an in-popup toggle, default off): `execute_script` gains
   an `engine` (auto/scripting/cdp) with a CSP-blocked → CDP fallback; a
   developer-mode toggle that routes all eval through CDP; and full
@@ -25,7 +34,20 @@ All notable changes to this project are documented here. The format follows
   install for macOS/Linux/Windows). Multi-language is no longer paper-only.
 
 ### Changed
-- Settings popup redesigned into a widened two-column layout (no vertical scroll).
+- Settings popup redesigned into a widened two-column layout (no vertical scroll,
+  auto-balancing multi-column cards).
+
+### Fixed
+- Critical: corrected a native-host module import path that prevented the extension's
+  service worker from loading (nothing worked until fixed).
+- Hardened origin-drift (TOCTOU) checks: an in-page origin re-check immediately before a
+  screenshot capture, and a `pendingUrl` check for the network tools (closes a
+  pending-navigation data-leak window).
+
+### Removed
+- Full-page screenshot capture — unreliable on virtualized / infinite-scroll SPAs
+  (YouTube, Facebook) where beyond-viewport capture repeats/wraps content. Use the
+  visible-area capture with `selector` / `scrollTo` instead.
 
 ## [0.1.0] — pre-release
 

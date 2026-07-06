@@ -86,6 +86,7 @@ function connect(port = DEFAULT_PORT) {
       if (res?.hub && res.endpoint) { patch.hub = true; patch.endpoint = res.endpoint; patch.token = res.token; }
       else { patch.hub = false; patch.endpoint = null; }
       await setState(patch);
+      chrome.storage.local.set({ everConnected: true }).catch(() => {}); // retires the one-time first-run "Set up with your AI" button
       try { await chrome.action.setBadgeBackgroundColor({ color: "#2ecc71" }); chrome.action.setBadgeTextColor?.({ color: "#2ecc71" }); } catch {}
       lastBadge = new Map();
       await refreshBadges();

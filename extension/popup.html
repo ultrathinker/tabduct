@@ -23,6 +23,8 @@
         <div id="connArea">
           <p id="status" class="status" data-state="disconnected">Stopped</p>
           <button id="toggle" class="btn">Start</button>
+          <!-- One-time first-run helper: shown only until the very first successful connect. -->
+          <button id="quickSetupMain" class="btn setup" hidden>🚀 Set up with your AI</button>
         </div>
         <div id="shareArea" hidden>
           <button id="shareThis" class="btn share">Share Current Tab</button>
@@ -41,6 +43,7 @@
         <span class="muted">Settings</span>
       </div>
 
+      <button id="quickSetupBtn" class="btn setup">🚀 Set up with your AI</button>
       <button id="howBtn" class="btn howto-btn">How it works<span class="qmark">?</span></button>
 
       <!-- CSS multi-column (see .settings-grid): cards auto-balance across 2 columns by
@@ -149,6 +152,41 @@
           </section>
       </div>
       <div id="ver" class="ver"></div>
+    </div>
+
+    <!-- Quick-setup layer: a ready prompt to paste into your AI (Claude Code / Cursor / any MCP client). -->
+    <div id="quicksetup" hidden>
+      <div class="row settings-hd">
+        <button id="qsBack" class="icon-btn" title="Back" aria-label="Back">←</button>
+        <span class="muted">Set up with your AI</span>
+      </div>
+      <p class="qs-intro">Paste this to your AI coding agent (Claude Code, Cursor, or any MCP client) — it will connect Tabduct to itself. You'll just click Start (and paste the token from Settings) when it asks.</p>
+      <button id="qsCopy" class="btn">📋 Copy prompt</button>
+      <pre id="qsPrompt" class="qs-prompt">Help me connect the Tabduct browser extension to you as an MCP server.
+
+Tabduct (github.com/ultrathinker/tabduct) is a local bridge that lets you drive my real, already-logged-in Chrome tabs over MCP — everything stays on my machine. I have the Tabduct extension loaded (I'm looking at its popup) and the repo cloned locally. Set up the connection:
+
+1) From the Tabduct repo root, install dependencies and register the native messaging host:
+     npm install
+     npm run register
+   (Node is the reference host. Python and .NET hosts also exist under hosts/python and hosts/dotnet — use one of those instead if Node isn't available.)
+
+2) I will then click Start in the Tabduct popup. Wait for me to do this.
+
+3) When I paste the MCP endpoint and Authorization token from the popup's Settings, add a "tabduct" MCP server to your config and reload so its tools appear. HTTP transport, for example:
+     {
+       "mcpServers": {
+         "tabduct": {
+           "type": "http",
+           "url": "http://127.0.0.1:12311/mcp",
+           "headers": { "Authorization": "Bearer PASTE_TOKEN_FROM_SETTINGS" }
+         }
+       }
+     }
+   The shared-hub default uses port 12311 — but use the exact url and token I give you.
+
+Do steps 1 and 3 yourself; I'll do step 2 in the browser. Ask me for the endpoint and token when you reach step 3.</pre>
+      <p class="hint">Treat the token like a password — it grants access to your shared tabs. Prefer to do it by hand? Open <strong>Settings → How it works</strong> for the manual steps.</p>
     </div>
 
     <!-- How-it-works layer -->

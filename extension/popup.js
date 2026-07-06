@@ -15,6 +15,15 @@ $("port").addEventListener("input", () => {
   if (Number.isInteger(n) && n >= 0 && n <= 65535) chrome.storage.local.set({ port: n });
 });
 
+// The main-screen "Set up with your AI" button is a ONE-TIME first-run helper: shown
+// only while disconnected AND never-successfully-connected. `everConnected` starts true
+// so the button doesn't flash before storage is read; the async read flips it if needed.
+let everConnected = true;
+chrome.storage.local.get("everConnected").then(({ everConnected: ec }) => {
+  everConnected = !!ec;
+  $("quickSetupMain").hidden = everConnected || $("dot").dataset.state === "connected";
+});
+
 function renderConn(s) {
   const state = s?.state ?? "disconnected";
   const connected = state === "connected";
@@ -22,6 +31,8 @@ function renderConn(s) {
   $("dot").dataset.state = state;
   $("dot").title = connected ? "Running — click to stop" : `${text} — click to start`;
   $("connArea").hidden = connected; // when connected, the header dot is the sole indicator
+  if (connected) everConnected = true; // a successful connect retires the one-time helper in-session too (bg persists it)
+  $("quickSetupMain").hidden = connected || everConnected; // one-time first-run helper
   $("shareArea").hidden = !connected; // sharing is meaningless until connected
   $("toggle").disabled = state === "connecting";
   $("port").disabled = state === "connecting" || $("hub").checked; // port is irrelevant in hub mode
@@ -187,13 +198,24 @@ chrome.runtime.onMessage.addListener((m) => {
 // Each helper owns exactly one body-width class so leaving a layer always
 // restores the popup width (PART 5).
 const header = document.querySelector("header");
-const showMain = () => { document.body.classList.remove("wide", "wide-settings"); header.hidden = false; $("main").hidden = false; $("settings").hidden = true; $("howto").hidden = true; window.scrollTo(0, 0); };
-const showSettings = () => { document.body.classList.remove("wide"); document.body.classList.add("wide-settings"); header.hidden = false; $("main").hidden = true; $("settings").hidden = false; $("howto").hidden = true; window.scrollTo(0, 0); };
-const showHowto = () => { document.body.classList.remove("wide-settings"); document.body.classList.add("wide"); header.hidden = true; $("main").hidden = true; $("settings").hidden = true; $("howto").hidden = false; window.scrollTo(0, 0); };
+const showMain = () => { document.body.classList.remove("wide", "wide-settings"); header.hidden = false; $("main").hidden = false; $("settings").hidden = true; $("howto").hidden = true; $("quicksetup").hidden = true; window.scrollTo(0, 0); };
+const showSettings = () => { document.body.classList.remove("wide"); document.body.classList.add("wide-settings"); header.hidden = false; $("main").hidden = true; $("settings").hidden = false; $("howto").hidden = true; $("quicksetup").hidden = true; window.scrollTo(0, 0); };
+const showHowto = () => { document.body.classList.remove("wide-settings"); document.body.classList.add("wide"); header.hidden = true; $("main").hidden = true; $("settings").hidden = true; $("howto").hidden = false; $("quicksetup").hidden = true; window.scrollTo(0, 0); };
+let qsReturn = "main";
+const showQuicksetup = (from) => { qsReturn = from || "main"; document.body.classList.remove("wide-settings"); document.body.classList.add("wide"); header.hidden = true; $("main").hidden = true; $("settings").hidden = true; $("howto").hidden = true; $("quicksetup").hidden = false; window.scrollTo(0, 0); };
 $("gear").addEventListener("click", showSettings);
 $("back").addEventListener("click", showMain);
 $("howBtn").addEventListener("click", showHowto);
 $("howClose").addEventListener("click", showSettings);
+$("quickSetupMain").addEventListener("click", () => showQuicksetup("main"));
+$("quickSetupBtn").addEventListener("click", () => showQuicksetup("settings"));
+$("qsBack").addEventListener("click", () => (qsReturn === "settings" ? showSettings() : showMain()));
+$("qsCopy").addEventListener("click", async () => {
+  const b = $("qsCopy"), orig = "📋 Copy prompt";
+  try { await navigator.clipboard.writeText($("qsPrompt").textContent); b.textContent = "✓ Copied"; }
+  catch { b.textContent = "Copy failed — select the text manually"; }
+  setTimeout(() => (b.textContent = orig), 1600);
+});
 
 send({ cmd: "status" }).then(renderConn);
 send({ cmd: "sharing.status" }).then(renderSharing);
