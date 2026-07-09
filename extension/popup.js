@@ -35,16 +35,15 @@ function renderConn(s) {
   $("quickSetupMain").hidden = connected || everConnected; // one-time first-run helper
   $("shareArea").hidden = !connected; // sharing is meaningless until connected
   $("toggle").disabled = state === "connecting";
-  $("port").disabled = state === "connecting" || $("hub").checked; // port is irrelevant in hub mode
+  $("port").disabled = state === "connecting";
   $("status").dataset.state = state; // colour: red disconnected/error, green connected
   $("status").textContent = text;
-  const show = connected && s?.token;
+  // Hub is the ONLY agent-facing endpoint (always 127.0.0.1:12311). If the hub failed to
+  // start, background reports an error state (loud), so we never silently show a direct port.
+  const show = connected && s?.endpoint && s?.token;
   $("creds").hidden = !show;
-  if (show) { $("url").textContent = s.hub && s.endpoint ? s.endpoint : `http://127.0.0.1:${s.port}/mcp`; $("auth").textContent = `Bearer ${s.token}`; }
+  if (show) { $("url").textContent = s.endpoint; $("auth").textContent = `Bearer ${s.token}`; }
 }
-
-chrome.storage.local.get("useHub").then(({ useHub }) => { $("hub").checked = useHub !== false; }); // default on
-$("hub").addEventListener("change", async () => renderConn(await send({ cmd: "setHub", on: $("hub").checked })));
 
 async function toggleConn() {
   const s = await send({ cmd: "status" });

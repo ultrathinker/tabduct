@@ -63,8 +63,8 @@ npm run register        # installs the native-messaging manifest for your OS + b
 
 ## Point your agent at it (MCP)
 
-With the shared hub (on by default), every browser you connect appears behind one
-stable endpoint with a token that never changes:
+Every browser you connect appears behind one stable shared-hub endpoint with a token
+that never changes — so your agent config is fixed:
 
 ```json
 {
@@ -78,9 +78,9 @@ stable endpoint with a token that never changes:
 }
 ```
 
-Reload your agent and it discovers the Tabduct tools below. (Prefer a direct,
-per-browser endpoint? Turn the hub off in Settings — the popup then shows that
-browser's own port and token.)
+Reload your agent and it discovers the Tabduct tools below. Start Tabduct in one
+browser and any other browser you open joins the same hub automatically — you always
+point your agent at `127.0.0.1:12311`, never at a per-browser port.
 
 ## Tools
 
@@ -126,9 +126,10 @@ which is also where to report a vulnerability (please don't open a public issue)
 ## Multiple browsers & profiles
 
 Install Tabduct in each Chrome profile you use (each Google account / profile is
-separate). Start each; with the hub on they all sit behind the one endpoint, and
-the agent tells them apart by their **Label** (auto-named like `Chrome-abcd` —
-rename to `Work` / `Personal` in Settings).
+separate). Start it in **one** browser — any other profile you open joins the same
+hub automatically (no need to Start each). They all sit behind the one endpoint
+(`127.0.0.1:12311`), and the agent tells them apart by their **Label** (auto-named
+like `Chrome-abcd` — rename to `Work` / `Personal` in Settings).
 
 ## Two protocols, one extension, many hosts
 

@@ -4,6 +4,28 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims for
 [Semantic Versioning](https://semver.org/) once it reaches 1.0.
 
+## [1.3.0] — 2026-07-09
+
+### Changed
+- The shared hub is now the **only** agent-facing endpoint — the "Shared hub" toggle is
+  removed. The popup always shows the stable hub endpoint (`127.0.0.1:12311`); each
+  browser's per-instance port is internal (the hub proxies it) and never surfaced, so your
+  agent config never changes.
+
+### Added
+- **Auto-join** — opening a browser while a hub is already running connects it
+  automatically (no Start click). Start Tabduct in one browser and every other browser you
+  open joins the same hub. An explicit **Stop** opts that browser out for the rest of the
+  browser session (sticky across popup reopens and service-worker sleep); reloading the
+  extension or restarting the browser clears it and re-enables auto-join.
+
+### Fixed
+- **Hub auto-start on Windows** — the host spawned the hub via `cmd /c start /B … 2>>log`,
+  where the redirect bound to `start` (not the hub), so the hub silently never came up and
+  the popup fell back to a per-instance direct port (multi-instance appeared "invisible").
+  Now spawned directly with its output captured to `hub.log`. If the hub still can't start,
+  the popup shows a **loud error** instead of silently exposing a direct endpoint.
+
 ## [1.2.0] — 2026-07-06
 
 ### Added

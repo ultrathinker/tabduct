@@ -9,8 +9,21 @@ import * as CONSENT from "./consent.js";
 
 const HOST_NAME = "com.tabduct.host";
 const DEFAULT_PORT = 0; // 0 = ephemeral: the host picks a free port (no manual port config)
+const HUB_PORT = 12311; // the shared hub's fixed endpoint (must match hosts' constants)
 const PROTOCOL_VERSION = 0; // MUST match protocol/tools.schema.json
 const OPEN_TIMEOUT_MS = 8000;
+
+// Is a shared hub already listening on this machine? (any HTTP response = up; connection
+// refused = down). Used to auto-join a new instance to an already-running hub.
+async function hubReachable() {
+  const c = new AbortController();
+  const t = setTimeout(() => c.abort(), 700);
+  try {
+    await fetch(`http://127.0.0.1:${HUB_PORT}/mcp`, { method: "GET", signal: c.signal });
+    c.abort(); // any HTTP response means a hub is listening — close the (possibly streamed) body
+    return true;
+  } catch { return false; } finally { clearTimeout(t); }
+}
 
 /** @type {chrome.runtime.Port | null} */
 let hostPort = null;
@@ -57,6 +70,7 @@ function connect(port = DEFAULT_PORT) {
   if (connecting) return connecting; // sync guard set BEFORE any await → no double-spawn race
   const gen = ++connGen; // a Disconnect during this connect bumps connGen and invalidates us
   connecting = (async () => {
+    chrome.storage.session.set({ userStopped: false }).catch(() => {}); // a (re)connect clears the explicit-stop intent
     const { instanceId, label, token } = await getIdentity();
     let usePort = port;
     if (usePort === 0) { const { lastPort } = await chrome.storage.local.get("lastPort"); usePort = lastPort || 0; } // reuse last bound port
@@ -74,18 +88,17 @@ function connect(port = DEFAULT_PORT) {
     });
 
     try {
-      const { useHub } = await chrome.storage.local.get("useHub");
-      const res = await request("open", { port: usePort, token, protocolVersion: PROTOCOL_VERSION, instanceId, label, hub: useHub !== false }, OPEN_TIMEOUT_MS); // hub on by default (stable endpoint+token)
+      // Hub is the ONLY agent-facing endpoint — always request it (the toggle is gone).
+      const res = await request("open", { port: usePort, token, protocolVersion: PROTOCOL_VERSION, instanceId, label, hub: true }, OPEN_TIMEOUT_MS);
       if (gen !== connGen) { // user hit Disconnect while we were handshaking → honor it
         try { hostPort?.disconnect(); } catch {} hostPort = null; rejectAllPending("disconnected during connect");
         await setState({ state: "disconnected", error: null }); scheduleBadges(); return getConnState();
       }
       await chrome.storage.local.set({ lastPort: res?.port ?? usePort });
-      // Hub mode: show the ONE stable hub endpoint+token; else the per-instance one.
-      const patch = { state: "connected", port: res?.port ?? usePort, error: null };
-      if (res?.hub && res.endpoint) { patch.hub = true; patch.endpoint = res.endpoint; patch.token = res.token; }
-      else { patch.hub = false; patch.endpoint = null; }
-      await setState(patch);
+      // The shared hub is REQUIRED. If it didn't come up, surface a LOUD error instead of
+      // silently exposing the per-instance direct port (which used to confuse everyone).
+      if (!(res?.hub && res.endpoint)) throw new Error("Couldn't start the shared hub — see ~/.tabduct/hub.log");
+      await setState({ state: "connected", port: res.port ?? usePort, error: null, hub: true, endpoint: res.endpoint, token: res.token });
       chrome.storage.local.set({ everConnected: true }).catch(() => {}); // retires the one-time first-run "Set up with your AI" button
       try { await chrome.action.setBadgeBackgroundColor({ color: "#2ecc71" }); chrome.action.setBadgeTextColor?.({ color: "#2ecc71" }); } catch {}
       lastBadge = new Map();
@@ -101,14 +114,23 @@ function connect(port = DEFAULT_PORT) {
   return connecting.finally(() => { connecting = null; });
 }
 
-// Re-attach after a service-worker eviction/revival (onStartup does NOT fire for that).
+// Re-attach after a service-worker eviction/revival, AND auto-join an already-running hub.
 async function ensureConnected() {
+  if (hostPort || connecting) return;
   const s = await getConnState();
-  if (s.state === "connected" && !hostPort && !connecting) await connect(0).catch(() => {});
+  if (s.state === "connected") { await connect(0).catch(() => {}); return; } // revive after SW eviction
+  // Auto-join: if a shared hub is already running (another instance started it) and the
+  // user hasn't explicitly Stopped THIS instance THIS session, connect automatically —
+  // no Start needed. `userStopped` lives in SESSION storage, so an explicit Stop is sticky
+  // across popup reopens / SW eviction, but a full extension reload/disable or a browser
+  // restart clears it (a fresh start re-enables auto-join).
+  const { userStopped } = await chrome.storage.session.get("userStopped");
+  if (!userStopped && (await hubReachable())) await connect(0).catch(() => {});
 }
 
 async function disconnect() {
   connGen++; // invalidate any in-flight connect so it can't flip us back to "connected"
+  chrome.storage.session.set({ userStopped: true }).catch(() => {}); // explicit Stop → don't auto-rejoin (this session)
   if (hostPort) { try { await request("close", {}, 3000); } catch {} try { hostPort.disconnect(); } catch {} hostPort = null; }
   rejectAllPending("disconnected by user");
   await detachAllCdp(); // release any held debugger sessions (PART 4)
@@ -560,24 +582,12 @@ chrome.runtime.onInstalled.addListener(() => { cleanupTabGroups(); });
 scheduleBadges(); // paint icons on service-worker start (red until connected)
 updateContextMenu(); // reconcile the right-click item with current state on SW start
 
-// One-time migration: hub is now on by default. Clear any previously-stored
-// useHub value exactly once so the new default takes effect; later toggles persist.
-(async () => {
-  try {
-    const { hubDefaultMigrated } = await chrome.storage.local.get("hubDefaultMigrated");
-    if (hubDefaultMigrated) return;
-    await chrome.storage.local.remove("useHub");
-    await chrome.storage.local.set({ hubDefaultMigrated: true });
-  } catch {}
-})();
-
 chrome.runtime.onStartup.addListener(async () => {
   // session consent is wiped on restart but native tab groups persist → drop any
   // leftover "⚡" groups so they don't imply sharing that no longer exists.
   cleanupTabGroups();
-  // Reconnect with an ephemeral port (0), never a stale bound port, if we were connected.
-  const s = await getConnState();
-  if (s.state === "connected") connect(0);
+  // Auto-join an already-running hub (or revive if we were connected). Respects Stop.
+  await ensureConnected();
 });
 
 // ---------------------------------------------------------------------------
@@ -590,7 +600,6 @@ chrome.runtime.onMessage.addListener((req, _sender, sendResponse) => {
       case "connect": sendResponse(await connect(req.port ?? DEFAULT_PORT)); break;
       case "disconnect": sendResponse(await disconnect()); break;
       case "status": sendResponse(await getConnState()); break;
-      case "setHub": await chrome.storage.local.set({ useHub: !!req.on }); if (hostPort) { await disconnect(); await connect(0); } sendResponse(await getConnState()); break;
       // sharing
       case "sharing.status": sendResponse(await sharingStatus()); break;
       case "sharing.toggleActive": { const id = await resolveActiveTabId(); if (id != null) { const st = await CONSENT.getState(); if (st.allow?.[String(id)]) await CONSENT.unshareTab(id); else await CONSENT.shareTab(id); } scheduleBadges(); sendResponse(await sharingStatus()); break; }

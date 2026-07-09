@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Tabduct",
-  "version": "1.2.0",
+  "version": "1.3.0",
   "description": "A conduit between CLI coding agents (via MCP) and your real browser tabs.",
   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAsKLDDy3qDcZPyg5lHb6g9nO4WpllhTWr1jPZ9a7M87NWkIOza+4RXGpatw2W+/sZPzacqes7eL1KxTe8dFxWMgeDIxjqObiPwJ3MuJPn2jKphZgy/ai9C5tcjDPgmzJnAmzUJjEe6UoKjDRI6cew+MkeGZ9OWUYE2c58b065E/XgUcZu3eAsHmHEWLIGim2SM19HpDcsUn5Sc/TtaFW7/l3KM8cfk+beFS4fazIbFekH28S8lmUGhPtq/3j7+sczeQkPoImpn6sZG4eTAaf4gqdz3zUy6xOD0IwD6UGazbRtWtH6taIHbILE46I8sDotvGD36yR/SYbrhBRp0OWOtQIDAQAB",
   "minimum_chrome_version": "116",
