@@ -13,7 +13,7 @@ import { writeEntry, removeEntry } from "./discovery.js";
 import { ensureSecrets, baseDir } from "./secrets.js";
 import { PROTOCOL_VERSION, DEFAULT_PORT, HUB_PORT, STOP_GRACE_MS, ERR } from "./constants.js";
 import { spawn } from "node:child_process";
-import { openSync, readFileSync } from "node:fs";
+import { openSync, readFileSync, appendFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import http from "node:http";
@@ -48,17 +48,23 @@ function hubVerified() {
 async function ensureHub() {
   if (await hubReachable()) return true;
   const hubPath = resolve(dirname(fileURLToPath(import.meta.url)), "hub.js");
-  let logFd = "ignore"; try { logFd = openSync(resolve(baseDir(), "hub.log"), "a", 0o600); } catch {}
+  const logPath = resolve(baseDir(), "hub.log");
+  // Spawn the hub DETACHED with its own stdio -> hub.log so any startup failure is
+  // diagnosable. (The previous Windows path wrapped this in `cmd /c start /B ... 2>>log`,
+  // where the redirect bound to `start` rather than the hub — hub.log stayed empty and
+  // failures were invisible. A plain detached spawn works cross-platform and captures the
+  // hub's own output; the hub self-exits when idle so it doesn't linger.)
+  let logFd = "ignore"; try { logFd = openSync(logPath, "a", 0o600); } catch {}
   try {
-    if (process.platform === "win32") {
-      // `detached` alone does NOT break out of Chrome's job object; `start /B` does.
-      const logPath = resolve(baseDir(), "hub.log");
-      spawn(process.env.ComSpec || "cmd.exe", ["/c", `start "" /B "${process.execPath}" "${hubPath}" 2>>"${logPath}"`], { detached: true, windowsHide: true, stdio: "ignore" }).unref?.();
-    } else {
-      spawn(process.execPath, [hubPath], { detached: true, stdio: ["ignore", "ignore", logFd] }).unref?.();
-    }
-  } catch {}
-  for (let i = 0; i < 30; i++) { if (await hubReachable()) return true; await new Promise((r) => setTimeout(r, 150)); } // bounded ~4.5s
+    appendFileSync(logPath, `[host ${process.pid}] ensureHub: spawning ${process.execPath} ${hubPath}\n`);
+    const child = spawn(process.execPath, [hubPath], { detached: true, windowsHide: true, stdio: ["ignore", logFd, logFd] });
+    child.on("error", (e) => { try { appendFileSync(logPath, `[host] hub spawn error: ${e.message}\n`); } catch {} });
+    child.unref?.();
+  } catch (e) {
+    try { appendFileSync(logPath, `[host] ensureHub failed: ${e.message}\n`); } catch {}
+  }
+  for (let i = 0; i < 80; i++) { if (await hubReachable()) return true; await new Promise((r) => setTimeout(r, 150)); } // bounded ~12s (node + MCP SDK cold start)
+  try { appendFileSync(logPath, `[host ${process.pid}] ensureHub: hub NOT reachable after wait\n`); } catch {}
   return false;
 }
 
