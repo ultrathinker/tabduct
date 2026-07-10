@@ -137,6 +137,15 @@ hub automatically (no need to Start each). They all sit behind the one endpoint
 (`127.0.0.1:12311`), and the agent tells them apart by their **Label** (auto-named
 like `Chrome-abcd` — rename to `Work` / `Personal` in Settings).
 
+The popup gives you **one place to manage all of them**: the shared-tab list is grouped
+by browser (**Current** first, then each other browser that's sharing something), so you
+can see everything that's exposed across every profile at a glance. The ✕ next to any tab
+unshares it **even on another browser**; a browser in Share-Everything mode shows a single
+**⚡ Sharing all tabs** row you can switch off the same way; and a **Revoke all sharing**
+link clears every browser at once. (Cross-browser management flows through the hub over a
+separate, token-authed control channel that the agent never sees — it can only ever
+*reduce* sharing, never grant it; see [`protocol/PROTOCOL.md`](protocol/PROTOCOL.md) §11a.)
+
 ## Two protocols, one extension, many hosts
 
 Tabduct is defined by **contracts**, not implementations:

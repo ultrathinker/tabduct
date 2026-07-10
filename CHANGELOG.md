@@ -4,6 +4,28 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims for
 [Semantic Versioning](https://semver.org/) once it reaches 1.0.
 
+## [1.4.0] — 2026-07-10
+
+### Added
+- **Cross-instance sharing view in the popup.** The shared-tab list is now grouped by
+  browser — **Current** first, then every other browser behind the hub that is sharing
+  something — so you can see, in one popup, exactly what each of your browsers exposes.
+- **Unshare across browsers.** The ✕ next to any tab works on *other* browsers too, and an
+  instance in Share-Everything mode shows a single **⚡ Sharing all tabs** row with its own
+  ✕ that turns it off — all from whichever popup you have open.
+- **"Revoke all sharing"** — a compact link at the bottom of the popup that appears whenever
+  anything is shared *anywhere* and clears sharing across **every** browser at once.
+- Share-Everything now shows a **⚡ Sharing all tabs** row in the list (previously the list
+  was empty in that mode), with a ✕ to stop it — so it can be stopped from the list as well
+  as the button.
+
+### Security
+- Cross-instance status and unshare travel over a **separate, non-MCP `/control` endpoint**
+  on the hub, authed with a distinct `tControl` bearer that is **never disclosed to the
+  agent** (the agent's `/mcp` path refuses the internal `_td/*` ops). The popup reaches it
+  only through its own host, so the "`Origin` always rejected" invariant is preserved. The
+  control ops can only ever **reduce** sharing — never grant it. See `PROTOCOL.md` §11a.
+
 ## [1.3.0] — 2026-07-09
 
 ### Changed

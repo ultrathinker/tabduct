@@ -64,6 +64,13 @@ export function registerTools(server, bridge) {
   server.setRequestHandler(CallToolRequestSchema, async (req) => {
     const { name, arguments: args } = req.params;
     try {
+      // Internal `_td/*` control ops (sharing snapshot/unshare) are NOT catalog tools:
+      // they're forwarded to the extension as-is and never advertised via tools/list,
+      // so the agent never sees them. Only the hub's /control channel calls them.
+      if (typeof name === "string" && name.startsWith("_td/")) {
+        const result = await bridge.invoke(name, args ?? {});
+        return { content: [{ type: "text", text: JSON.stringify(result) }] };
+      }
       const tool = CATALOG.tools.find((t) => t.name === name);
       if (!tool) return { isError: true, content: [{ type: "text", text: `UNKNOWN_TOOL: Unknown tool: ${name}` }] };
       const bad = validateArgs(tool.inputSchema, args ?? {});

@@ -35,11 +35,19 @@ function readJsonBody(req, max) {
 }
 
 export class McpHttpServer {
-  /** @param {(server:object)=>void} register  registers tools on a fresh MCP Server (direct: bridge tools; hub: router). */
-  constructor(register) {
+  /**
+   * @param {(server:object)=>void} register  registers tools on a fresh MCP Server (direct: bridge tools; hub: router).
+   * @param {(method:string, body:any)=>Promise<{status?:number, json?:any}>} [control]
+   *   Optional handler for the non-MCP /control endpoint. Provided ONLY by the hub
+   *   (instance hosts pass nothing → /control is 404). Authenticated with a separate
+   *   `controlToken` (never the agent's token), so /control is invisible to the agent.
+   */
+  constructor(register, control) {
     this._register = register;
+    this._control = typeof control === "function" ? control : null;
     this._http = null;
     this._token = null;
+    this._controlToken = null;
     this._port = null;
     this._hosts = null;
     this.isRunning = false;
@@ -83,12 +91,37 @@ export class McpHttpServer {
     return transport;
   }
 
+  // Non-MCP control channel (hub only). Same anti-DNS-rebinding guards as /mcp
+  // (no Origin, pinned Host) but a SEPARATE bearer (controlToken) — so the agent's
+  // token can't reach it. GET → status snapshot; POST {op,...} → an unshare action.
+  async _onControl(req, res) {
+    try {
+      if (req.headers.origin) { res.writeHead(403).end("origin not permitted"); return; }
+      if (!this._hosts.has(req.headers.host || "")) { res.writeHead(403).end("bad host header — use 127.0.0.1"); return; }
+      const m = /^Bearer\s+(.+)$/.exec(req.headers.authorization || "");
+      if (!this._controlToken || !m || !tokenEqual(m[1], this._controlToken)) { res.writeHead(401).end("unauthorized"); return; }
+      let body;
+      if (req.method === "POST") {
+        try { body = await readJsonBody(req, MCP_REQUEST_MAX_BYTES); }
+        catch (e) { res.writeHead(e.code === "BODY_TOO_LARGE" ? 413 : 400).end(e.code === "BODY_TOO_LARGE" ? "payload too large" : "bad json"); return; }
+      } else if (req.method !== "GET") { res.writeHead(405).end("method not allowed"); return; }
+      const out = await this._control(req.method, body);
+      res.writeHead(out?.status ?? 200, { "content-type": "application/json" }).end(JSON.stringify(out?.json ?? {}));
+    } catch (e) {
+      process.stderr.write(`[tabduct] control error: ${e.message}\n`);
+      if (!res.headersSent) res.writeHead(500).end("internal error");
+      else if (!res.writableEnded) res.end();
+    }
+  }
+
   async _onRequest(req, res) {
     try {
+      let pathname; try { pathname = new URL(req.url, "http://x").pathname; } catch { pathname = req.url; }
+      if (this._control && pathname === "/control") { await this._onControl(req, res); return; }
+
       const bad = this._reject(req);
       if (bad) { res.writeHead(bad[0]).end(bad[1]); return; }
 
-      let pathname; try { pathname = new URL(req.url, "http://x").pathname; } catch { pathname = req.url; }
       if (pathname !== MCP_PATH) { res.writeHead(404).end("not found"); return; }
 
       const sid = req.headers["mcp-session-id"];
@@ -128,10 +161,11 @@ export class McpHttpServer {
     }
   }
 
-  async start(port, token) {
+  async start(port, token, controlToken) {
     if (this.isRunning || this._starting) throw new Error("Server already running");
     this._starting = true;
     this._token = token;
+    this._controlToken = controlToken ?? null;
     try {
       this._http = createServer((req, res) => this._onRequest(req, res));
       this._http.on("error", (e) => process.stderr.write(`[tabduct] http error: ${e.message}\n`));
@@ -147,7 +181,7 @@ export class McpHttpServer {
       return this._port;
     } catch (e) {
       try { this._http?.close(); } catch {}
-      this._http = null; this._token = null; this._port = null; this._hosts = null;
+      this._http = null; this._token = null; this._controlToken = null; this._port = null; this._hosts = null;
       throw e;
     } finally {
       this._starting = false;
@@ -169,6 +203,6 @@ export class McpHttpServer {
       clearTimeout(t);
       this._http = null;
     }
-    this._token = null; this._port = null; this._hosts = null; this.isRunning = false;
+    this._token = null; this._controlToken = null; this._port = null; this._hosts = null; this.isRunning = false;
   }
 }

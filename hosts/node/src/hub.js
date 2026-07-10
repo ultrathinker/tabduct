@@ -23,6 +23,7 @@ const CATALOG = loadCatalog();
 const IDLE_EXIT_MS = Number(process.env.TABDUCT_HUB_IDLE_MS) || 60_000;
 const POLL_MS = 3_000;
 const CALL_TIMEOUT_MS = INVOKE_TIMEOUT_MS + 3_000; // slightly above the instance's own invoke timeout
+const CONTROL_TIMEOUT_MS = 5_000; // popup control calls (snapshot/unshare) are quick + the popup polls every 2.5s; don't hold zombie fan-outs for 23s
 // Read-only tools are safe to re-issue after a lost transport; everything else may
 // have already taken effect, so we don't retry it (avoids double open/close/navigate).
 // NOTE: list_network_requests is intentionally NOT here — with clear:true it is
@@ -53,13 +54,15 @@ class Hub {
   constructor() {
     this.clients = new Map(); // instanceId -> MCP Client
     this.meta = new Map();    // instanceId -> { label }
-    this.server = new McpHttpServer((srv) => this._register(srv));
-    this._idle = null; this._poll = null; this.tAgent = null;
+    this.server = new McpHttpServer((srv) => this._register(srv), (method, body) => this._control(method, body));
+    this._idle = null; this._poll = null; this.tAgent = null; this.tControl = null;
   }
 
   async start() {
-    this.tAgent = ensureSecrets().tAgent;
-    await this.server.start(HUB_PORT, this.tAgent); // bind = singleton mutex; a 2nd hub throws here
+    const secrets = ensureSecrets();
+    this.tAgent = secrets.tAgent;
+    this.tControl = secrets.tControl;
+    await this.server.start(HUB_PORT, this.tAgent, this.tControl); // bind = singleton mutex; a 2nd hub throws here
     writeFileSync(resolve(baseDir(), "hub.json"), JSON.stringify({ mcpPort: HUB_PORT, pid: process.pid }), { encoding: "utf8", mode: 0o600 });
     await this._refresh();
     this._poll = setInterval(() => this._refresh().catch(() => {}), POLL_MS); this._poll.unref?.();
@@ -103,8 +106,8 @@ class Hub {
     if (this.clients.size > 0) this._armIdle();
   }
 
-  _withTimeout(p) {
-    let t; const timeout = new Promise((_, rej) => { t = setTimeout(() => rej(codeErr(ERR.TIMEOUT, "instance call timed out")), CALL_TIMEOUT_MS); });
+  _withTimeout(p, ms = CALL_TIMEOUT_MS) {
+    let t; const timeout = new Promise((_, rej) => { t = setTimeout(() => rej(codeErr(ERR.TIMEOUT, "instance call timed out")), ms); });
     return Promise.race([p.finally(() => clearTimeout(t)), timeout]);
   }
 
@@ -133,6 +136,10 @@ class Hub {
 
   async _route(name, args) {
     try {
+      // Internal `_td/*` ops (sharing snapshot/unshare) are reachable ONLY via the
+      // /control channel — never the agent-facing MCP path. Refuse them here so an
+      // agent holding tAgent can't snapshot or unshare across browsers.
+      if (typeof name === "string" && name.startsWith("_td/")) return errResult(ERR.UNKNOWN_TOOL, `Unknown tool: ${name}`);
       if (name === "list_instances") return textResult({ instances: [...this.meta].map(([instanceId, m]) => ({ instanceId, label: m.label })) });
       if (name === "list_tabs") return await this._listTabsFanout(args);
       const { instanceId, forward } = this._resolveTarget(args);
@@ -175,6 +182,49 @@ class Hub {
       } catch { /* one instance failing shouldn't sink the fan-out */ }
     }));
     return textResult({ tabs: out });
+  }
+
+  // /control handler (popup-driven, tControl-authed, NOT the agent path).
+  //  GET  → { instances: [{ instanceId, label, tier, sharedCount, tabs, activeTabId }] }
+  //  POST → { op: "unshare", instanceId, tabId } | { op: "stopAll", instanceId }
+  // Tab ids stay per-instance numeric (the popup pairs them with instanceId — no
+  // composite rewrite here). One instance failing never sinks the whole snapshot.
+  async _control(method, body) {
+    if (method === "GET") {
+      const instances = [];
+      await Promise.all([...this.clients.keys()].map(async (id) => {
+        const label = this.meta.get(id)?.label ?? null;
+        try {
+          const raw = await this._withTimeout(this.clients.get(id).callTool({ name: "_td/snapshot", arguments: {} }), CONTROL_TIMEOUT_MS);
+          const snap = raw?.isError ? null : parseText(raw);
+          // isError / unparsable = an instance that doesn't implement `_td/snapshot`
+          // (a non-Node host, or a pre-feature build) → mark unknown, don't imply "nothing shared".
+          if (!snap) instances.push({ instanceId: id, label, tier: "unknown", sharedCount: 0, tabs: [], unavailable: true });
+          else instances.push({ instanceId: id, label, tier: snap.tier ?? "none", sharedCount: snap.sharedCount ?? 0, tabs: Array.isArray(snap.tabs) ? snap.tabs : [], activeTabId: snap.activeTabId ?? null });
+        } catch { instances.push({ instanceId: id, label, tier: "unknown", sharedCount: 0, tabs: [], unavailable: true }); }
+      }));
+      return { status: 200, json: { instances } };
+    }
+    if (method === "POST") {
+      const { op, instanceId, tabId, exceptInstanceId } = body || {};
+      // Fan-out op: clear sharing on every instance except the caller (which clears itself locally).
+      if (op === "revokeAll") {
+        await Promise.all([...this.clients.keys()].filter((id) => id !== exceptInstanceId).map((id) =>
+          this._withTimeout(this.clients.get(id).callTool({ name: "_td/revoke_all", arguments: {} }), CONTROL_TIMEOUT_MS).catch(() => {})));
+        return { status: 200, json: { ok: true } };
+      }
+      if (!instanceId || !this.clients.has(instanceId)) return { status: 404, json: { error: "instance not connected" } };
+      try {
+        if (op === "unshare") {
+          if (!Number.isInteger(tabId)) return { status: 400, json: { error: "tabId must be an integer" } };
+          await this._withTimeout(this.clients.get(instanceId).callTool({ name: "_td/unshare", arguments: { tabId } }), CONTROL_TIMEOUT_MS);
+        } else if (op === "stopAll") {
+          await this._withTimeout(this.clients.get(instanceId).callTool({ name: "_td/set_tier", arguments: { tier: "none" } }), CONTROL_TIMEOUT_MS);
+        } else return { status: 400, json: { error: "unknown op" } };
+        return { status: 200, json: { ok: true } };
+      } catch (e) { return { status: 502, json: { error: e?.message || "control call failed" } }; }
+    }
+    return { status: 405, json: { error: "method not allowed" } };
   }
 
   _rewrite(instanceId, res) {

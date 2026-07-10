@@ -84,12 +84,25 @@ ignored (forward-compat).
 | `open` | `{ port, token, protocolVersion, instanceId?, label? }` | `{ port, protocolVersion }` — bind MCP server on `127.0.0.1:port` (**`port: 0` = ephemeral**; the reply echoes the actually-bound port). Require `token` for auth (§5). Mismatched `protocolVersion` → `VERSION_MISMATCH`. `instanceId`/`label` register the instance for discovery (§7). |
 | `close` | — | `{}` — stop the MCP server (process keeps running). |
 | `ping` | — | `{ pong: true }` — liveness. |
+| `peers` | — | `{ instances: [{ instanceId, label, tier, sharedCount, tabs, activeTabId }] }` — host proxies the hub's `GET /control` (§11a) so the popup can show every browser + what each shares. |
+| `peerUnshare` | `{ instanceId, tabId }` | `{ ok:true }` — host proxies `POST /control {op:"unshare"}`: unshare one tab in another instance. |
+| `peerStopAll` | `{ instanceId }` | `{ ok:true }` — host proxies `POST /control {op:"stopAll"}`: turn off Share-Everything in another instance. |
+| `peerRevokeAll` | — | `{ ok:true }` — host proxies `POST /control {op:"revokeAll", exceptInstanceId}`: clear sharing on every OTHER instance (the caller clears itself locally). Backs the popup's "Revoke all sharing". |
 
 ## 4. Requests: host → extension
 
 | `type` | payload | reply `result` |
 |--------|---------|----------------|
 | `invoke` | `{ tool, args }` | the tool's result object (see `tools.schema.json`). Errors use §6 codes. |
+
+Internal `_td/*` invokes (NOT catalog tools, never advertised via `tools/list`, only
+ever issued by the hub's `/control` handler — see §11a): `_td/snapshot` → this
+instance's sharing view `{ tier, sharedCount, tabs, activeTabId, label }`;
+`_td/unshare {tabId}` → unshare that tab; `_td/set_tier {tier:"none"}` → stop
+Share-Everything (accepts **only** `"none"` — it can never *raise* the tier, so it
+cannot grant access); `_td/revoke_all` → clear all sharing on that instance. These
+bypass the per-tool consent gate because, by construction, they only ever **reduce**
+what is shared.
 
 ## 5. Notifications (no reply)
 
@@ -279,6 +292,28 @@ browser instances. Reverse-proxy design (see docs/HUB-PLAN.md):
   `open_tab`/`navigate`) have their ids re-composited; screenshots pass through.
 - Consent is still enforced by each extension; the hub makes no authorization
   decision. The hub self-exits ~60s after its registry is empty.
+
+### 11a. `/control` — popup cross-instance status & unshare
+
+A second, **non-MCP** HTTP endpoint on the hub, for the *popup* (never the agent) to
+see and manage sharing across all browsers. Same anti-DNS-rebinding guards as `/mcp`
+(no `Origin`, pinned `Host`) but authed with a **separate** bearer `tControl` (also in
+`~/.tabduct/token`, alongside `tAgent`). Crucially, `tControl` is **never disclosed to
+the agent** — only `tAgent` is shown in the popup — and the agent-facing `/mcp` router
+**refuses** any `_td/*` name, so an agent holding `tAgent` can neither snapshot nor
+unshare across browsers. It stays a user-only action.
+
+- `GET /control` → `{ instances: [{ instanceId, label, tier, sharedCount, tabs, activeTabId }] }` (fans out `_td/snapshot`; per-instance tab ids stay numeric — no composite rewrite).
+- `POST /control {op:"unshare", instanceId, tabId}` → routes `_td/unshare` to that instance.
+- `POST /control {op:"stopAll", instanceId}` → routes `_td/set_tier {tier:"none"}`.
+- `POST /control {op:"revokeAll", exceptInstanceId?}` → fans `_td/revoke_all` to every instance except `exceptInstanceId` (the caller, which clears itself locally).
+
+The popup never calls `/control` directly (it's a browser context → would carry an
+`Origin`); instead its extension asks its **own host** via the `peers`/`peerUnshare`/
+`peerStopAll` wire requests (§3), and the host (not a browser, no `Origin`) calls
+`/control` with `tControl`. So the "`Origin` always rejected" invariant is preserved.
+Only the Node host implements this today (the hub is Node-only); a non-Node instance
+simply reports `tier:"unknown"` in the snapshot.
 - **Accepted risks:** the shared `tAgent` reaches every instance's popup (blast
   radius = all shared tabs, bounded by consent); a well-known `HUB_PORT` on a
   multi-user box can be pre-bound to harvest `tAgent` (fate shared with any local

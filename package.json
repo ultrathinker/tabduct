@@ -1,6 +1,6 @@
 {
   "name": "tabduct",
-  "version": "1.3.0",
+  "version": "1.4.0",
   "private": true,
   "type": "module",
   "description": "A minimal conduit between CLI coding agents and your real browser tabs (MCP <-> Chrome).",

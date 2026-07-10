@@ -68,6 +68,36 @@ async function ensureHub() {
   return false;
 }
 
+// Call the hub's non-MCP /control endpoint (tControl-authed) on the extension's
+// behalf — so the popup never talks to the hub directly (Origin stays fully rejected).
+function hubControl(method, body) {
+  return new Promise((resolve, reject) => {
+    // Only hand tControl to a listener we've CONFIRMED is our hub (hub.json pid alive +
+    // port matches) — same discipline as the tAgent disclosure path; don't leak it to a
+    // same-user squatter pre-bound to HUB_PORT.
+    if (!hubVerified()) { reject(Object.assign(new Error("hub not verified"), { code: ERR.INTERNAL })); return; }
+    let tControl; try { tControl = ensureSecrets().tControl; } catch (e) { reject(e); return; }
+    const data = body != null ? Buffer.from(JSON.stringify(body)) : null;
+    const req = http.request({
+      host: "127.0.0.1", port: HUB_PORT, path: "/control", method,
+      timeout: 6000,
+      headers: { Authorization: `Bearer ${tControl}`, ...(data ? { "content-type": "application/json", "content-length": data.length } : {}) },
+    }, (r) => {
+      const chunks = []; r.on("data", (c) => chunks.push(c));
+      r.on("end", () => {
+        const text = Buffer.concat(chunks).toString("utf8");
+        let json = null; try { json = text ? JSON.parse(text) : {}; } catch {}
+        if (r.statusCode >= 200 && r.statusCode < 300) resolve(json ?? {});
+        else reject(Object.assign(new Error(json?.error || `control ${r.statusCode}`), { code: ERR.INTERNAL }));
+      });
+    });
+    req.on("error", reject);
+    req.on("timeout", () => { req.destroy(new Error("control request timed out")); });
+    if (data) req.write(data);
+    req.end();
+  });
+}
+
 function reply(id, ok, payload) {
   if (id == null) return;
   try { nm.send(ok ? { replyTo: id, ok: true, result: payload } : { replyTo: id, ok: false, error: payload }); }
@@ -118,6 +148,22 @@ async function handle(msg) {
     case "close":
       try { await server.stop(); if (currentInstance) { removeEntry(currentInstance); currentInstance = null; } reply(id, true, {}); }
       catch (e) { reply(id, false, { code: ERR.INTERNAL, message: `close failed: ${e.message}` }); }
+      return;
+    case "peers": // popup: list all instances + what each shares (via hub /control)
+      try { reply(id, true, await hubControl("GET")); }
+      catch (e) { reply(id, false, { code: e.code || ERR.INTERNAL, message: e.message }); }
+      return;
+    case "peerUnshare": // popup: unshare one tab in another instance
+      try { await hubControl("POST", { op: "unshare", instanceId: payload?.instanceId, tabId: payload?.tabId }); reply(id, true, { ok: true }); }
+      catch (e) { reply(id, false, { code: e.code || ERR.INTERNAL, message: e.message }); }
+      return;
+    case "peerStopAll": // popup: turn off Share-Everything in another instance
+      try { await hubControl("POST", { op: "stopAll", instanceId: payload?.instanceId }); reply(id, true, { ok: true }); }
+      catch (e) { reply(id, false, { code: e.code || ERR.INTERNAL, message: e.message }); }
+      return;
+    case "peerRevokeAll": // popup "Revoke all sharing": clear every OTHER instance (this one is cleared locally)
+      try { await hubControl("POST", { op: "revokeAll", exceptInstanceId: currentInstance }); reply(id, true, { ok: true }); }
+      catch (e) { reply(id, false, { code: e.code || ERR.INTERNAL, message: e.message }); }
       return;
     case "ping":
       reply(id, true, { pong: true });

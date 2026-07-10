@@ -123,6 +123,15 @@ code { padding: 5px 8px; border: 1px solid var(--border); border-radius: 6px; fo
 .fav { width: 16px; height: 16px; flex: 0 0 16px; border-radius: 3px; }
 .ttl { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: pointer; }
 .ttl:hover { color: var(--accent); }
+.ttl-static { cursor: default; }
+.ttl-static:hover { color: inherit; }
+.fav-all { display: inline-flex; align-items: center; justify-content: center; font-size: 12px; line-height: 16px; }
+.shared li.grp { display: block; padding: 7px 2px 2px; border-top: 1px solid var(--border); font-size: 10.5px; letter-spacing: .05em; text-transform: uppercase; color: var(--muted); }
+.shared li.grp:first-child { border-top: 0; }
+.linkbtn { display: block; margin: 10px auto 2px; padding: 3px 8px; background: transparent; border: 0; color: var(--muted); font: inherit; font-size: 12px; cursor: pointer; border-radius: 6px; }
+.linkbtn:hover { color: var(--danger); background: color-mix(in srgb, var(--danger) 10%, transparent); }
+.linkbtn.warn { color: var(--danger); }
+.linkbtn-ic { font-size: 13px; }
 .x { border: 0; background: transparent; color: var(--muted); cursor: pointer; font-size: 12px; padding: 2px 4px; }
 .x:hover { color: var(--danger); }
 

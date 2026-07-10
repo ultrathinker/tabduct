@@ -223,6 +223,10 @@ async function handleInvoke(msg) {
   const { id, payload } = msg;
   const tool = payload?.tool;
   const args = payload?.args ?? {};
+  // Internal `_td/*` control ops arrive only via the hub's /control channel (never
+  // the agent). They are USER sharing actions (snapshot / unshare / stop-all), so they
+  // bypass the per-tool consent gate — they can only REDUCE what's shared, never grant.
+  if (typeof tool === "string" && tool.startsWith("_td/")) return handleControlInvoke(id, tool, args);
   // Defense-in-depth: a direct host must only ever see a numeric tabId (composite
   // "inst:n" ids are resolved by the hub and never reach here).
   if (args.tabId != null && typeof args.tabId !== "number") { reply(id, false, { code: "INVALID_ARGS", message: "tabId must be a number" }); return; }
@@ -276,6 +280,46 @@ async function handleInvoke(msg) {
     reply(id, true, result);
   } catch (e) {
     reply(id, false, { code: e?.code || "SCRIPT_ERROR", message: e?.message ?? String(e) });
+  }
+}
+
+// Cross-instance control ops (hub /control → this instance). Read-only snapshot or
+// an unshare that only shrinks sharing; broadcast "sharing" so a local popup refreshes.
+async function handleControlInvoke(id, tool, args) {
+  try {
+    if (tool === "_td/snapshot") {
+      const s = await sharingStatus();
+      // In "all" tier every tab is implicitly shared; send no per-tab list (the popup
+      // shows a single "Sharing all tabs" row from `tier`), just the count.
+      reply(id, true, { tier: s.tier, sharedCount: s.sharedCount, tabs: s.tier === "all" ? [] : s.tabs, activeTabId: s.activeTabId, label: s.label });
+      return;
+    }
+    if (tool === "_td/unshare") {
+      if (typeof args?.tabId === "number") { await CONSENT.unshareTab(args.tabId); scheduleBadges(); chrome.runtime.sendMessage({ evt: "sharing" }).catch(() => {}); }
+      reply(id, true, { ok: true });
+      return;
+    }
+    if (tool === "_td/set_tier") {
+      // Cross-instance control may only STOP sharing — accept "none" ONLY, so this can
+      // never RAISE the tier (e.g. to "all") bypassing the consent gate. Keeps the
+      // "_td/* only ever reduce" invariant true by construction, not by caller luck.
+      if (args?.tier !== "none") { reply(id, false, { code: "INVALID_ARGS", message: "_td/set_tier accepts only 'none'" }); return; }
+      await CONSENT.setTier("none"); await cleanupTabGroups();
+      updateContextMenu(); scheduleBadges();
+      chrome.runtime.sendMessage({ evt: "sharing" }).catch(() => {});
+      reply(id, true, { ok: true });
+      return;
+    }
+    if (tool === "_td/revoke_all") {
+      await CONSENT.setTier("none"); await cleanupTabGroups(); // setTier("none") already clears the allow map
+      updateContextMenu(); scheduleBadges();
+      chrome.runtime.sendMessage({ evt: "sharing" }).catch(() => {});
+      reply(id, true, { ok: true });
+      return;
+    }
+    reply(id, false, { code: "UNKNOWN_TOOL", message: `Unknown control op: ${tool}` });
+  } catch (e) {
+    reply(id, false, { code: e?.code || "INTERNAL", message: e?.message ?? String(e) });
   }
 }
 
@@ -478,6 +522,23 @@ async function sharingStatus() {
   return { tier: st.tier, denyOrigins: st.denyOrigins, originMode: st.originMode, sharedCount: allShared, tabs: shared, activeTabId: active?.id, label, useTabGroup: useTabGroup !== false, readOnly: st.readOnly, ttlMs: st.ttlMs, lockToDomain: st.lockToDomain, noAutoShareOpened: noAutoShareOpened !== false, allowCdp: st.allowCdp, cdpAlways: st.cdpAlways, cdpConsole: st.cdpConsole };
 }
 
+// Cross-instance view for the popup: ask our host to fetch the hub's /control
+// snapshot (all browsers behind the hub + what each shares). `selfId` lets the popup
+// mark the current browser "Current" and render it first from its own live status.
+async function peersList() {
+  let selfId = null; try { selfId = (await getIdentity()).instanceId; } catch {}
+  try { const r = await request("peers", {}, 8000); return { selfId, instances: Array.isArray(r?.instances) ? r.instances : [] }; }
+  catch { return { selfId, instances: [] }; }
+}
+async function peersUnshare(instanceId, tabId) {
+  try { await request("peerUnshare", { instanceId, tabId }, 8000); } catch {}
+  return await peersList();
+}
+async function peersStopAll(instanceId) {
+  try { await request("peerStopAll", { instanceId }, 8000); } catch {}
+  return await peersList();
+}
+
 // Large screenshots are handed to the viewer tab in memory (NOT chrome.storage, whose
 // ~10MB quota a large PNG can exceed). id -> {dataUrl, ...}; the viewer pulls it via the
 // "screenshot.get" message and it's deleted on read (or after a 2-min safety timeout).
@@ -619,12 +680,27 @@ chrome.runtime.onMessage.addListener((req, _sender, sendResponse) => {
       }
       case "sharing.setOriginMode": await chrome.storage.local.set({ originMode: req.mode === "allow" ? "allow" : "block" }); scheduleBadges(); sendResponse(await sharingStatus()); break;
       case "sharing.revokeAll": await CONSENT.revokeAll(); await cleanupTabGroups(); updateContextMenu(); scheduleBadges(); sendResponse(await sharingStatus()); break;
+      case "sharing.revokeEverywhere": {
+        // Clear THIS instance fully (setTier("none") also clears the allow map), then ask
+        // every other instance to do the same via the hub. If the hub is unreachable we
+        // report peersReachable:false so the popup can warn (other browsers may still share).
+        await CONSENT.setTier("none"); await cleanupTabGroups(); updateContextMenu(); scheduleBadges();
+        let peersReachable = true;
+        try { await request("peerRevokeAll", {}, 8000); } catch { peersReachable = false; }
+        chrome.runtime.sendMessage({ evt: "sharing" }).catch(() => {});
+        sendResponse({ ...(await sharingStatus()), peersReachable });
+        break;
+      }
       case "sharing.setDeny": await CONSENT.setDenyOrigins(req.list ?? []); scheduleBadges(); sendResponse(await sharingStatus()); break;
       case "sharing.setLabel": { const v = String(req.label || "").trim().slice(0, 40); await chrome.storage.local.set({ instanceLabel: v || `Chrome-${labelSuffix()}` }); sendResponse(await sharingStatus()); break; }
       case "sharing.setTabGroup": await chrome.storage.local.set({ useTabGroup: !!req.on }); if (!req.on) await cleanupTabGroups(); scheduleBadges(); sendResponse(await sharingStatus()); break;
       case "sharing.activate": try { await chrome.tabs.update(req.tabId, { active: true }); const t = await chrome.tabs.get(req.tabId); await chrome.windows.update(t.windowId, { focused: true }); } catch {} sendResponse(await sharingStatus()); break;
       case "screenshot.capture": sendResponse(await captureToViewer()); break;
       case "screenshot.get": { const v = pendingShots.get(String(req.k)); if (v) pendingShots.delete(String(req.k)); sendResponse(v || null); break; }
+      // Cross-instance list (other browsers behind the same hub) + remote unshare.
+      case "peers.list": sendResponse(await peersList()); break;
+      case "peers.unshare": sendResponse(await peersUnshare(req.instanceId, req.tabId)); break;
+      case "peers.stopAll": sendResponse(await peersStopAll(req.instanceId)); break;
       default: sendResponse({ state: "disconnected" });
     }
   })();

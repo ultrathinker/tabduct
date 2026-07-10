@@ -31,7 +31,7 @@
           <div id="allBadge" class="allbadge" hidden>⚡ Everything is shared</div>
           <button id="shareEvery" class="btn every">Share Everything</button>
           <ul id="shared" class="shared"></ul>
-          <button id="revokeAll" class="btn danger" hidden>Revoke all</button>
+          <button id="revokeAllGlobal" class="linkbtn" hidden title="Stop sharing everything, in every browser"><span class="linkbtn-ic">⊘</span> Revoke all sharing</button>
         </div>
       </section>
     </div>
@@ -254,6 +254,7 @@ Do steps 1 and 3 yourself; I'll do step 2 in the browser. Ask me for the endpoin
 
         <h3>Running several browsers or profiles</h3>
         <p>Install Tabduct in each Chrome profile you want to use — each Google account / profile is separate. Start it in <em>one</em> browser; any other profile you open then joins the same hub <strong>automatically</strong> (no need to press Start in each). Share tabs per browser as usual. They all appear behind the one endpoint (<code class="inline">127.0.0.1:12311</code>) and the agent tells them apart by their <strong>Label</strong> (auto-named like <code class="inline">Chrome-abcd</code>). Give each a clear name in Settings — e.g. <code class="inline">Work</code> and <code class="inline">Personal</code> — so the agent (and you) never confuse them.</p>
+        <p>The shared-tab list here is your control panel for <em>all</em> of them: it's grouped by browser (<strong>Current</strong> first, then each other browser that's sharing), so you see everything exposed across every profile at once. The ✕ next to a tab unshares it <strong>even on another browser</strong>; a browser sharing everything shows a single <strong>⚡ Sharing all tabs</strong> row you can switch off the same way; and <strong>Revoke all sharing</strong> (the link at the bottom) clears every browser in one click. Managing other browsers travels over a separate, token-authed channel the agent never sees — it can only ever <em>stop</em> sharing, never start it.</p>
 
         <h3>Good to know</h3>
         <ul>

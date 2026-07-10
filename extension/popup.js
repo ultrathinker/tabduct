@@ -60,6 +60,13 @@ $("dot").addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key ===
 // ---- Sharing ----
 function host(url) { try { return new URL(url).host; } catch { return url || ""; } }
 
+// Cross-instance view: the current browser is rendered from its own live `lastSharing`
+// (authoritative, instant); other browsers come from the hub snapshot in `peersData`
+// (refreshed by a light poll while the popup is open).
+let lastSharing = null;
+let peersData = { selfId: null, instances: [] };
+let peersInFlight = false; // guard so a slow hub fan-out can't stack overlapping polls
+
 function renderSharing(s) {
   if (!s) return;
   const tier = s.tier ?? "none";
@@ -101,18 +108,9 @@ function renderSharing(s) {
   $("shareThis").classList.toggle("on", activeShared);
   $("shareEvery").textContent = all ? "Unshare Everything" : "Share Everything";
   $("shareEvery").classList.toggle("on", all);
-  $("revokeAll").hidden = all || (s.sharedCount ?? 0) === 0;
 
-  const ul = $("shared"); ul.innerHTML = ""; ul.hidden = all;
-  if (!all) for (const t of s.tabs ?? []) {
-    const li = document.createElement("li");
-    const img = document.createElement("img"); img.className = "fav"; img.src = t.favIconUrl || "icons/16.png"; img.onerror = () => (img.src = "icons/16.png");
-    const span = document.createElement("span"); span.className = "ttl"; span.title = t.url; span.textContent = t.title || host(t.url);
-    span.onclick = () => send({ cmd: "sharing.activate", tabId: t.id });
-    const x = document.createElement("button"); x.className = "x"; x.textContent = "✕"; x.title = "unshare";
-    x.onclick = async () => renderSharing(await send({ cmd: "sharing.unshare", tabId: t.id }));
-    li.append(img, span, x); ul.appendChild(li);
-  }
+  lastSharing = s;
+  renderShareList(s);
 
   const dl = $("denyList"); dl.innerHTML = "";
   for (const rule of s.denyOrigins ?? []) {
@@ -122,6 +120,80 @@ function renderSharing(s) {
     x.onclick = async () => renderSharing(await send({ cmd: "sharing.setDeny", list: (s.denyOrigins ?? []).filter((r) => r !== rule) }));
     li.append(span, x); dl.appendChild(li);
   }
+}
+
+// Build the shared-tab list: the current browser first (as "Current" when others are
+// present), then every OTHER browser that shares something, each under its own header.
+// A single browser with no peers renders exactly like before (no headers).
+function groupHeader(name) {
+  const li = document.createElement("li"); li.className = "grp"; li.textContent = name; return li;
+}
+function makeRow(o) {
+  const li = document.createElement("li");
+  let icon;
+  if (o.icon) { icon = document.createElement("span"); icon.className = "fav fav-all"; icon.textContent = o.icon; }
+  else { icon = document.createElement("img"); icon.className = "fav"; icon.src = o.favIconUrl || "icons/16.png"; icon.onerror = () => (icon.src = "icons/16.png"); }
+  const span = document.createElement("span");
+  span.className = "ttl" + (o.onClick ? "" : " ttl-static");
+  if (o.url) span.title = o.url;
+  span.textContent = o.title;
+  if (o.muted) span.style.opacity = "0.6";
+  if (o.onClick) span.onclick = o.onClick;
+  li.append(icon, span);
+  if (o.onX) { const x = document.createElement("button"); x.className = "x"; x.textContent = "✕"; x.title = o.xTitle || "unshare"; x.onclick = o.onX; li.appendChild(x); }
+  return li;
+}
+function appendInstanceRows(ul, g) {
+  if (g.tier === "all") {
+    ul.appendChild(makeRow({
+      icon: "⚡", title: "Sharing all tabs", xTitle: "stop sharing everything",
+      onX: g.self
+        ? async () => renderSharing(await send({ cmd: "sharing.tier", tier: "none" }))
+        : async () => { const r = await send({ cmd: "peers.stopAll", instanceId: g.instanceId }); if (r?.instances) peersData = r; renderShareList(lastSharing); },
+    }));
+    return;
+  }
+  if (g.tier === "unknown") { ul.appendChild(makeRow({ icon: "…", title: "(unavailable)", muted: true })); return; }
+  let count = 0;
+  for (const t of g.tabs || []) {
+    count++;
+    ul.appendChild(makeRow({
+      favIconUrl: t.favIconUrl, title: t.title || host(t.url), url: t.url,
+      onClick: g.self ? () => send({ cmd: "sharing.activate", tabId: t.id }) : null,
+      onX: g.self
+        ? async () => renderSharing(await send({ cmd: "sharing.unshare", tabId: t.id }))
+        : async () => { const r = await send({ cmd: "peers.unshare", instanceId: g.instanceId, tabId: t.id }); if (r?.instances) peersData = r; renderShareList(lastSharing); },
+    }));
+  }
+  if (count === 0 && g.self) ul.appendChild(makeRow({ icon: "·", title: "(nothing shared here)", muted: true }));
+}
+function renderShareList(s) {
+  const ul = $("shared"); ul.innerHTML = ""; ul.hidden = false;
+  if (!s) return;
+  const selfId = peersData.selfId;
+  // Require a known selfId so the current browser (also present in the hub snapshot) is
+  // never rendered twice — once under "Current" and again as its own group.
+  const others = (peersData.instances || []).filter((i) => selfId && i.instanceId !== selfId && (i.tier === "all" || (i.tabs && i.tabs.length)));
+  const grouped = others.length > 0;
+  // "Revoke all sharing" shows whenever ANYTHING is shared anywhere (this browser or
+  // another) and clears every instance at once.
+  const currentShared = s.tier === "all" || (s.sharedCount ?? 0) > 0 || (s.tabs && s.tabs.length > 0);
+  $("revokeAllGlobal").hidden = !(currentShared || others.length > 0);
+  if (grouped) ul.appendChild(groupHeader("Current"));
+  appendInstanceRows(ul, { self: true, tier: s.tier ?? "none", tabs: s.tabs ?? [] });
+  let n = 0;
+  for (const inst of others) {
+    n++;
+    ul.appendChild(groupHeader(inst.label || `Instance ${n}`));
+    appendInstanceRows(ul, { self: false, instanceId: inst.instanceId, tier: inst.tier, tabs: inst.tabs || [] });
+  }
+}
+async function refreshPeers() {
+  if (peersInFlight || $("dot").dataset.state !== "connected") return;
+  peersInFlight = true;
+  try { const r = await send({ cmd: "peers.list" }); if (r && Array.isArray(r.instances)) { peersData = r; if (lastSharing) renderShareList(lastSharing); } }
+  catch {}
+  finally { peersInFlight = false; }
 }
 
 $("shareThis").addEventListener("click", async () => renderSharing(await send({ cmd: "sharing.toggleActive" })));
@@ -159,7 +231,21 @@ $("allowCdp").addEventListener("change", async () => {
 $("cdpAlways").addEventListener("change", async () => renderSharing(await send({ cmd: "sharing.setOptions", cdpAlways: $("cdpAlways").checked })));
 $("cdpConsole").addEventListener("change", async () => renderSharing(await send({ cmd: "sharing.setOptions", cdpConsole: $("cdpConsole").checked })));
 $("originMode").addEventListener("change", async () => renderSharing(await send({ cmd: "sharing.setOriginMode", mode: $("originMode").value })));
-$("revokeAll").addEventListener("click", async () => renderSharing(await send({ cmd: "sharing.revokeAll" })));
+$("revokeAllGlobal").addEventListener("click", async () => {
+  // Acts across ALL browsers: revokes this instance locally + every other instance
+  // via the hub. Shown whenever anything is shared anywhere (see renderShareList).
+  const btn = $("revokeAllGlobal");
+  const s = await send({ cmd: "sharing.revokeEverywhere" });
+  await refreshPeers();
+  renderSharing(s);
+  // If the hub was unreachable, other browsers may still be sharing — say so instead of
+  // implying an all-clear (their rows may also be missing from the snapshot).
+  if (s && s.peersReachable === false) {
+    const orig = btn.innerHTML;
+    btn.hidden = false; btn.classList.add("warn"); btn.innerHTML = "⚠ Couldn't reach other browsers";
+    setTimeout(() => { btn.innerHTML = orig; btn.classList.remove("warn"); }, 3500);
+  }
+});
 $("tabGroup").addEventListener("change", async () => renderSharing(await send({ cmd: "sharing.setTabGroup", on: $("tabGroup").checked })));
 $("label").addEventListener("change", async () => renderSharing(await send({ cmd: "sharing.setLabel", label: $("label").value })));
 $("denyAdd").addEventListener("click", async () => {
@@ -190,8 +276,8 @@ $("shotVisible").addEventListener("click", () => capture());
 
 // Live refresh (hotkey / background changes) + initial paint.
 chrome.runtime.onMessage.addListener((m) => {
-  if (m?.evt === "status") renderConn(m);
-  if (m?.evt === "sharing") send({ cmd: "sharing.status" }).then(renderSharing);
+  if (m?.evt === "status") { renderConn(m); refreshPeers(); }
+  if (m?.evt === "sharing") send({ cmd: "sharing.status" }).then(renderSharing).then(refreshPeers);
 });
 // Layer switching: main ⇄ Settings (two-column, widened) ⇄ How-it-works.
 // Each helper owns exactly one body-width class so leaving a layer always
@@ -217,4 +303,5 @@ $("qsCopy").addEventListener("click", async () => {
 });
 
 send({ cmd: "status" }).then(renderConn);
-send({ cmd: "sharing.status" }).then(renderSharing);
+send({ cmd: "sharing.status" }).then(renderSharing).then(refreshPeers);
+setInterval(refreshPeers, 2500); // keep other-browser groups fresh while the popup is open
