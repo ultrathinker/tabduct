@@ -178,7 +178,7 @@ Tabduct (github.com/ultrathinker/tabduct) is a local bridge that lets you drive 
          }
        }
      }
-   The shared-hub default uses port 12311 — but use the exact url and token I give you.
+   Register it at your global / user scope — not tied to one project folder — so Tabduct is visible from any directory (a session I launch elsewhere must see it too). In Claude Code that means `claude mcp add --scope user`; Cursor and most GUI clients store MCP servers globally already. The shared-hub default uses port 12311 — but use the exact url and token I give you.
 
 Do steps 1 and 3 yourself; I'll do step 2 in the browser. Ask me for the endpoint and token when you reach step 3.</pre>
       <p class="hint">Treat the token like a password — it grants access to your shared tabs. Prefer to do it by hand? Open <strong>Settings → How it works</strong> for the manual steps.</p>
@@ -249,6 +249,8 @@ Do steps 1 and 3 yourself; I'll do step 2 in the browser. Ask me for the endpoin
   }
 }</pre>
         <p>Replace the token with the value shown in Settings once running (the endpoint is always the hub at <code class="inline">127.0.0.1:12311</code>). Reload your agent and it will discover the Tabduct tools: <code class="inline">list_tabs</code>, <code class="inline">get_active_tab</code>, <code class="inline">get_page_content</code>, <code class="inline">get_dom_snapshot</code>, <code class="inline">screenshot</code>, <code class="inline">wait_for</code>, <code class="inline">click</code>, <code class="inline">type</code>, <code class="inline">navigate</code>, <code class="inline">open_tab</code>, <code class="inline">close_tab</code>, <code class="inline">activate_tab</code>, <code class="inline">get_console_logs</code>, <code class="inline">list_network_requests</code>, <code class="inline">get_network_request</code> and <code class="inline">execute_script</code>.</p>
+
+        <p><strong>Add it at the global / user scope.</strong> Some agents (Claude Code included) scope MCP servers to the working directory you configured them in — so a second session started from another folder won't see Tabduct. Register it globally instead. In Claude Code: <code class="inline">claude mcp add --scope user tabduct http://127.0.0.1:12311/mcp --header "Authorization: Bearer &lt;token&gt;"</code> (or move an existing project entry to user scope). Cursor and most GUI clients already store MCP servers globally.</p>
 
         <h3>Running several browsers or profiles</h3>
         <p>Install Tabduct in each Chrome profile you want to use — each Google account / profile is separate. Start it in <em>one</em> browser; any other profile you open then joins the same hub <strong>automatically</strong> (no need to press Start in each). Share tabs per browser as usual. They all appear behind the one endpoint (<code class="inline">127.0.0.1:12311</code>) and the agent tells them apart by their <strong>Label</strong> (auto-named like <code class="inline">Chrome-abcd</code>). Give each a clear name in Settings — e.g. <code class="inline">Work</code> and <code class="inline">Personal</code> — so the agent (and you) never confuse them.</p>

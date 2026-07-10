@@ -26,6 +26,13 @@ All notable changes to this project are documented here. The format follows
   Now spawned directly with its output captured to `hub.log`. If the hub still can't start,
   the popup shows a **loud error** instead of silently exposing a direct endpoint.
 
+### Documentation
+- Setup instructions (README, the in-app **How it works**, and the **Set up with your AI**
+  prompt) now recommend registering the MCP server at the **global / user scope** (e.g.
+  `claude mcp add --scope user`) so Tabduct is visible from any working directory — not
+  just the folder it was configured in. Agents like Claude Code otherwise scope MCP servers
+  per-project, so a session started elsewhere wouldn't see it.
+
 ## [1.2.0] — 2026-07-06
 
 ### Added

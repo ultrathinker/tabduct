@@ -82,6 +82,12 @@ Reload your agent and it discovers the Tabduct tools below. Start Tabduct in one
 browser and any other browser you open joins the same hub automatically — you always
 point your agent at `127.0.0.1:12311`, never at a per-browser port.
 
+> **Tip — add it at the global / user scope.** Some agents (Claude Code included) scope
+> MCP servers to the directory you configured them in, so a session launched from another
+> folder won't see Tabduct. Register it globally instead — e.g. in Claude Code:
+> `claude mcp add --scope user tabduct http://127.0.0.1:12311/mcp --header "Authorization: Bearer <token>"`.
+> Cursor and most GUI clients already store MCP servers globally.
+
 ## Tools
 
 | Tool | What it does |
