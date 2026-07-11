@@ -154,9 +154,7 @@ function appendInstanceRows(ul, g) {
     return;
   }
   if (g.tier === "unknown") { ul.appendChild(makeRow({ icon: "…", title: "(unavailable)", muted: true })); return; }
-  let count = 0;
   for (const t of g.tabs || []) {
-    count++;
     ul.appendChild(makeRow({
       favIconUrl: t.favIconUrl, title: t.title || host(t.url), url: t.url,
       onClick: g.self ? () => send({ cmd: "sharing.activate", tabId: t.id }) : null,
@@ -165,7 +163,6 @@ function appendInstanceRows(ul, g) {
         : async () => { const r = await send({ cmd: "peers.unshare", instanceId: g.instanceId, tabId: t.id }); if (r?.instances) peersData = r; renderShareList(lastSharing); },
     }));
   }
-  if (count === 0 && g.self) ul.appendChild(makeRow({ icon: "·", title: "(nothing shared here)", muted: true }));
 }
 function renderShareList(s) {
   const ul = $("shared"); ul.innerHTML = ""; ul.hidden = false;
@@ -179,8 +176,10 @@ function renderShareList(s) {
   // another) and clears every instance at once.
   const currentShared = s.tier === "all" || (s.sharedCount ?? 0) > 0 || (s.tabs && s.tabs.length > 0);
   $("revokeAllGlobal").hidden = !(currentShared || others.length > 0);
-  if (grouped) ul.appendChild(groupHeader("Current"));
-  appendInstanceRows(ul, { self: true, tier: s.tier ?? "none", tabs: s.tabs ?? [] });
+  // Show the "Current" header (and any rows) only when this browser actually shares
+  // something — an empty current instance renders nothing, no placeholder.
+  if (grouped && currentShared) ul.appendChild(groupHeader("Current"));
+  if (currentShared) appendInstanceRows(ul, { self: true, tier: s.tier ?? "none", tabs: s.tabs ?? [] });
   let n = 0;
   for (const inst of others) {
     n++;
