@@ -128,11 +128,31 @@ function renderSharing(s) {
 function groupHeader(name) {
   const li = document.createElement("li"); li.className = "grp"; li.textContent = name; return li;
 }
+// Chrome's built-in favicon cache for a page URL — the same icons the tab strip shows,
+// available even for discarded tabs. Returns a neutral globe when nothing is cached.
+function faviconCacheUrl(pageUrl) {
+  if (!pageUrl) return null;
+  try { const u = new URL(chrome.runtime.getURL("/_favicon/")); u.searchParams.set("pageUrl", pageUrl); u.searchParams.set("size", "16"); return u.toString(); }
+  catch { return null; }
+}
+// Last-resort neutral globe (gray), used only if the _favicon API is unavailable.
+const NEUTRAL_FAV =
+  "data:image/svg+xml;utf8," +
+  encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16"><circle cx="8" cy="8" r="6.5" fill="none" stroke="%239aa0a6" stroke-width="1.3"/><path d="M1.5 8h13M8 1.5c2 2 2 11 0 13M8 1.5c-2 2-2 11 0 13" fill="none" stroke="%239aa0a6" stroke-width="1"/></svg>');
 function makeRow(o) {
   const li = document.createElement("li");
   let icon;
   if (o.icon) { icon = document.createElement("span"); icon.className = "fav fav-all"; icon.textContent = o.icon; }
-  else { icon = document.createElement("img"); icon.className = "fav"; icon.src = o.favIconUrl || "icons/16.png"; icon.onerror = () => (icon.src = "icons/16.png"); }
+  else {
+    icon = document.createElement("img"); icon.className = "fav";
+    // Prefer the tab's live favicon; if it's missing (e.g. Chrome discarded an idle tab,
+    // dropping favIconUrl) or fails to load, fall back to Chrome's own favicon cache via
+    // the _favicon API — which yields a neutral globe when nothing is cached. NEVER fall
+    // back to the extension icon, which misleadingly stamps the Tabduct logo on real tabs.
+    const cached = faviconCacheUrl(o.url);
+    icon.src = o.favIconUrl || cached || NEUTRAL_FAV;
+    icon.onerror = () => { icon.onerror = null; icon.src = cached || NEUTRAL_FAV; };
+  }
   const span = document.createElement("span");
   span.className = "ttl" + (o.onClick ? "" : " ttl-static");
   if (o.url) span.title = o.url;

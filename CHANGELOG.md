@@ -4,6 +4,16 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims for
 [Semantic Versioning](https://semver.org/) once it reaches 1.0.
 
+## [1.4.1] — 2026-07-13
+
+### Fixed
+- **Shared-tab favicons could turn into the Tabduct logo.** When Chrome discarded an idle
+  tab (Memory Saver), its `favIconUrl` went empty and the popup fell back to the extension's
+  own icon — so long-open shared tabs looked like they'd been stamped with the black-fork
+  logo. The list now sources icons from Chrome's own favicon cache (the `_favicon` API, same
+  icons as the tab strip), which survives tab discard, and only ever falls back to a neutral
+  globe — never the extension icon.
+
 ## [1.4.0] — 2026-07-10
 
 ### Added
