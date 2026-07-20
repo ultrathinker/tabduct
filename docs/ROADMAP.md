@@ -57,12 +57,12 @@ loop is proven.
 - [ ] **Screenshot/large-reply sizing policy** — default screenshots to jpeg+
       quality or downscale so replies stay well within limits; document the
       overflow failure mode.
-- [ ] **`messages.schema.json`** — a shared enum of wire message names imported by
-      `protocol/`, conformance, and the extension so vocabulary drift (the bug the
-      reviewers caught) cannot recur.
+- [ ] **`messages.schema.json` (wire it in)** — the file exists as a reference list
+      of wire message names, but is **not yet imported/enforced** by `protocol/`,
+      conformance, or the extension, so vocabulary drift (the bug the reviewers
+      caught) is not yet mechanically prevented. Import + assert against it to close this.
 - [x] **Conformance harness** — `protocol/conformance/run.mjs` (host-language-
-      neutral; `-- <cmd>` runs any host) + `messages.schema.json` (shared wire-name
-      enum) + `run-hub.mjs`. `npm test` runs consent + host + hub conformance in
+      neutral; `-- <cmd>` runs any host) + `run-hub.mjs`. `npm test` runs consent + host + hub conformance in
       CI (GitHub Actions, Linux/macOS/Windows). Shared vectors still TODO.
 - [x] **Prompt-injection UX / consent tiers** — shipped: a global **read-only** mode
       (no click/type/nav/eval), the **origin filter** (block/allow), **lock-to-domain**
