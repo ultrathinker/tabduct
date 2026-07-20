@@ -63,8 +63,13 @@ npm run register        # installs the native-messaging manifest for your OS + b
 
 ## Point your agent at it (MCP)
 
-With the shared hub (on by default), every browser you connect appears behind one
-stable endpoint with a token that never changes:
+> **Hub mode requires the Node host.** The "shared hub" below is implemented only
+> in `hosts/node/src/hub.js`. If you are running the Python or .NET host, skip to
+> the per-instance config and point your agent at the port + token shown in the
+> popup (Settings → MCP endpoint / Authorization).
+
+With the shared hub (on by default **when using the Node host**), every browser
+you connect appears behind one stable endpoint with a token that never changes:
 
 ```json
 {
@@ -125,6 +130,10 @@ which is also where to report a vulnerability (please don't open a public issue)
 
 ## Multiple browsers & profiles
 
+> This section describes the Node-host hub. The Python and .NET hosts expose one
+> per-instance endpoint each (the port + token shown in the popup) and do not
+> aggregate behind a shared endpoint.
+
 Install Tabduct in each Chrome profile you use (each Google account / profile is
 separate). Start each; with the hub on they all sit behind the one endpoint, and
 the agent tells them apart by their **Label** (auto-named like `Chrome-abcd` —
@@ -136,13 +145,20 @@ Tabduct is defined by **contracts**, not implementations:
 
 - **North (agent ↔ host): MCP.** Already standardized; SDKs for Node, Python, .NET. Nothing to invent.
 - **South (host ↔ extension): the Tabduct wire protocol.** Chrome Native Messaging framing + message schema + tool catalog. Specified once in [`protocol/`](protocol/) — the single source of truth.
-- **The extension is the fixed point** (it must be JS): it defines *what the browser can do*; every host is a thin relay of MCP calls to it (~300–500 lines in any language).
+- **The extension is the fixed point** (it must be JS): it defines *what the browser can do*; every host is a thin relay of MCP calls to it (~1k lines in any language — see the per-host counts in [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)).
 
-| Host | Status | Notes |
-|------|--------|-------|
-| [`hosts/node`](hosts/node) | ✅ reference impl | zero native deps, Node ≥ 18, MCP SDK wired, conformance-passing |
-| [`hosts/python`](hosts/python) | ✅ passes conformance | official `mcp` SDK + `register` (macOS/Linux/Windows) |
-| [`hosts/dotnet`](hosts/dotnet) | ✅ passes conformance | `ModelContextProtocol` SDK, `net10.0` + `register` |
+| Host | Status | Hub | Notes |
+|------|--------|-----|-------|
+| [`hosts/node`](hosts/node) | ✅ reference impl | ✅ yes | zero native deps, Node ≥ 18, MCP SDK wired, conformance-passing; ships the shared hub facade (`hosts/node/src/hub.js`) |
+| [`hosts/python`](hosts/python) | ✅ passes conformance | ❌ no | official `mcp` SDK + `register` (macOS/Linux/Windows); exposes only its per-instance endpoint |
+| [`hosts/dotnet`](hosts/dotnet) | ✅ passes conformance | ❌ no | `ModelContextProtocol` SDK, `net10.0` + `register`; exposes only its per-instance endpoint |
+
+> **Hub is currently a Node-host feature.** The shared hub (one stable endpoint
+> behind which every connected browser appears) is implemented only in
+> `hosts/node/src/hub.js`. The Python and .NET hosts do not read `payload.hub`
+> and expose only their own per-instance MCP endpoint — point your agent at the
+> port/token shown in the popup. See [`docs/ROADMAP.md`](docs/ROADMAP.md) for
+> plans to bring the hub to the other hosts.
 
 New languages need no permission — implement [`protocol/PROTOCOL.md`](protocol/PROTOCOL.md) and pass [`protocol/conformance/`](protocol/conformance/).
 

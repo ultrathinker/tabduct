@@ -27,3 +27,42 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm test
+
+  python-host:
+    name: python host conformance
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: npm ci
+      - name: Install Python host deps
+        run: pip install -e hosts/python
+      - name: Run host conformance
+        run: node protocol/conformance/run.mjs -- python hosts/python/tabduct_host/__main__.py
+
+  dotnet-host:
+    name: .net host conformance
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.0.x"
+      - run: npm ci
+      - name: Build .NET host
+        run: dotnet build hosts/dotnet
+      - name: Run host conformance
+        # Run the built dll, never `dotnet run` (it prints build output to stdout
+        # and corrupts the native-messaging frame stream). See protocol/conformance/README.md.
+        run: node protocol/conformance/run.mjs -- dotnet hosts/dotnet/bin/Debug/net10.0/Tabduct.Host.dll
+

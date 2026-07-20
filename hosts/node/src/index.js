@@ -89,19 +89,38 @@ async function handle(msg) {
       try {
         const bound = await server.start(port, token);
         currentInstance = (typeof payload?.instanceId === "string" && payload.instanceId) || "default";
-        try { writeEntry({ instanceId: currentInstance, label: payload?.label || "Chrome", port: bound, token, pid: process.pid, updatedAt: Date.now() }); } catch {}
+        // Discovery is how the hub finds this instance (hub.js calls readAll()).
+        // A silent failure here would make `hub mode` look "connected" while the
+        // browser never appears behind the stable endpoint — so log loudly, and
+        // remember the failure to block hub token disclosure below.
+        let discoveryOk = true;
+        try {
+          writeEntry({ instanceId: currentInstance, label: payload?.label || "Chrome", port: bound, token, pid: process.pid, updatedAt: Date.now() });
+        } catch (e) {
+          discoveryOk = false;
+          process.stderr.write(`[tabduct] discovery write failed: ${e.message}\n`);
+        }
         // Hub mode: the host still binds direct (so the hub can proxy it) + also
         // ensures a hub is running. Only disclose the stable endpoint+token once we
         // CONFIRM the port is OUR hub (hub.json pid alive + mcpPort matches) — never
         // hand tAgent to a possibly-foreign process squatting on HUB_PORT.
         let extra = {};
         if (payload?.hub) {
-          try {
-            const { tAgent } = ensureSecrets();
-            const up = await ensureHub();
-            if (up && hubVerified()) extra = { hub: true, endpoint: `http://127.0.0.1:${HUB_PORT}/mcp`, token: tAgent, hubReady: true };
-            else extra = { hub: true, hubReady: false }; // reachable but not verifiably ours → no token disclosure
-          } catch {}
+          if (!discoveryOk) {
+            // No discovery entry → the hub can never route to us. Don't disclose
+            // tAgent; surface the failure so the user doesn't see "connected".
+            extra = { hub: true, hubReady: false, hubError: "discovery write failed; this instance will not appear in the hub until it is fixed (see stderr)" };
+          } else {
+            try {
+              const { tAgent } = ensureSecrets();
+              const up = await ensureHub();
+              if (up && hubVerified()) extra = { hub: true, endpoint: `http://127.0.0.1:${HUB_PORT}/mcp`, token: tAgent, hubReady: true };
+              else extra = { hub: true, hubReady: false }; // reachable but not verifiably ours → no token disclosure
+            } catch (e) {
+              process.stderr.write(`[tabduct] hub start failed: ${e.message}\n`);
+              extra = { hub: true, hubReady: false };
+            }
+          }
         }
         reply(id, true, { port: bound, protocolVersion: PROTOCOL_VERSION, ...extra });
       } catch (e) {

@@ -34,7 +34,9 @@
 - **Agent-agnosticism is free.** The north edge is MCP; any MCP client works
   with no Tabduct-specific code. "Support Kilo/OpenCode" = "they speak MCP".
 - **Host-language-agnosticism is cheap.** The south edge is a small, fully
-  specified wire protocol (`protocol/`). A host is a thin adapter, ~300–500 LOC.
+  specified wire protocol (`protocol/`). A host is a thin adapter — ~1k LOC in
+  any of the shipped languages (Node ≈1.0k, Python ≈1.0k, .NET ≈1.1k, including
+  `register` and conformance plumbing).
 - **The extension is the only thing that must be JS** and the only place real
   browser capability lives. It changes rarely; hosts are interchangeable.
 
