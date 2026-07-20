@@ -27,7 +27,11 @@ All notable changes to this project are documented here. The format follows
 ### Changed
 - Settings popup redesigned into a widened two-column layout (no vertical scroll).
 
-## [0.1.0] — pre-release
+## [0.0.1] — unreleased
+
+> The published code manifests (`package.json`, `extension/manifest.json`,
+> `hosts/python/pyproject.toml`) all declare version `0.0.1`; this changelog
+> follows them. There is no released `0.0.1` tag yet.
 
 First public reference implementation.
 
@@ -57,4 +61,3 @@ First public reference implementation.
 - In-page origin re-check on `get_page_content` / `execute_script` (TOCTOU).
 
 [Unreleased]: https://github.com/ultrathinker/tabduct/compare/v0.1.0...HEAD
-[0.1.0]: https://github.com/ultrathinker/tabduct/releases/tag/v0.1.0

@@ -12,6 +12,7 @@
   "scripts": {
     "//": "Repo is polyglot; this root only wires the Node reference host. Python/.NET hosts have their own build.",
     "register": "npm --workspace hosts/node run register",
+    "doctor": "npm --workspace hosts/node run doctor",
     "test": "node scripts/test-consent.mjs && node protocol/conformance/run.mjs && node protocol/conformance/run-hub.mjs"
   }
 }

@@ -6,13 +6,13 @@ it's deferred only so the MVP can prove the core loop first.
 
 ## MVP (make the core loop real)
 
-- [ ] Wire `@modelcontextprotocol/sdk` into `hosts/node/src/mcp-server.js` via the
+- [x] Wire `@modelcontextprotocol/sdk` into `hosts/node/src/mcp-server.js` via the
       low-level `Server` (explicit `tools/list` / `tools/call`) so catalog JSON
       Schema is served verbatim (no Zod hand-translation).
-- [ ] `register` templates an absolute node path into `run_host.*`; implement
+- [x] `register` templates an absolute node path into `run_host.*`; implement
       `doctor` (stat manifest, resolve launcher, probe `node --version`).
-- [ ] Generate real icon PNGs (done: placeholders) and run `gen-key.js`.
-- [ ] End-to-end smoke: Claude Code `--mcp-config` → `127.0.0.1:12310/mcp` with
+- [~] Generate real icon PNGs (done: placeholders) and run `gen-key.js`.
+- [x] End-to-end smoke: Claude Code `--mcp-config` → `127.0.0.1:12310/mcp` with
       bearer token; drive `list_tabs` + `execute_script` + `screenshot`.
 
 ## Headline features — chosen design in [DESIGN-consent-and-multibrowser.md](DESIGN-consent-and-multibrowser.md)
@@ -20,14 +20,15 @@ it's deferred only so the MVP can prove the core loop first.
 Two principal capabilities, designed (synthesis of two independent reviews),
 **sequenced B-first**:
 
-- [ ] **B — per-tab consent** (default-deny; tiers none/tabs/all; origin
+- [x] **B — per-tab consent** (default-deny; tiers none/tabs/all; origin
       stickiness + denylist; per-tab badge + tab-group; hotkey; revoke-all;
       enforced at the extension `handleInvoke` chokepoint). *v1 = extension-only,
       works in today's topology → build first.*
-- [ ] **A — multi-browser, no manual ports.** Phase 1: auto-port + discovery
+- [x] **A — multi-browser, no manual ports.** Phase 1: auto-port + discovery
       file (kills manual ports). Phase 2: on-demand **hub** (one stable
       endpoint+token, backends dial in, failover-free, self-exits when idle) +
       composite tab handles `instanceId:tabId` + `list_instances`.
+      *(Note: the hub is currently Node-host only — see [`README.md`](../README.md).)*
 
 ## Post-MVP — committed (from the Fable + Kilo reviews)
 
