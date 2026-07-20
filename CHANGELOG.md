@@ -31,7 +31,7 @@ All notable changes to this project are documented here. The format follows
 
 > The published code manifests (`package.json`, `extension/manifest.json`,
 > `hosts/python/pyproject.toml`) all declare version `0.0.1`; this changelog
-> follows them. There is no released `0.0.1` tag yet.
+> follows them. A `v0.1.0` git tag exists from an earlier tagging attempt, but the manifests declare `0.0.1` and no matching `0.0.1` tag is published; treat this section as unreleased.
 
 First public reference implementation.
 
@@ -60,4 +60,4 @@ First public reference implementation.
 - Hub discloses its token only after verifying the listener is genuinely our hub.
 - In-page origin re-check on `get_page_content` / `execute_script` (TOCTOU).
 
-[Unreleased]: https://github.com/ultrathinker/tabduct/compare/v0.1.0...HEAD
+[0.0.1]: https://github.com/ultrathinker/tabduct/commits/main
