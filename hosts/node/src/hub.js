@@ -21,6 +21,7 @@ import { HUB_PORT, ERR, INVOKE_TIMEOUT_MS } from "./constants.js";
 
 const CATALOG = loadCatalog();
 const IDLE_EXIT_MS = Number(process.env.TABDUCT_HUB_IDLE_MS) || 60_000;
+const SHUTDOWN_GRACE_MS = 3_000; // hard cap on idle shutdown: exit even if a close() hangs, so we never linger as a port-holding zombie
 const POLL_MS = 3_000;
 const CALL_TIMEOUT_MS = INVOKE_TIMEOUT_MS + 3_000; // slightly above the instance's own invoke timeout
 const CONTROL_TIMEOUT_MS = 5_000; // popup control calls (snapshot/unshare) are quick + the popup polls every 2.5s; don't hold zombie fan-outs for 23s
@@ -78,9 +79,22 @@ class Hub {
 
   async _shutdown() {
     if (readAll().length > 0) { this._armIdle(); return; } // an instance appeared during the idle window — abort
-    try { rmSync(resolve(baseDir(), "hub.json"), { force: true }); } catch {}
+    // Failsafe: NEVER let a hung close() (a dead MCP client / stuck server.close) leave us
+    // half-dead — still bound to HUB_PORT but past the point of no return. That zombie state
+    // (a listener answering HTTP with a stale/removed hub.json) is exactly what wedges the
+    // host's ensureHub and makes Start fail with no recovery. So guarantee the exit: after a
+    // short grace, drop hub.json and exit hard regardless — the OS reclaims the port on exit.
+    const bail = setTimeout(() => {
+      try { rmSync(resolve(baseDir(), "hub.json"), { force: true }); } catch {}
+      process.exit(0);
+    }, SHUTDOWN_GRACE_MS);
+    bail.unref?.();
     try { await this.server.stop(); } catch {}
     for (const c of this.clients.values()) { try { await c.close(); } catch {} }
+    clearTimeout(bail);
+    // Remove hub.json LAST — only once the listener is actually down — so we never advertise
+    // "no hub here" while still holding the port.
+    try { rmSync(resolve(baseDir(), "hub.json"), { force: true }); } catch {}
     process.exit(0);
   }
 

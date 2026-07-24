@@ -46,25 +46,44 @@ function hubVerified() {
   } catch { return false; }
 }
 async function ensureHub() {
-  if (await hubReachable()) return true;
+  // Self-healing. The old check `if (await hubReachable()) return true` trusted ANY listener
+  // on HUB_PORT, so an orphaned/half-dead hub (or one that dropped its hub.json mid-shutdown
+  // but still held the port) answered HTTP, we skipped the respawn, and then — correctly —
+  // refused to disclose the token to an unverified listener. Result: Start stuck forever with
+  // an empty hub.log and no recovery. Now we only ever accept a hub we can VERIFY is ours
+  // (reachable + live hub.json on our port), and otherwise bring our own hub up — spawning as
+  // soon as the port is actually free (a stray finally releasing it heals within one Start).
   const hubPath = resolve(dirname(fileURLToPath(import.meta.url)), "hub.js");
   const logPath = resolve(baseDir(), "hub.log");
+  let spawned = false, loggedStray = false;
   // Spawn the hub DETACHED with its own stdio -> hub.log so any startup failure is
   // diagnosable. (The previous Windows path wrapped this in `cmd /c start /B ... 2>>log`,
   // where the redirect bound to `start` rather than the hub — hub.log stayed empty and
   // failures were invisible. A plain detached spawn works cross-platform and captures the
   // hub's own output; the hub self-exits when idle so it doesn't linger.)
-  let logFd = "ignore"; try { logFd = openSync(logPath, "a", 0o600); } catch {}
-  try {
-    appendFileSync(logPath, `[host ${process.pid}] ensureHub: spawning ${process.execPath} ${hubPath}\n`);
-    const child = spawn(process.execPath, [hubPath], { detached: true, windowsHide: true, stdio: ["ignore", logFd, logFd] });
-    child.on("error", (e) => { try { appendFileSync(logPath, `[host] hub spawn error: ${e.message}\n`); } catch {} });
-    child.unref?.();
-  } catch (e) {
-    try { appendFileSync(logPath, `[host] ensureHub failed: ${e.message}\n`); } catch {}
+  for (let i = 0; i < 90; i++) { // bounded ~13.5s (node + MCP SDK cold start)
+    const reachable = await hubReachable();
+    if (reachable && hubVerified()) return true; // our hub is up and confirmed ours
+    if (!reachable && !spawned) {
+      let logFd = "ignore"; try { logFd = openSync(logPath, "a", 0o600); } catch {}
+      try {
+        appendFileSync(logPath, `[host ${process.pid}] ensureHub: spawning ${process.execPath} ${hubPath}\n`);
+        const child = spawn(process.execPath, [hubPath], { detached: true, windowsHide: true, stdio: ["ignore", logFd, logFd] });
+        child.on("error", (e) => { try { appendFileSync(logPath, `[host] hub spawn error: ${e.message}\n`); } catch {} });
+        child.unref?.();
+        spawned = true;
+      } catch (e) {
+        try { appendFileSync(logPath, `[host] ensureHub failed: ${e.message}\n`); } catch {}
+      }
+    } else if (reachable && !spawned && !loggedStray) {
+      // Something answers on HUB_PORT but isn't our verified hub — a stray we can't take the
+      // port from. Log it (so hub.log isn't silent) and wait for it to clear so we can respawn.
+      try { appendFileSync(logPath, `[host ${process.pid}] ensureHub: port ${HUB_PORT} answered but is not our verified hub — waiting for it to clear\n`); } catch {}
+      loggedStray = true;
+    }
+    await new Promise((r) => setTimeout(r, 150));
   }
-  for (let i = 0; i < 80; i++) { if (await hubReachable()) return true; await new Promise((r) => setTimeout(r, 150)); } // bounded ~12s (node + MCP SDK cold start)
-  try { appendFileSync(logPath, `[host ${process.pid}] ensureHub: hub NOT reachable after wait\n`); } catch {}
+  try { appendFileSync(logPath, `[host ${process.pid}] ensureHub: our hub NOT verified after wait (port ${HUB_PORT} may be held by a stray process)\n`); } catch {}
   return false;
 }
 

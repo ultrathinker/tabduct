@@ -4,6 +4,24 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims for
 [Semantic Versioning](https://semver.org/) once it reaches 1.0.
 
+## [1.4.2] — 2026-07-25
+
+### Fixed
+- **Start could get permanently stuck on "Couldn't start the shared hub."** If an orphaned or
+  half-dead hub was still answering on port 12311 without a matching `hub.json` — e.g. one that
+  removed its `hub.json` during idle-shutdown but then hung on a dead MCP client and never
+  released the port — the host treated *any* HTTP responder as "hub is up," skipped spawning a
+  fresh hub, and then (correctly) refused to hand the agent token to an unverified listener. The
+  result was a wedged Start with an empty `hub.log` and no way to recover except waiting for the
+  zombie to die on its own. Two fixes:
+  - `ensureHub` now only accepts a hub it can **verify is ours** (reachable *and* a live
+    `hub.json` on our port), and otherwise brings our own hub up — spawning the moment the port
+    is actually free, so a stray occupant clearing heals within a single Start. It also logs the
+    stray case instead of leaving `hub.log` silent.
+  - The hub's idle-shutdown now has a hard failsafe: it always exits within a short grace even if
+    a `close()` hangs, and removes `hub.json` last (only once the listener is down) — so it can
+    never linger as a port-holding zombie with a stale `hub.json`.
+
 ## [1.4.1] — 2026-07-13
 
 ### Fixed
