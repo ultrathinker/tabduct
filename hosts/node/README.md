@@ -48,7 +48,7 @@ your agent's config. The shared hub endpoint is `http://127.0.0.1:12311/mcp`.
 
 - **Extension identity.** The manifest's pinned `key` fixes the extension id so
   `register` can scope `allowed_origins` correctly. Maintainers regenerating it:
-  `node ../../scripts/gen-key.js` (writes the gitignored `extension/key.pem`).
+  `node ../../scripts/gen-key.js` (writes the gitignored `keys/extension.pem`).
 - **Chrome's minimal-env spawn.** `register` records the absolute `node` path in
   `node_path.txt`, and the launcher (`run_host.sh` / `run_host.bat`) uses it so the
   host starts even when Chrome spawns it with a bare `PATH`.

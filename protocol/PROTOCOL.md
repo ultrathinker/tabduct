@@ -162,6 +162,15 @@ Per-tool behaviour a conforming extension MUST implement:
   tabs the agent opens" setting (default on = no auto-share). When the user opts
   out of that guard, an opened tab is auto-added to the allowlist (stickyOrigin);
   the denylist still applies in either case.
+- **Frames** (`frameId` on the page tools, `list_frames`): a frame is reachable
+  only inside a tab that passed the checks above. The extension then judges the
+  frame from what it reports itself: its tab's top-level page must still be the
+  authorized origin (else `ORIGIN_DRIFT`), and the **frame's own** origin must pass
+  the origin filter (else `ORIGIN_DENIED`; filtered frames are omitted from
+  `list_frames` and from `get_dom_snapshot`'s frame sections). Lock-to-domain
+  governs the tab, not its frames — an embedded form is part of the shared page.
+  The approved frame is targeted by its **documentId**, so a frame that navigates
+  in between is never acted on. An unknown `frameId` → `INVALID_ARGS`.
 
 The extension MAY send `event` notifications (ext→host, no reply) for
 `permission_revoked` and `tab_removed`; hosts MAY ignore them.
@@ -194,6 +203,11 @@ released on disconnect / tab close / consent revoke.
 The `execute_script` result carries a `via` field — `"cdp"` or `"scripting"` —
 alongside `result`, so a caller can tell which engine actually ran the code
 (e.g. to confirm the CDP fallback fired on a strict-CSP page).
+
+CDP evaluates in the top frame only. With a child `frameId`, `execute_script`
+always runs via `scripting` (the "Always use CDP" setting does not apply there; an
+explicit `engine:"cdp"` → `INVALID_ARGS`), and a frame whose own CSP blocks eval
+surfaces `CSP_BLOCKED` with a pointer to the CSP-safe tools.
 
 ---
 

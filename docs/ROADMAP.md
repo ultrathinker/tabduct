@@ -41,6 +41,11 @@ loop is proven.
       eval (requires `minimum_chrome_version` 116 → 135, the `userScripts` permission,
       an "Allow user scripts" toggle; `engine:auto` should then prefer it over CDP).
       (ARCHITECTURE.md "execute_script & page CSP".)
+- [x] **Frames** — `frameId` on the page tools + `list_frames`; `get_dom_snapshot` outlines
+      visible frames. Consent: frame origin through the origin filter, documentId pinning.
+      Still open: **CDP inside child frames** (`Target.setAutoAttach` + per-frame sessions),
+      for `execute_script` in a frame whose own CSP blocks eval, and console/network capture
+      of cross-origin frames.
 - [ ] **Capability handshake** — on `open`, exchange
       `{ protocolVersion, capabilities: [tool names] }`; the host advertises only
       tools the extension actually implements instead of failing late with

@@ -4,6 +4,35 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims for
 [Semantic Versioning](https://semver.org/) once it reaches 1.0.
 
+## [1.5.0] — 2026-09-25
+
+### Added
+- **Frames.** Page tools can now work inside iframes — including cross-origin ones, such as
+  embedded HubSpot/Typeform/sign-up forms, which neither page scripts nor CDP's top-level eval
+  could reach, so an agent saw an empty form. `get_page_content`, `get_dom_snapshot`, `click`,
+  `type`, `wait_for`, `execute_script` and `get_console_logs` take an optional `frameId`.
+- **`list_frames`** — the frames of a shared tab (frameId, url, title, depth, size).
+- `get_dom_snapshot` on a page now also outlines every visible frame under a
+  `--- frame N ---` header, so the agent finds embedded form fields with no extra call;
+  `<iframe>` elements appear in the page's own outline, labelled by their `src`.
+
+No new permission and no debugger: `chrome.scripting` already reaches every frame.
+
+### Changed
+- `scripts/gen-key.js` keeps the extension's private key in `keys/extension.pem` (gitignored),
+  outside `extension/`. Chrome loads that folder as-is and warned about a key file inside it.
+  An existing `extension/key.pem` can simply be moved there; it is not needed at runtime.
+
+### Security
+- A frame is reachable only inside an authorized tab, only while the tab's page is still the
+  authorized origin, and only if the **frame's own** origin passes the origin filter — a blocked
+  site embedded as an iframe stays blocked. Lock-to-domain governs the tab, not its frames.
+  The approved frame is then targeted by its `documentId`, so a frame that navigates between
+  the check and the action is never acted on (PROTOCOL.md §6a).
+- The extension now drops any `_`-prefixed argument arriving from the wire. Those names are
+  internal (set from the consent gate: `_authHost`, `_engine`, …) and must never be caller-supplied
+  (defense in depth — the gate already overwrote them; no known bypass).
+
 ## [1.4.2] — 2026-07-25
 
 ### Fixed

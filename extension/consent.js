@@ -26,6 +26,7 @@ export const REQUIRED_CAP = {
   // Network inspection (PART 7): pure reads of the CDP-captured request log.
   list_network_requests: "read", get_network_request: "read",
   click: "execute", type: "execute",
+  list_frames: "read",
 };
 
 // Hostname only (drops port), lowercased by URL, trailing FQDN dot stripped —
@@ -105,6 +106,23 @@ export function evaluate(state, { tool, tabId, host, now, needCap }) {
   if (originBlocked(state, host)) return deny("ORIGIN_DENIED", "destination not allowed by consent policy");
   if (driftsSticky(entry, host)) return { allow: false, code: "ORIGIN_DRIFT", message: "tab navigated away from the shared origin; access revoked", revoke: true };
   if (writeBlocked) return capDeny();
+  return { allow: true };
+}
+
+// Frame decision — PURE, unit-tested. evaluate() authorizes the TAB; this decides
+// whether one frame inside that already-authorized tab may be touched, from what
+// the frame itself reports. Two rules:
+//  - the tab's top-level page must still be the authorized origin (a frame seen
+//    through a drifted page is refused, never read);
+//  - the FRAME's own origin must pass the origin filter, so a blocked site embedded
+//    as an iframe (a bank widget inside a shop) stays untouchable.
+// lockToDomain governs where the TAB goes and is deliberately not applied: an
+// embedded form on the shared page is part of what the user shared. A frame with
+// an opaque origin (sandboxed) has a null host: fine in block mode, refused in
+// allow mode — the same rule as a null-host tab.
+export function evaluateFrame(state, { authHost, topHost, frameHost }) {
+  if (authHost && topHost !== authHost) return deny("ORIGIN_DRIFT", "tab navigated away from the authorized origin");
+  if (originBlocked(state, frameHost)) return deny("ORIGIN_DENIED", "frame not allowed by consent policy");
   return { allow: true };
 }
 

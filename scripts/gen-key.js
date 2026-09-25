@@ -5,24 +5,25 @@
 // Pinning it keeps the native-messaging manifest's allowed_origins valid across
 // reloads/machines. This script:
 //   1. generates an RSA keypair,
-//   2. writes the private key to extension/key.pem (gitignored),
+//   2. writes the private key to keys/extension.pem (gitignored; kept OUT of
+//      extension/, which Chrome loads as-is and warns about a key file inside),
 //   3. injects the base64 public key (SPKI DER) as manifest "key".
 // The extension id is DERIVED from manifest.key by the host's register step
 // (single source of truth — no separate id file to drift).
 //
-// Run once. To mint a new identity: delete extension/key.pem, then re-run.
+// Run once. To mint a new identity: delete keys/extension.pem, then re-run.
 
 import { generateKeyPairSync, createHash } from "node:crypto";
-import { writeFileSync, readFileSync, existsSync } from "node:fs";
+import { writeFileSync, readFileSync, existsSync, mkdirSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
 
 const EXT = resolve(dirname(fileURLToPath(import.meta.url)), "../extension");
 const MANIFEST = resolve(EXT, "manifest.json");
-const PEM = resolve(EXT, "key.pem");
+const PEM = resolve(dirname(fileURLToPath(import.meta.url)), "../keys/extension.pem");
 
 if (existsSync(PEM)) {
-  console.error("extension/key.pem already exists — refusing to overwrite an existing identity.");
+  console.error("keys/extension.pem already exists — refusing to overwrite an existing identity.");
   console.error("Delete it first if you really want a new one.");
   process.exit(1);
 }
@@ -49,11 +50,12 @@ for (const [k, v] of Object.entries(manifest)) {
 }
 if (!rebuilt.key) rebuilt.key = keyB64;
 
+mkdirSync(dirname(PEM), { recursive: true });
 writeFileSync(PEM, privateKey, "utf8");
 writeFileSync(MANIFEST, JSON.stringify(rebuilt, null, 2) + "\n", "utf8");
 
 console.error("Tabduct identity created:");
 console.error("  extension id : " + id);
-console.error("  private key  : extension/key.pem  (secret, gitignored)");
+console.error("  private key  : keys/extension.pem  (secret, gitignored)");
 console.error("  manifest.key : injected");
 console.error("Next: run the host's `register` (it derives the id from manifest.key).");

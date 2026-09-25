@@ -2,7 +2,7 @@
 // Unit test for the PURE consent decision logic (no Chrome). Covers the
 // security-critical cases from PROTOCOL.md §6a.
 
-import { evaluate, denyMatch, originBlocked, visibleTabIds, hostOf, normalizeDenyRule, REQUIRED_CAP, cdpDecision } from "../extension/consent.js";
+import { evaluate, denyMatch, originBlocked, visibleTabIds, hostOf, normalizeDenyRule, REQUIRED_CAP, cdpDecision, evaluateFrame } from "../extension/consent.js";
 
 let fails = 0;
 const eq = (a, b, m) => { const p = JSON.stringify(a) === JSON.stringify(b); console.log(`${p ? "ok" : "FAIL"}: ${m}${p ? "" : ` (got ${JSON.stringify(a)}, want ${JSON.stringify(b)})`}`); if (!p) fails++; };
@@ -164,6 +164,25 @@ eq(cdpDecision({ allowCdp: false, readOnly: true }, { engine: "scripting" }).per
 // unknown engine normalizes to auto
 eq(cdpDecision({ allowCdp: false }, { engine: "weird" }).engine, "auto", "cdp: unknown engine → auto");
 eq(cdpDecision({ allowCdp: false }, {}).engine, "auto", "cdp: missing engine → auto");
+
+// Frames: evaluateFrame() — one frame inside an ALREADY-authorized tab.
+// The page must still be the authorized origin; the frame's own origin must pass the
+// origin filter; lockToDomain does not apply (an embedded form is part of the page).
+const BLOCKF = { denyOrigins: ["*.bank.com"] };
+const ALLOWF = { originMode: "allow", denyOrigins: ["shop.com", "*.hsforms.net"] };
+eq(REQUIRED_CAP.list_frames, "read", "REQUIRED_CAP: list_frames needs read");
+eq(code(evaluate(ROTOOLS, { tool: "list_frames", tabId: 3, host: "x.com" })), "ALLOW", "read-only: list_frames allowed");
+eq(code(evaluateFrame(BLOCKF, { authHost: "shop.com", topHost: "shop.com", frameHost: "js-eu1.hsforms.net" })), "ALLOW", "frame: cross-origin frame on the shared page allowed");
+eq(code(evaluateFrame(BLOCKF, { authHost: "shop.com", topHost: "shop.com", frameHost: "pay.bank.com" })), "ORIGIN_DENIED", "frame: blocked site embedded as iframe stays blocked");
+eq(code(evaluateFrame(BLOCKF, { authHost: "shop.com", topHost: "evil.com", frameHost: "js-eu1.hsforms.net" })), "ORIGIN_DRIFT", "frame: page drifted away → refused");
+eq(code(evaluateFrame(BLOCKF, { authHost: "shop.com", topHost: "evil.com", frameHost: "pay.bank.com" })), "ORIGIN_DRIFT", "frame: drift is checked before the filter");
+eq(code(evaluateFrame(BLOCKF, { authHost: "shop.com", topHost: "shop.com", frameHost: "shop.com" })), "ALLOW", "frame: the page itself (frame 0) allowed");
+eq(code(evaluateFrame(BLOCKF, { authHost: "shop.com", topHost: "shop.com", frameHost: null })), "ALLOW", "frame: opaque-origin frame allowed in block mode");
+eq(code(evaluateFrame(ALLOWF, { authHost: "shop.com", topHost: "shop.com", frameHost: "js-eu1.hsforms.net" })), "ALLOW", "frame: allow mode — listed frame site allowed");
+eq(code(evaluateFrame(ALLOWF, { authHost: "shop.com", topHost: "shop.com", frameHost: "ads.tracker.com" })), "ORIGIN_DENIED", "frame: allow mode — unlisted frame site denied");
+eq(code(evaluateFrame(ALLOWF, { authHost: "shop.com", topHost: "shop.com", frameHost: null })), "ORIGIN_DENIED", "frame: allow mode — opaque-origin frame denied (no wildcard)");
+eq(code(evaluateFrame(BLOCKF, { authHost: null, topHost: "anything.com", frameHost: "x.com" })), "ALLOW", "frame: no authorized host to pin (blank-page grant) → only the filter applies");
+eq(evaluateFrame(BLOCKF, { authHost: "shop.com", topHost: "shop.com", frameHost: "pay.bank.com" }).message?.includes("bank") ?? true, false, "frame: denial never echoes the frame host");
 
 console.log(fails ? `\nCONSENT TESTS FAILED (${fails})` : "\nCONSENT TESTS PASSED");
 process.exit(fails ? 1 : 0);

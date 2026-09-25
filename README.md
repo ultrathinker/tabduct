@@ -101,6 +101,14 @@ point your agent at `127.0.0.1:12311`, never at a per-browser port.
 | `open_tab` / `activate_tab` / `close_tab` | Tab management |
 | `get_console_logs` | Read the tab's console output (plus uncaught errors, in CDP mode) |
 | `execute_script` | Run arbitrary JS in a shared tab — read *and* modify the page |
+| `list_frames` | List the iframes inside a shared tab — target one with `frameId` |
+
+**Frames.** Embedded forms and widgets often live in an iframe from another domain
+(HubSpot, Typeform, payment and sign-up forms), where page scripts can't reach.
+`get_dom_snapshot` outlines each visible frame under its own `--- frame N ---`
+header, and the page tools (`get_page_content`, `get_dom_snapshot`, `click`,
+`type`, `wait_for`, `execute_script`, `get_console_logs`) take a `frameId` to work
+inside it. The origin filter applies to each frame's own site.
 
 Most tools — including `click` / `type` / `wait_for` / `get_dom_snapshot` — run as
 **injected functions**, so they work even on strict-CSP sites (GitHub, banks, SaaS).

@@ -32,9 +32,13 @@ Pre-1.0: only the latest `main` is supported. Pin a commit if you need stability
 ## Consent controls (in the popup)
 
 - **Origin filter** — *Block* mode (listed sites never shared) or *Allow* mode
-  (only listed sites can ever be shared). Overrides every sharing mode.
+  (only listed sites can ever be shared). Overrides every sharing mode, and also
+  applies to **frames inside a shared tab**: a blocked site embedded as an iframe
+  (say, a payment widget in a shop) stays out of reach even though the page around
+  it is shared.
 - **Lock shared tabs to their domain** (default on) — a shared tab that navigates
-  away loses access.
+  away loses access. It locks the *tab*: iframes on the shared page (embedded
+  forms, often from another domain) stay reachable, subject to the origin filter.
 - **Read-only** — the agent may read/screenshot but not click, type, navigate, run
   scripts, or open/close tabs.
 - **Auto-expire** — un-shares everything after a chosen time.

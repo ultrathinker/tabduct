@@ -24,7 +24,9 @@ hosts/*/com.tabduct.host.json
 hosts/python/run_host.bat
 hosts/python/run_host.sh
 
-# Local extension private key (KEEP OUT OF GIT — pairs with the manifest `key`)
+# Local extension private key (KEEP OUT OF GIT — pairs with the manifest `key`).
+# Lives outside extension/ so Chrome does not flag a key file in the unpacked folder.
+keys/
 extension/key.pem
 
 # Per-tool agent context files (machine-specific, not part of the project)

@@ -5,7 +5,7 @@
 // JSON-serializable result, or throw. To signal a specific wire error code,
 // throw via err(CODE, message).
 
-import { getState as getConsentState, originBlocked, hostOf } from "../consent.js";
+import { getState as getConsentState, originBlocked, hostOf, evaluateFrame } from "../consent.js";
 
 function err(code, message) {
   const e = new Error(message);
@@ -22,6 +22,73 @@ async function resolveTabId(args) {
 
 function tabInfo(t) {
   return { id: t.id, title: t.title, url: t.url, active: t.active, windowId: t.windowId, status: t.status };
+}
+
+// ---------------------------------------------------------------------------
+// Frames. Page tools run in the tab's top frame unless the agent passes a frameId
+// (from list_frames / get_dom_snapshot); then they run in that one frame — including
+// cross-origin iframes (embedded forms, widgets), which neither page JS nor CDP's
+// top-level eval can reach. Host permissions already cover every frame, so this
+// needs no new permission and no debugger.
+//
+// Safety: the top frame keeps its in-page authHost re-check. A child frame is
+// instead PINNED: probed once, judged by consent.evaluateFrame (page still on the
+// authorized origin, frame origin passes the origin filter), then targeted by its
+// documentId. A document never changes origin and dies with its page, so if the
+// frame navigates or the tab drifts the injection simply fails — no in-page guard
+// needed.
+
+// Runs inside a frame: what it is, and which top-level page it lives in.
+// Self-contained (serialized by chrome.scripting).
+function probeFrame() {
+  const a = location.ancestorOrigins;
+  return {
+    url: location.href, origin: location.origin, top: a && a.length ? a[a.length - 1] : location.origin,
+    depth: a ? a.length : 0, title: document.title, width: innerWidth, height: innerHeight,
+  };
+}
+
+// Consent verdict for one probed frame (the top frame included).
+function frameVerdict(state, authHost, f) {
+  return evaluateFrame(state, { authHost, topHost: hostOf(f.top), frameHost: hostOf(f.origin) });
+}
+
+// Every frame of a shared tab the consent policy lets the agent see, top first.
+// Frames whose origin is filtered out are omitted, like unshared tabs; a drifted
+// top-level page refuses the whole call.
+async function framesOf(tabId, authHost) {
+  const results = await chrome.scripting.executeScript({ target: { tabId, allFrames: true }, func: probeFrame });
+  const state = await getConsentState();
+  const frames = [];
+  for (const r of results || []) {
+    if (!r?.result) continue;
+    const d = frameVerdict(state, authHost, r.result);
+    if (d.code === "ORIGIN_DRIFT") throw err(d.code, d.message);
+    if (d.allow) frames.push({ frameId: r.frameId, documentId: r.documentId, ...r.result });
+  }
+  return frames.sort((a, b) => (a.frameId === 0 ? -1 : b.frameId === 0 ? 1 : 0));
+}
+
+// Probe + judge one child frame and return its documentId.
+async function pinFrame(tabId, frameId, authHost) {
+  if (!Number.isInteger(frameId) || frameId < 0) throw err("INVALID_ARGS", "frameId must be a non-negative integer (from list_frames)");
+  let r;
+  try { [r] = await chrome.scripting.executeScript({ target: { tabId, frameIds: [frameId] }, func: probeFrame }); } catch {}
+  if (!r?.result) throw Object.assign(err("INVALID_ARGS", `no frame ${frameId} in this tab (it may have closed) — call list_frames`), { frameGone: true });
+  const d = frameVerdict(await getConsentState(), authHost, r.result);
+  if (!d.allow) throw err(d.code, d.message);
+  return r.documentId;
+}
+
+// Where a tool's injected function runs: the top frame, re-checked in-page against
+// authHost; or one pinned child document, which needs no in-page check (authHost
+// null). Handlers pass `authHost` from here as their injected func's guard arg.
+async function injectionTarget(args) {
+  const tabId = await resolveTabId(args);
+  const authHost = args._authHost ?? null;
+  if (!args.frameId) return { tabId, target: { tabId }, authHost };
+  const documentId = await pinFrame(tabId, args.frameId, authHost);
+  return { tabId, frameId: args.frameId, target: { tabId, documentIds: [documentId] }, authHost: null };
 }
 
 // NOTE: list_tabs / get_active_tab are handled entirely in background.js
@@ -76,12 +143,12 @@ export const HANDLERS = {
   },
 
   async get_page_content(args) {
-    const tabId = await resolveTabId(args);
+    const t = await injectionTarget(args);
     const format = args?.format ?? "text";
     const maxChars = args?.maxChars ?? 200000;
     const results = await chrome.scripting.executeScript({
-      target: { tabId },
-      args: [format, args._authHost ?? null],
+      target: t.target,
+      args: [format, t.authHost],
       func: (fmt, authHost) => {
         // TOCTOU re-check IN-PAGE: a shared tab can self-navigate between gate time
         // and now; refuse to read the wrong origin. (MAIN world, kept inline.)
@@ -103,13 +170,18 @@ export const HANDLERS = {
   },
 
   async execute_script(args) {
-    const tabId = await resolveTabId(args);
+    // CDP evaluates in the top frame only, so a child frame always runs via
+    // chrome.scripting: an explicit engine:"cdp" is refused, developer mode's
+    // force-CDP quietly doesn't apply (the result's `via` says what ran).
+    if (args.frameId && args.engine === "cdp") throw err("INVALID_ARGS", "engine 'cdp' can't target a child frame — use engine 'auto' or 'scripting' with frameId");
+    const t = await injectionTarget(args);
+    const tabId = t.tabId;
     // Engine selection (PART 4). _engine/_allowCdp are injected by background's
     // gate from the user's CDP settings; default "auto" = chrome.scripting with a
     // CDP fallback only when CSP blocks AND the user opted in.
-    const engine = args._engine === "cdp" || args._engine === "scripting" ? args._engine : "auto";
+    const engine = t.frameId ? "scripting" : args._engine === "cdp" || args._engine === "scripting" ? args._engine : "auto";
     const allowCdp = !!args._allowCdp;
-    const authHost = args._authHost ?? null;
+    const authHost = t.authHost;
     const callArgs = args.args ?? [];
 
     if (engine === "cdp") return cdpEval(tabId, args.code, callArgs, authHost, { hold: !!args._cdpAlways });
@@ -123,7 +195,7 @@ export const HANDLERS = {
       let results;
       try {
         results = await chrome.scripting.executeScript({
-          target: { tabId },
+          target: t.target,
           world: "MAIN",
           args: [args.code, callArgs, authHost],
           func: (code, callArgs, authHost) => {
@@ -163,6 +235,7 @@ export const HANDLERS = {
     try {
       return await runScripting();
     } catch (e) {
+      if (t.frameId && e?.code === "CSP_BLOCKED") throw err("CSP_BLOCKED", `${e.message} — this frame's CSP blocks eval and CDP can't reach child frames; use get_dom_snapshot / click / type / get_page_content with frameId (CSP-safe)`);
       // "auto": on a CSP block, fall back to CDP if the user opted in; otherwise
       // surface CSP_BLOCKED with a hint pointing at the opt-in.
       if (engine === "auto" && e?.code === "CSP_BLOCKED") {
@@ -216,19 +289,23 @@ export const HANDLERS = {
   // close the gate→inject TOCTOU window; a mismatch becomes ORIGIN_DRIFT.
 
   async wait_for(args) {
-    const tabId = await resolveTabId(args);
     // At least one condition is required (no field is individually required in
     // the schema, so enforce the "at least one" rule here).
     if (!args.selector && !args.urlContains && !args.loadState) throw err("INVALID_ARGS", "wait_for needs at least one of selector, urlContains, loadState");
     if (args.loadState && args.loadState !== "complete") throw err("INVALID_ARGS", "loadState must be 'complete'");
     const _t = Number(args.timeoutMs); const timeoutMs = Math.min(_t > 0 ? _t : 10000, 25000); // default 10s, cap 25s
-    const selector = args.selector || null, urlContains = args.urlContains || null, loadState = args.loadState || null, authHost = args._authHost ?? null;
+    const selector = args.selector || null, urlContains = args.urlContains || null, loadState = args.loadState || null;
     const start = Date.now();
     // Poll ~every 250ms (bounded by timeoutMs). Each poll is one executeScript.
+    // A child frame is re-pinned every poll: waiting often spans the frame's own
+    // navigation (a submitted form), which replaces its document — and a frame
+    // briefly between documents is not an error, just "not yet".
     const check = async () => {
+      let t;
+      try { t = await injectionTarget(args); } catch (e) { if (e.frameGone) return null; throw e; }
       const results = await chrome.scripting.executeScript({
-        target: { tabId },
-        args: [selector, urlContains, loadState, authHost],
+        target: t.target,
+        args: [selector, urlContains, loadState, t.authHost],
         func: (sel, urlContains, loadState, authHost) => {
           if (authHost) { const h = (location.hostname || "").toLowerCase().replace(/\.$/, ""); if (h !== authHost) return { __originMismatch: true }; }
           if (sel && document.querySelector(sel)) return { matched: true };
@@ -236,7 +313,7 @@ export const HANDLERS = {
           if (loadState && document.readyState === loadState) return { matched: true };
           return { matched: false };
         },
-      });
+      }).catch((e) => { if (t.frameId) return null; throw e; }); // pinned document replaced mid-poll
       return results?.[0]?.result;
     };
     while (Date.now() - start < timeoutMs) {
@@ -249,11 +326,11 @@ export const HANDLERS = {
   },
 
   async click(args) {
-    const tabId = await resolveTabId(args);
     if (!args.selector) throw err("INVALID_ARGS", "click requires a selector");
+    const t = await injectionTarget(args);
     const results = await chrome.scripting.executeScript({
-      target: { tabId },
-      args: [args.selector, args._authHost ?? null],
+      target: t.target,
+      args: [args.selector, t.authHost],
       func: (sel, authHost) => {
         if (authHost) { const h = (location.hostname || "").toLowerCase().replace(/\.$/, ""); if (h !== authHost) return { __originMismatch: true }; }
         const el = document.querySelector(sel);
@@ -273,13 +350,13 @@ export const HANDLERS = {
   },
 
   async type(args) {
-    const tabId = await resolveTabId(args);
     if (!args.selector) throw err("INVALID_ARGS", "type requires a selector");
     if (typeof args.text !== "string") throw err("INVALID_ARGS", "type requires text");
     const clear = !!args.clear;
+    const t = await injectionTarget(args);
     const results = await chrome.scripting.executeScript({
-      target: { tabId },
-      args: [args.selector, args.text, clear, args._authHost ?? null],
+      target: t.target,
+      args: [args.selector, args.text, clear, t.authHost],
       func: (sel, text, clear, authHost) => {
         if (authHost) { const h = (location.hostname || "").toLowerCase().replace(/\.$/, ""); if (h !== authHost) return { __originMismatch: true }; }
         const el = document.querySelector(sel);
@@ -312,66 +389,38 @@ export const HANDLERS = {
   },
 
   async get_dom_snapshot(args) {
-    const tabId = await resolveTabId(args);
+    const t = await injectionTarget(args);
     const _m = Number(args.maxChars); const maxChars = Math.min(_m > 0 ? _m : 40000, 200000); // default 40000, hard cap 200000
-    const results = await chrome.scripting.executeScript({
-      target: { tabId },
-      args: [maxChars, args._authHost ?? null],
-      func: (maxChars, authHost) => {
-        if (authHost) { const h = (location.hostname || "").toLowerCase().replace(/\.$/, ""); if (h !== authHost) return { __originMismatch: true }; }
-        // Self-contained: no external helpers. Walks the visible DOM and emits a
-        // compact outline of interactive/structural elements — enough to pick
-        // click/type selectors on CSP sites without arbitrary JS.
-        const SEL = "a,button,input,textarea,select,summary,[role],label,h1,h2,h3,h4,h5,h6,nav,form,fieldset,legend,optgroup,option,video,audio,canvas,table,thead,tbody,th,td,li,datalist,output";
-        // Reasonably stable CSS selector: #id when unique, else a short nth-of-type path.
-        const selFor = (el) => {
-          if (el.id) { try { if (document.querySelectorAll(`#${CSS.escape(el.id)}`).length === 1) return `#${CSS.escape(el.id)}`; } catch {} }
-          const parts = [];
-          let cur = el, depth = 0;
-          while (cur && cur.nodeType === 1 && cur !== document.documentElement && depth < 12) {
-            const name = cur.nodeName.toLowerCase();
-            const parent = cur.parentElement;
-            if (parent) {
-              const same = [...parent.children].filter((s) => s.nodeName.toLowerCase() === name);
-              parts.unshift(same.length > 1 ? `${name}:nth-of-type(${same.indexOf(cur) + 1})` : name);
-            } else parts.unshift(name);
-            cur = parent; depth++;
-          }
-          return parts.join(">");
-        };
-        const labelOf = (el) => (el.getAttribute && (el.getAttribute("aria-label") || el.getAttribute("placeholder") || el.getAttribute("title") || el.getAttribute("alt") || el.getAttribute("name"))) || (el.textContent || "").trim();
-        const lines = [];
-        let len = 0, truncated = false;
-        for (const el of document.querySelectorAll(SEL)) {
-          // Skip hidden: display:none, visibility:hidden, the `hidden` attr, or a
-          // null offsetParent that isn't a position:fixed element.
-          const cs = getComputedStyle(el);
-          if (el.hidden || cs.display === "none" || cs.visibility === "hidden" || (el.offsetParent === null && cs.position !== "fixed")) continue;
-          const tag = el.nodeName.toLowerCase();
-          const role = el.getAttribute("role");
-          const lab = (labelOf(el) || "").replace(/\s+/g, " ").slice(0, 80);
-          const line = `<${tag}${role ? ` role="${role}"` : ""}${lab ? ` ${lab}` : ""} [${selFor(el)}]>`;
-          lines.push(line); len += line.length + 1;
-          if (maxChars > 0 && len > maxChars) { truncated = true; break; } // stop walking a huge DOM once the budget is full
-        }
-        let out = lines.join("\n");
-        if (maxChars > 0 && out.length > maxChars) { out = out.slice(0, maxChars); truncated = true; }
-        return { snapshot: out, truncated };
-      },
-    });
-    const r = results?.[0]?.result;
+    const outline = (target, authHost) => chrome.scripting.executeScript({ target, args: [maxChars, authHost], func: outlineDom });
+    const r = (await outline(t.target, t.authHost))?.[0]?.result;
     if (r && r.__originMismatch) throw err("ORIGIN_DRIFT", "tab navigated away from the authorized origin");
-    return r || { snapshot: "", truncated: false };
+    if (!r) return { snapshot: "", truncated: false };
+    if (t.frameId || r.truncated) return r;
+    // The top-level page: append each visible child frame's outline under a header
+    // naming its frameId, so an embedded (often cross-origin) form shows up in the
+    // one call an agent makes to find its targets. Frames are pinned by documentId
+    // and consent-filtered by framesOf; one that vanishes meanwhile is just skipped.
+    const kids = (await framesOf(t.tabId, t.authHost)).filter((f) => f.frameId !== 0 && f.width > 0 && f.height > 0);
+    const outs = await Promise.all(kids.map((f) => outline({ tabId: t.tabId, documentIds: [f.documentId] }, null).catch(() => null)));
+    const sections = [r.snapshot];
+    kids.forEach((f, i) => {
+      const s = outs[i]?.[0]?.result?.snapshot;
+      if (s) sections.push(`--- frame ${f.frameId} (${hostOf(f.origin) ?? f.url}) - pass frameId:${f.frameId} to target it ---\n${s}`);
+    });
+    const snapshot = sections.filter(Boolean).join("\n");
+    return snapshot.length > maxChars ? { snapshot: snapshot.slice(0, maxChars), truncated: true } : { snapshot, truncated: false };
   },
 
   async get_console_logs(args) {
-    const tabId = await resolveTabId(args);
+    const t = await injectionTarget(args);
+    const tabId = t.tabId;
     const clear = !!args.clear;
     // CDP capture path: when console capture is attached to this tab we return the
     // FULL buffer (console.* + uncaught exceptions + browser Log entries), recorded
     // continuously since attach — not just since this call. Falls back to the
-    // injected monkeypatch below when CDP capture is off.
-    if (cdpConsoleTabs.has(tabId)) {
+    // injected monkeypatch below when CDP capture is off. The buffer is the top
+    // frame's; a child frame always uses the injected hook.
+    if (!t.frameId && cdpConsoleTabs.has(tabId)) {
       // Origin re-check (the CDP buffer keeps filling across a navigation, so a
       // drifted lock-to-domain tab could otherwise leak new-origin lines).
       const authHost = args._authHost ?? null;
@@ -388,9 +437,9 @@ export const HANDLERS = {
     // own console and would capture nothing). Re-installs on each call, so a
     // page navigation (which wipes the hook) is recovered automatically.
     const results = await chrome.scripting.executeScript({
-      target: { tabId },
+      target: t.target,
       world: "MAIN",
-      args: [clear, args._authHost ?? null],
+      args: [clear, t.authHost],
       func: (clear, authHost) => {
         if (authHost) { const h = (location.hostname || "").toLowerCase().replace(/\.$/, ""); if (h !== authHost) return { __originMismatch: true }; }
         const MAX = 500;
@@ -414,6 +463,15 @@ export const HANDLERS = {
     const r = results?.[0]?.result;
     if (r && r.__originMismatch) throw err("ORIGIN_DRIFT", "tab navigated away from the authorized origin");
     return { logs: r?.logs || [], source: "inject", note: "capture starts when first requested; earlier logs may be missing" };
+  },
+
+  async list_frames(args) {
+    const tabId = await resolveTabId(args);
+    const frames = await framesOf(tabId, args._authHost ?? null);
+    return {
+      frames: frames.map(({ frameId, url, title, depth, width, height }) => ({ frameId, url, title, depth, width, height })),
+      note: "frameId 0 is the page itself; pass another frameId to get_dom_snapshot/get_page_content/click/type/wait_for/execute_script/get_console_logs to act inside that frame",
+    };
   },
 
   // Network inspection (PART 7) — read the CDP-captured request log for a shared
@@ -469,6 +527,51 @@ export const HANDLERS = {
     return { request: rec, body, bodyBase64, bodyTruncated, bodyError };
   },
 };
+
+// get_dom_snapshot's injected walker (self-contained: serialized by chrome.scripting).
+// Emits a compact outline of the visible interactive/structural elements — enough
+// to pick click/type selectors on CSP sites without arbitrary JS. authHost is the
+// top frame's in-page origin re-check; null for a pinned child frame.
+function outlineDom(maxChars, authHost) {
+  if (authHost) { const h = (location.hostname || "").toLowerCase().replace(/\.$/, ""); if (h !== authHost) return { __originMismatch: true }; }
+  const SEL = "a,button,input,textarea,select,summary,[role],label,h1,h2,h3,h4,h5,h6,nav,form,fieldset,legend,optgroup,option,video,audio,canvas,table,thead,tbody,th,td,li,datalist,output,iframe";
+  // Reasonably stable CSS selector: #id when unique, else a short nth-of-type path.
+  const selFor = (el) => {
+    if (el.id) { try { if (document.querySelectorAll(`#${CSS.escape(el.id)}`).length === 1) return `#${CSS.escape(el.id)}`; } catch {} }
+    const parts = [];
+    let cur = el, depth = 0;
+    while (cur && cur.nodeType === 1 && cur !== document.documentElement && depth < 12) {
+      const name = cur.nodeName.toLowerCase();
+      const parent = cur.parentElement;
+      if (parent) {
+        const same = [...parent.children].filter((s) => s.nodeName.toLowerCase() === name);
+        parts.unshift(same.length > 1 ? `${name}:nth-of-type(${same.indexOf(cur) + 1})` : name);
+      } else parts.unshift(name);
+      cur = parent; depth++;
+    }
+    return parts.join(">");
+  };
+  // An iframe has no text of its own: label it by its src (its content is outlined
+  // separately, under its frameId).
+  const labelOf = (el) => (el.getAttribute && (el.getAttribute("aria-label") || el.getAttribute("placeholder") || el.getAttribute("title") || el.getAttribute("alt") || el.getAttribute("name"))) || (el.nodeName === "IFRAME" ? el.src : (el.textContent || "").trim());
+  const lines = [];
+  let len = 0, truncated = false;
+  for (const el of document.querySelectorAll(SEL)) {
+    // Skip hidden: display:none, visibility:hidden, the `hidden` attr, or a
+    // null offsetParent that isn't a position:fixed element.
+    const cs = getComputedStyle(el);
+    if (el.hidden || cs.display === "none" || cs.visibility === "hidden" || (el.offsetParent === null && cs.position !== "fixed")) continue;
+    const tag = el.nodeName.toLowerCase();
+    const role = el.getAttribute("role");
+    const lab = (labelOf(el) || "").replace(/\s+/g, " ").slice(0, 80);
+    const line = `<${tag}${role ? ` role="${role}"` : ""}${lab ? ` ${lab}` : ""} [${selFor(el)}]>`;
+    lines.push(line); len += line.length + 1;
+    if (maxChars > 0 && len > maxChars) { truncated = true; break; } // stop walking a huge DOM once the budget is full
+  }
+  let out = lines.join("\n");
+  if (maxChars > 0 && out.length > maxChars) { out = out.slice(0, maxChars); truncated = true; }
+  return { snapshot: out, truncated };
+}
 
 // Origin re-check for the network tools: the CDP buffer keeps filling across a
 // navigation, so a drifted lock-to-domain tab could otherwise leak another origin's

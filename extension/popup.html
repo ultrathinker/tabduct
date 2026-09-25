@@ -213,7 +213,7 @@ Do steps 1 and 3 yourself; I'll do step 2 in the browser. Ask me for the endpoin
               <li><strong>Allow mode</strong>: flips it — <em>only</em> the listed sites can be shared, everything else is blocked (an empty allow list blocks everything). Best if you want the agent confined to a known set of sites.</li>
             </ul>
           </li>
-          <li><strong>Lock shared tabs to their domain</strong> (Settings, on by default): a shared tab that navigates to another site loses access — so a shared shopping tab can't quietly follow you into your bank. Turn it off to let the agent browse freely within a shared tab.</li>
+          <li><strong>Lock shared tabs to their domain</strong> (Settings, on by default): a shared tab that navigates to another site loses access — so a shared shopping tab can't quietly follow you into your bank. Turn it off to let the agent browse freely within a shared tab. Embedded frames on a shared page (e.g. a sign-up form served from another domain) stay reachable either way — the origin filter still applies to them.</li>
           <li><strong>Don't auto-share tabs the agent opens</strong> (Settings, on by default): tabs the agent opens itself aren't shared until you approve them, so it can't silently reach a brand-new site.</li>
           <li><strong>Read-only</strong> (Settings): the agent may look (read text, screenshot) but never click, type, navigate, run scripts, or open/close tabs.</li>
           <li><strong>Auto-expire</strong> (Settings): un-shares everything after a time you pick (5 min … 10 h).</li>

@@ -219,10 +219,16 @@ async function gate(tool, args) {
   return out; // resolved ONCE — the handler reuses this exact tab + authorized host (no TOCTOU re-resolve)
 }
 
+// Tools that read or act inside a page — each gets the gate-authorized host to
+// re-check in-page (or, in a child frame, to pin the frame against).
+const PAGE_TOOLS = new Set(["get_page_content", "execute_script", "wait_for", "click", "type", "get_dom_snapshot", "get_console_logs", "list_network_requests", "get_network_request", "screenshot", "list_frames"]);
+
 async function handleInvoke(msg) {
   const { id, payload } = msg;
   const tool = payload?.tool;
-  const args = payload?.args ?? {};
+  // `_`-prefixed args are internal (set below from the consent gate: _authHost,
+  // _engine, …) — never accept them from the wire, where an agent could forge one.
+  const args = Object.fromEntries(Object.entries(payload?.args ?? {}).filter(([k]) => !k.startsWith("_")));
   // Internal `_td/*` control ops arrive only via the hub's /control channel (never
   // the agent). They are USER sharing actions (snapshot / unshare / stop-all), so they
   // bypass the per-tool consent gate — they can only REDUCE what's shared, never grant.
@@ -262,7 +268,7 @@ async function handleInvoke(msg) {
     // script-injection tool — a tab can self-navigate in the ~ms window between
     // gate and executeScript. _authHost is internal and stripped before reaching
     // the wire (handlers never return it).
-    if (tool === "get_page_content" || tool === "execute_script" || tool === "wait_for" || tool === "click" || tool === "type" || tool === "get_dom_snapshot" || tool === "get_console_logs" || tool === "list_network_requests" || tool === "get_network_request" || tool === "screenshot") callArgs._authHost = decision.host ?? null;
+    if (PAGE_TOOLS.has(tool)) callArgs._authHost = decision.host ?? null;
     // execute_script engine/CDP flags (PART 4): passed internal-only from the gate.
     if (tool === "execute_script") {
       if (decision._engine != null) callArgs._engine = decision._engine;
