@@ -4,6 +4,19 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims for
 [Semantic Versioning](https://semver.org/) once it reaches 1.0.
 
+## [1.6.4] — 2026-10-07
+
+### Added
+- `wait_for` takes `text`: it resolves when the page's visible text (`document.body.innerText`)
+  contains the substring (case-sensitive). Like the other conditions it is polled while the document
+  stays the pinned one; any one of selector / text / urlContains / loadState ends the wait. A build
+  without the new `wait-text` feature is refused with `EXTENSION_OUTDATED` instead of silently
+  ignoring `text`.
+
+### Changed
+- `AMBIGUOUS_INSTANCE` now says what to do and lists the connected browsers by label and
+  `instanceId`, and shows the composite `"<instanceId>:<tabId>"` form that `list_tabs` returns.
+
 ## [1.6.3] — 2026-10-07
 
 ### Fixed

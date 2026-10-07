@@ -119,7 +119,9 @@ in the top page while the agent believes it ran in the frame) is marked
 A host MUST NOT forward a call that uses such a tool/argument (a truthy value; `frameId: 0`
 and `false` mean the default behaviour) unless the `features` the extension reported in
 `open` include the feature. It answers `EXTENSION_OUTDATED` instead — nothing is run. A build
-that reports no `features` has none.
+that reports no `features` has none. The features in use: `frames` (`frameId`, `list_frames`),
+`pinned-docs` (reported by the extension, no tool argument depends on it yet), `cdp-input`
+(`trusted` input, `press_key`) and `wait-text` (`wait_for` with `text`).
 
 **Core loop:** MCP tool call arrives → host sends
 `{ type:"invoke", id, payload:{ tool, args } }` → extension runs it and replies

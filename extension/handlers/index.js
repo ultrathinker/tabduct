@@ -320,10 +320,11 @@ export const HANDLERS = {
   async wait_for(args) {
     // At least one condition is required (no field is individually required in
     // the schema, so enforce the "at least one" rule here).
-    if (!args.selector && !args.urlContains && !args.loadState) throw err("INVALID_ARGS", "wait_for needs at least one of selector, urlContains, loadState");
+    if (!args.selector && !args.text && !args.urlContains && !args.loadState) throw err("INVALID_ARGS", "wait_for needs at least one of selector, text, urlContains, loadState");
     if (args.loadState && args.loadState !== "complete") throw err("INVALID_ARGS", "loadState must be 'complete'");
     const _t = Number(args.timeoutMs); const timeoutMs = Math.min(_t > 0 ? _t : 10000, 25000); // default 10s, cap 25s
     const selector = args.selector || null, urlContains = args.urlContains || null, loadState = args.loadState || null;
+    const text = typeof args.text === "string" && args.text ? args.text : null;
     const start = Date.now();
     // Poll ~every 250ms (bounded by timeoutMs). Each poll RE-PINS the document: waiting often
     // spans a redirect or the frame's own navigation (a submitted form), which replaces the
@@ -337,11 +338,12 @@ export const HANDLERS = {
       try {
         results = await chrome.scripting.executeScript({
           target: t.target,
-          args: [selector, urlContains, loadState],
-          func: (sel, urlContains, loadState) => {
+          args: [selector, urlContains, loadState, text],
+          func: (sel, urlContains, loadState, text) => {
             if (sel) { let el; try { el = document.querySelector(sel); } catch (e) { return { __badselector: String((e && e.message) || e) }; } if (el) return { matched: true }; }
             if (urlContains && location.href.includes(urlContains)) return { matched: true };
             if (loadState && document.readyState === loadState) return { matched: true };
+            if (text && (document.body?.innerText ?? "").includes(text)) return { matched: true };
             return { matched: false };
           },
         });

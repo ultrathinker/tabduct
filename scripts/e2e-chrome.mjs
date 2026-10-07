@@ -256,6 +256,10 @@ try {
   ok(r.err === "INVALID_ARGS", "typing into a non-editable <div> is INVALID_ARGS (it used to overwrite its content)", r);
   r = await sw(`return await call("click", { tabId: ${tab}, selector: "button:contains('go')" });`);
   ok(r.err === "INVALID_ARGS" && /invalid CSS selector/.test(r.msg || ""), "an invalid CSS selector is reported as such", r);
+  r = await sw(`return await call("wait_for", { tabId: ${tab}, text: "just text", timeoutMs: 3000 });`);
+  ok(r.ok?.matched === true, "wait_for text: resolves when the page's visible text contains the substring", r);
+  r = await sw(`return await call("wait_for", { tabId: ${tab}, text: "text that is nowhere on the page", timeoutMs: 700 });`);
+  ok(r.err === "TIMEOUT", "wait_for text: a substring that never appears times out", r);
   r = await sw(`return await call("wait_for", { tabId: ${tab}, selector: "button:contains('go')", timeoutMs: 1000 });`);
   ok(r.err === "INVALID_ARGS", "wait_for with an invalid selector fails at once instead of waiting out the timeout", r);
 

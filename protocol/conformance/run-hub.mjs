@@ -108,6 +108,7 @@ const call = (name, args, sid, token) => rpc({ jsonrpc: "2.0", id: Math.floor(Ma
 
   const amb = await call("get_active_tab", {}, sid, tAgent);
   ok(amb.json?.result?.isError && /AMBIGUOUS_INSTANCE/.test(amb.json.result.content[0].text), "no target + 2 instances → AMBIGUOUS_INSTANCE");
+  ok(/instanceId/.test(amb.json.result.content[0].text) && /= \S+/.test(amb.json.result.content[0].text), "...and the message lists the connected browsers by label and instanceId");
 
   const ga = toolResult(await call("get_active_tab", { instanceId: "A" }, sid, tAgent));
   ok(ga?.id === "A:7", `instanceId routing + result id composited (got ${ga?.id})`);
@@ -157,6 +158,8 @@ const call = (name, args, sid, token) => rpc({ jsonrpc: "2.0", id: Math.floor(Ma
   ok(plain.json?.result?.isError && !/EXTENSION_OUTDATED/.test(plain.json.result.content[0].text) && A2.invokes.includes("get_page_content"), "frameId 0 (the page itself) needs no feature: it is forwarded");
   const fine = await call("list_frames", { instanceId: "C" }, sid, tAgent);
   ok(!/EXTENSION_OUTDATED/.test(fine.json?.result?.content?.[0]?.text || "") && C.invokes.includes("list_frames"), "an instance that reports the feature gets the call");
+  const outdated3 = await call("wait_for", { instanceId: "C", text: "done" }, sid, tAgent);
+  ok(outdated3.json?.result?.isError && /EXTENSION_OUTDATED/.test(outdated3.json.result.content[0].text) && /wait-text/.test(outdated3.json.result.content[0].text) && !C.invokes.includes("wait_for"), "wait_for with `text` on a build without the 'wait-text' feature → EXTENSION_OUTDATED, not forwarded");
   const instsC = toolResult(await call("list_instances", {}, sid, tAgent));
   ok(instsC.instances.find((i) => i.instanceId === "C")?.extensionVersion === "1.6.0", "list_instances shows the reported extension version");
 

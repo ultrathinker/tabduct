@@ -114,13 +114,14 @@
     },
     {
       "name": "wait_for",
-      "description": "Wait until a condition is met in a shared tab (a CSS selector appears, the URL contains a substring, or the page reaches a load state), bounded by a timeout. At least one of selector/urlContains/loadState is required. CSP-safe: uses injected functions, never string eval (so it works on strict-CSP sites).",
+      "description": "Wait until a condition is met in a shared tab (a CSS selector appears, the page's visible text contains a substring, the URL contains a substring, or the page reaches a load state), bounded by a timeout. At least one of selector/text/urlContains/loadState is required; it resolves as soon as ANY of the given conditions holds. CSP-safe: uses injected functions, never string eval (so it works on strict-CSP sites).",
       "inputSchema": {
         "type": "object",
         "properties": {
           "tabId": { "type": "integer", "description": "Target tab; omit for active tab." },
           "frameId": { "type": "integer", "minimum": 0, "x-requires": "frames", "description": "Act inside this frame of the tab (frameId from list_frames or get_dom_snapshot) — e.g. an embedded, cross-origin form. Omit (or 0) for the page itself." },
           "selector": { "type": "string", "description": "CSS selector that must match an element before resolving." },
+          "text": { "type": "string", "x-requires": "wait-text", "description": "Resolve when the page's visible text (document.body.innerText) contains this substring (case-sensitive)." },
           "urlContains": { "type": "string", "description": "Resolve when location.href contains this substring." },
           "loadState": { "type": "string", "enum": ["complete"], "description": "Resolve when document.readyState equals this (only 'complete' is supported)." },
           "timeoutMs": { "type": "integer", "minimum": 0, "maximum": 25000, "default": 10000, "description": "Max time to wait in ms; capped at 25000. Resolves as soon as a condition holds; throws TIMEOUT otherwise." }

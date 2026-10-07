@@ -19,7 +19,7 @@ const OPEN_TIMEOUT_MS = 20000;
 // What this build can do beyond the base protocol. Sent in `open`; the host refuses calls that
 // need a feature an older extension build doesn't have (instead of silently running them
 // elsewhere — e.g. a frameId ignored by a build that predates frames).
-const FEATURES = ["frames", "pinned-docs", "cdp-input"];
+const FEATURES = ["frames", "pinned-docs", "cdp-input", "wait-text"];
 const EXT_VERSION = chrome.runtime.getManifest().version;
 
 // Is a shared hub already listening on this machine? (any HTTP response = up; connection

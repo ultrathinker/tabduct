@@ -155,6 +155,17 @@ polls = 0;
 r = await run(() => HANDLERS.wait_for({ tabId: 1, urlContains: "landed", timeoutMs: 5000, _pin: "a.com" }));
 eq(r.err, "ORIGIN_DRIFT", "wait_for across a cross-host redirect, lock on: ORIGIN_DRIFT");
 
+// wait_for `text`: accepted on its own and passed to the injected check as the 4th argument
+let textArg = "unset";
+chrome.scripting.executeScript = async (d) => {
+  if (d.func?.name === "probeFrame") return [{ frameId: 0, documentId: "doc1", result: probe("https://a.com") }];
+  textArg = d.args[3]; return [{ result: { matched: d.args[3] === "Order shipped" } }];
+};
+r = await run(() => HANDLERS.wait_for({ tabId: 1, text: "Order shipped", timeoutMs: 2000 }));
+eq([!!r.ok?.matched, textArg], [true, "Order shipped"], "wait_for with only `text` is a valid wait and the text reaches the page check");
+r = await run(() => HANDLERS.wait_for({ tabId: 1, timeoutMs: 100 }));
+eq(r.err, "INVALID_ARGS", "wait_for with no condition at all is still refused");
+
 chrome.scripting.executeScript = baseExec; // the wait_for tests above swapped in a polling mock
 // ---- the document's real origin (probeFrame): about:blank inherits it, location.origin says "null" ----------
 const vm = await import("node:vm");

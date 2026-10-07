@@ -87,7 +87,7 @@ const code = (r) => (r?.ok ? "ok" : r?.error?.code);
 TABS = [{ id: 1, url: "https://console.aws.amazon.com/home", active: true, windowId: 1, title: "AWS" }];
 const { port: P1, open, st } = await connect();
 eq(st.state, "connected", "connect: the fake host's reply connects");
-eq([open.payload.extensionVersion, open.payload.features, open.payload.hub], ["9.9.9", ["frames", "pinned-docs", "cdp-input"], true], "open carries extensionVersion + features");
+eq([open.payload.extensionVersion, open.payload.features, open.payload.hub], ["9.9.9", ["frames", "pinned-docs", "cdp-input", "wait-text"], true], "open carries extensionVersion + features");
 eq(open.payload.port, 0, "open asks for an ephemeral port (no lastPort reuse)");
 
 // ---- lock on: pins, drift pauses, navigate pre-check -------------------------------------

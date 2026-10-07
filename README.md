@@ -102,7 +102,7 @@ point your agent at `127.0.0.1:12311`, never at a per-browser port.
 | `screenshot` | Capture the visible tab (returned as an MCP image) |
 | `click` / `type` | Click an element / type into a field (or pick a `<select>` option), by CSS selector. `trusted: true` sends real browser-level input |
 | `press_key` | Press a key (Enter, Tab, Ctrl+C…) as real keyboard input — terminals, custom widgets |
-| `wait_for` | Wait for a selector, URL fragment, or load state (bounded) |
+| `wait_for` | Wait for a selector, a piece of visible text, a URL fragment, or a load state (bounded; any one of them ends the wait) |
 | `navigate` | Point a shared tab at a URL |
 | `open_tab` / `activate_tab` / `close_tab` | Tab management |
 | `get_console_logs` | Read the tab's console output (plus uncaught errors, in CDP mode) |
