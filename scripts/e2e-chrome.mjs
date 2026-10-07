@@ -284,6 +284,8 @@ try {
   ok(r.ok?.via === "cdp" && r.ok?.result === "Shop", "execute_script via CDP evaluates in the page's own context", r);
   r = await sw(`const rs = await Promise.all([call("execute_script", { tabId: ${tab}, code: "return 1+1", _engine: "cdp" }), call("execute_script", { tabId: ${tab}, code: "return 2+2", _engine: "cdp" }), call("execute_script", { tabId: ${tab}, code: "return 3+3", _engine: "cdp" })]); return rs.map((x) => x.ok?.result ?? x.err);`);
   ok(JSON.stringify(r) === "[2,4,6]", "...three evaluations at once on one tab all succeed (they queue on the Runtime domain)", r);
+  r = await sw(`H.evalDeadline.ms = 1500; const t0 = Date.now(); const hung = await call("execute_script", { tabId: ${tab}, code: "await new Promise(() => {})", _engine: "cdp" }); const took = Date.now() - t0; const next = await call("execute_script", { tabId: ${tab}, code: "return 7*6", _engine: "cdp" }); H.evalDeadline.ms = 18000; return { hung: hung.err, msg: hung.msg, took, next: next.ok?.result ?? next.err };`);
+  ok(r.hung === "SCRIPT_ERROR" && /did not finish/.test(r.msg || "") && r.took < 6000 && r.next === 42, "a script that never finishes is stopped at the deadline and the tab's next eval still works (no queue wedge)", r);
   r = await sw(`return await call("execute_script", { tabId: ${tab}, code: "return typeof __f + typeof __g + typeof denyOrigins", _engine: "cdp" });`);
   ok(r.ok?.result === "undefinedundefinedundefined", "...and nothing about the consent rules exists in the page for the agent's code to read", r);
   await setDeny(["unrelated.test"]);

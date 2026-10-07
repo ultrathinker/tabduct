@@ -4,7 +4,16 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims for
 [Semantic Versioning](https://semver.org/) once it reaches 1.0.
 
-## [Unreleased]
+## [1.6.3] — 2026-10-07
+
+### Fixed
+- **A script that never finishes no longer blocks every later `execute_script` on that tab.** Evals
+  on one tab run one after another (they share the Runtime domain); with no deadline, one that never
+  completed (code awaiting an animation frame in a minimized window, an open dialog, a promise nobody
+  resolves) held the queue for good, so every later `execute_script` on that tab timed out while
+  reads through `get_page_content` kept working. After 18 s the debugger is detached (the pending
+  command fails), the caller gets `SCRIPT_ERROR` saying the script did not finish, and the next eval
+  runs. Covered by a mock test and, in a real Chrome, by `npm run test:e2e`.
 
 ### Changed
 - Documentation brought in line with the code: the architecture diagram shows the hub, the host

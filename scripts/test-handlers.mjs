@@ -20,6 +20,7 @@ const area = (d) => ({
 let PAGE = { frames: {}, content: "hello", tabs: {} };
 let LOG = [];
 let CDP = []; // what was sent to the (mock) debugger
+const HANGS = []; // evaluations that never finish: rejected when the (mock) debugger detaches, like Chrome does
 const LISTENERS = []; // chrome.debugger.onEvent listeners
 const emit = (method, params, tabId = 1) => { for (const f of LISTENERS) f({ tabId }, method, params); };
 // What the (mock) browser answers over CDP, derived from the scripted PAGE (frames[0] = the top document,
@@ -36,7 +37,7 @@ function cdpReply(method) {
     return {};
   }
   if (method === "Page.getFrameTree") { const t = treeOf(); if (PAGE.onTree) PAGE.onTree(); return { frameTree: t }; }
-  if (method === "Runtime.evaluate") { if (PAGE.evalError) throw new Error(PAGE.evalError); return { result: { value: PAGE.evalValue ?? 42 } }; }
+  if (method === "Runtime.evaluate") { if (PAGE.evalHang) return new Promise((_, rej) => HANGS.push(rej)); if (PAGE.evalError) throw new Error(PAGE.evalError); return { result: { value: PAGE.evalValue ?? 42 } }; }
   return {};
 }
 const probe = (origin, extra = {}) => ({ url: origin + "/", origin, top: origin, ancestors: [], depth: 0, title: "t", width: 800, height: 600, ...extra });
@@ -46,7 +47,7 @@ globalThis.chrome = {
   debugger: {
     onEvent: { addListener(f) { LISTENERS.push(f); } },
     async attach() { CDP.push({ method: "attach" }); },
-    async detach() { CDP.push({ method: "detach" }); },
+    async detach() { CDP.push({ method: "detach" }); for (const rej of HANGS.splice(0)) rej(new Error("Detached while handling command.")); },
     async sendCommand(_t, method, params) { CDP.push({ method, params }); return cdpReply(method, params); },
   },
   tabs: {
@@ -363,6 +364,21 @@ eq((await run(() => HANDLERS.type({ tabId: 1, frameId: 3, selector: "#e", text: 
 injected = { focus: { ok: true, focused: true, hasFocus: false, tag: "textarea" }, hasFocusLater: false };
 eq(/background or minimized/.test((await run(() => HANDLERS.type({ tabId: 1, frameId: 3, selector: "#e", text: "x", trusted: true, _trusted: true }))).ok?.warning ?? ""), true, "type: the warning stays when the page never reports focus");
 injected = {};
+
+// ---- a script that never finishes must not block the tab's later evals --------------------------------
+{
+  const { evalDeadline } = await import("../extension/handlers/index.js");
+  const saved = evalDeadline.ms; evalDeadline.ms = 60;
+  const within = (p, ms) => Promise.race([p, new Promise((res) => setTimeout(() => res({ err: "STILL HANGING" }), ms))]);
+  page({ 0: probe("https://a.com") }); CDP = [];
+  PAGE.evalHang = true;
+  const hung = await within(run(() => HANDLERS.execute_script({ tabId: 1, code: "await new Promise(() => {})", _engine: "cdp", _pin: "a.com" })), 1500);
+  eq([hung.err, CDP.some((c) => c.method === "detach")], ["SCRIPT_ERROR", true], "cdp eval: a script that never finishes is stopped after the deadline (debugger detached) with a clear error");
+  PAGE.evalHang = false;
+  const next = await within(run(() => HANDLERS.execute_script({ tabId: 1, code: "return 1", _engine: "cdp", _pin: "a.com" })), 1500);
+  eq(next.ok?.result, 42, "...and the next eval on the same tab is not stuck behind it");
+  evalDeadline.ms = saved;
+}
 
 console.log(fails ? `\nHANDLER TESTS FAILED (${fails})` : "\nHANDLER TESTS PASSED");
 process.exit(fails ? 1 : 0);

@@ -779,9 +779,25 @@ async function topContext(send, tabId) {
 }
 
 // Evals on one tab run one after another: they share the Runtime domain (and its context map).
+// A script that never finishes (awaits a frame of a hidden page, a dialog is open, a promise nobody
+// resolves) must not block every later eval on that tab: after the deadline the debugger is detached
+// (which makes the pending command fail), the caller gets an error and the queue moves on.
+export const evalDeadline = { ms: 18000 }; // a little under the hub's 20 s per-call budget; mutable for the tests
+function withDeadline(tabId, work) {
+  let timer;
+  const guard = new Promise((_, reject) => {
+    timer = setTimeout(() => {
+      cdpAttached.delete(tabId);
+      chrome.debugger.detach({ tabId }).catch(() => {});
+      reject(err("SCRIPT_ERROR", `the script did not finish within ${Math.round(evalDeadline.ms / 1000)} s and was stopped (a page in a hidden or minimized window does not draw, so code that waits for a frame or an animation never completes there)`));
+    }, evalDeadline.ms);
+  });
+  work.catch(() => {}); // when the guard wins, the late failure of the detached call is not an unhandled rejection
+  return Promise.race([work, guard]).finally(() => clearTimeout(timer));
+}
 const evalChain = new Map(); // tabId -> tail promise
 export function cdpEval(tabId, code, callArgs, pin, opts = {}) {
-  const run = (evalChain.get(tabId) || Promise.resolve()).then(() => cdpEvalNow(tabId, code, callArgs, pin, opts));
+  const run = (evalChain.get(tabId) || Promise.resolve()).then(() => withDeadline(tabId, cdpEvalNow(tabId, code, callArgs, pin, opts)));
   const tail = run.then(() => {}, () => {});
   evalChain.set(tabId, tail);
   tail.then(() => { if (evalChain.get(tabId) === tail) evalChain.delete(tabId); });
