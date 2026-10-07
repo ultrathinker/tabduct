@@ -11,6 +11,9 @@ const eq = (a, b, m) => { const p = JSON.stringify(a) === JSON.stringify(b); con
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const until = async (fn, ms = 2000) => { const t = Date.now(); for (;;) { const v = await fn(); if (v) return v; if (Date.now() - t > ms) return null; await sleep(5); } };
 
+// The service worker uses the browser's global `crypto`; Node 18 has no such global (19+ does).
+globalThis.crypto ??= (await import("node:crypto")).webcrypto;
+
 // ---- mock chrome --------------------------------------------------------------
 const ev = () => { const ls = []; return { addListener: (f) => ls.push(f), fire: async (...a) => { for (const f of ls) await f(...a); }, ls }; };
 const area = () => { const d = {}; return { d, async get(k) { const ks = typeof k === "string" ? [k] : Array.isArray(k) ? k : Object.keys(k || {}); const o = {}; for (const x of ks) if (x in d) o[x] = JSON.parse(JSON.stringify(d[x])); return o; }, async set(o) { for (const [k, v] of Object.entries(o)) d[k] = JSON.parse(JSON.stringify(v)); }, async remove(k) { for (const x of [].concat(k)) delete d[x]; } }; };
@@ -79,7 +82,7 @@ const code = (r) => (r?.ok ? "ok" : r?.error?.code);
 TABS = [{ id: 1, url: "https://console.aws.amazon.com/home", active: true, windowId: 1, title: "AWS" }];
 const { port: P1, open, st } = await connect();
 eq(st.state, "connected", "connect: the fake host's reply connects");
-eq([open.payload.extensionVersion, open.payload.features, open.payload.hub], ["9.9.9", ["frames", "pinned-docs", "cdp-input"], true], "open carries extensionVersion + features (B4)");
+eq([open.payload.extensionVersion, open.payload.features, open.payload.hub], ["9.9.9", ["frames", "pinned-docs", "cdp-input"], true], "open carries extensionVersion + features");
 eq(open.payload.port, 0, "open asks for an ephemeral port (no lastPort reuse)");
 
 // ---- lock on: pins, drift pauses, navigate pre-check -------------------------------------
@@ -89,7 +92,7 @@ eq(code(await call(P1, "get_page_content", { tabId: 1 })), "ok", "shared tab on 
 TABS[0].url = "https://us-east-1.console.aws.amazon.com/";
 let r = await call(P1, "get_page_content", { tabId: 1 });
 eq(code(r), "ORIGIN_DRIFT", "lock on, tab moved to another subdomain: ORIGIN_DRIFT");
-eq(Object.keys((await C.getState()).allow), ["1"], "...and the share is KEPT (paused, not revoked) (B3)");
+eq(Object.keys((await C.getState()).allow), ["1"], "...and the share is KEPT (paused, not revoked)");
 eq(JSON.parse((await call(P1, "list_tabs")).result.tabs.length), 0, "...the paused tab is hidden from list_tabs");
 const status = await popup({ cmd: "sharing.status" });
 eq([status.tabs.length, status.paused.map((t) => t.id), status.paused[0]?.sharedHost], [0, [1], "console.aws.amazon.com"], "the popup status lists it as paused");
@@ -111,7 +114,7 @@ delete PAGE[1];
 // ---- lock off: live, no false drift ------------------------------------------------------
 await C.setShareOptions({ lockToDomain: false });
 TABS[0].url = "https://support.console.aws.amazon.com/";
-eq(code(await call(P1, "get_page_content", { tabId: 1 })), "ok", "lock switched OFF after sharing: the cross-host tab works (B1/B2)");
+eq(code(await call(P1, "get_page_content", { tabId: 1 })), "ok", "lock switched OFF after sharing: the cross-host tab works");
 eq(code(await call(P1, "navigate", { tabId: 1, url: "https://global.console.aws.amazon.com/", waitUntilComplete: false })), "ok", "lock off: navigate anywhere");
 await C.setShareOptions({ originMode: undefined });
 await chrome.storage.local.set({ denyOrigins: ["*.bank.com"] });
@@ -145,7 +148,7 @@ eq(code(await call(P1, "screenshot", { tabId: 1 })), "FRAME_TOO_LARGE", "a >30 M
 SHOT = "data:image/png;base64,QUJD";
 eq(code(await call(P1, "screenshot", { tabId: 1 })), "ok", "a normal screenshot still goes through");
 
-// ---- tabs.onReplaced (B5) ---------------------------------------------------------------------------
+// ---- tabs.onReplaced ---------------------------------------------------------------------------
 TABS[0].id = 77;
 await evs.tabsReplaced.fire(77, 1);
 eq(Object.keys((await C.getState()).allow), ["77"], "onReplaced carries the grant to the new tab id");
@@ -153,7 +156,7 @@ eq(code(await call(P1, "get_page_content", { tabId: 77 })), "ok", "...and the ag
 TABS[0].id = 1;
 await evs.tabsReplaced.fire(1, 77);
 
-// ---- restore after extension Reload (B7) ---------------------------------------------------------------
+// ---- restore after extension Reload ---------------------------------------------------------------
 const before = JSON.parse(JSON.stringify((await C.getState()).allow));
 chrome.storage.session.d = {}; // a Reload wipes storage.session (storage.local survives)
 chrome.storage.session.get = async () => ({}); // simplest: session now reads empty until a mutation writes it
@@ -163,13 +166,13 @@ await evs.onInstalled.fire({ reason: "install" });
 eq((await C.getState()).tier, "none", "a fresh INSTALL never restores");
 await evs.onInstalled.fire({ reason: "update" });
 const restored = await C.getState();
-eq([restored.tier, restored.allow["1"]?.host], ["tabs", before["1"].host], "onInstalled(update) restores the share (B7)");
+eq([restored.tier, restored.allow["1"]?.host], ["tabs", before["1"].host], "onInstalled(update) restores the share");
 { const s = area(); chrome.storage.session.get = s.get; chrome.storage.session.set = s.set; chrome.storage.session.remove = s.remove; }
 await evs.onStartup.fire();
 await evs.onInstalled.fire({ reason: "update" });
 eq((await C.getState()).tier, "none", "after a browser restart (onStartup clears the mirror) nothing is restored");
 
-// update applied together with a browser start (VCDX-11): whichever event comes first, nothing may stay shared
+// update applied together with a browser start: whichever event comes first, nothing may stay shared
 {
   const wipeSession = () => { const s = area(); chrome.storage.session.get = s.get; chrome.storage.session.set = s.set; chrome.storage.session.remove = s.remove; };
   const shareFresh = async () => { await C.setShareOptions({ lockToDomain: false }); TABS[0].url = "https://console.aws.amazon.com/home"; await C.revokeAll(); await C.shareTab(1); wipeSession(); };
@@ -187,7 +190,7 @@ eq((await C.getState()).tier, "none", "after a browser restart (onStartup clears
   wipeSession();
 }
 
-// ---- a late disconnect of a replaced native port must not kill the new connection (CDX-6) ---------------
+// ---- a late disconnect of a replaced native port must not kill the new connection ---------------
 await popup({ cmd: "disconnect" });
 const { port: P2 } = await connect();
 await P1.onDisconnect.fire(); // the OLD port's disconnect arrives after the new connection exists
@@ -196,7 +199,7 @@ eq(stAfter.state, "connected", "a late onDisconnect from the old port leaves the
 eq(code(await call(P2, "list_tabs")), "ok", "...and the new port still answers invokes");
 eq(ports.length >= 2 && P1 !== P2, true, "(two distinct ports were used)");
 
-// ---- the origin filter is judged only AFTER authorization (VCDX-06) -------------------------------------------
+// ---- the origin filter is judged only AFTER authorization -------------------------------------------
 TABS.push({ id: 2, url: "https://shop.com/", active: false, windowId: 1, title: "Shop" });
 await chrome.storage.local.set({ denyOrigins: ["*.bank.com"], originMode: "block" });
 await C.revokeAll();
@@ -206,7 +209,7 @@ await C.setTier("tabs");
 eq(code(await call(P2, "open_tab", { url: "https://x.bank.com/" })), "ORIGIN_DENIED", "sharing on (authorized caller): a blocked destination is refused as ORIGIN_DENIED");
 await C.revokeAll();
 
-// ---- forged internal args can't unlock a screenshot of a blocked frame (VOPUS-12) ---------------------------
+// ---- forged internal args can't unlock a screenshot of a blocked frame ---------------------------
 await C.setShareOptions({ lockToDomain: false });
 TABS[0].url = "https://support.console.aws.amazon.com/"; TABS[0].active = true; TABS[1].active = false;
 await C.shareTab(1);
@@ -215,7 +218,7 @@ eq([code(await call(P2, "screenshot", { tabId: 1 })), code(await call(P2, "scree
 delete FRAMES[1];
 eq(code(await call(P2, "type", { tabId: 1, selector: "#a", text: "x", trusted: true, _trusted: true })), "CDP_NOT_PERMITTED", "a forged _trusted:true can't switch trusted input on without the opt-in");
 
-// ---- the share button / hotkey / menu on a PAUSED tab re-shares it instead of ending the dormant grant (VOPUS-9) -----
+// ---- the share button / hotkey / menu on a PAUSED tab re-shares it instead of ending the dormant grant -----
 await C.setShareOptions({ lockToDomain: true });
 TABS[0].url = "https://support.console.aws.amazon.com/";
 await C.revokeAll(); await C.shareTab(1);
@@ -227,7 +230,7 @@ await popup({ cmd: "sharing.toggleActive" });
 eq(Object.keys((await C.getState()).allow), [], "...and the next toggle, on an active share, unshares");
 await C.revokeAll();
 
-// ---- group sync logic (B6) -----------------------------------------------------------------------------------
+// ---- group sync logic -----------------------------------------------------------------------------------
 const m = new GroupMask(2000);
 m.mark([5], 1000); m.mark([5], 1000);
 eq([m.consume(5, 1100), m.consume(5, 1200), m.consume(5, 1300)], [true, true, false], "mask: two overlapping programmatic moves mask two events, the third (user) is not masked");
@@ -238,11 +241,11 @@ eq(groupAction({ ...base }), null, "taking a shared tab out of the group does NO
 eq(groupAction({ ...base, unshareOnLeave: true }), "unshare", "...unless the user opted in");
 eq(groupAction({ ...base, inOurGroup: true, shared: false }), "share", "dragging a tab into the group shares it");
 eq(groupAction({ ...base, inOurGroup: true, shared: false, blocked: true }), null, "...never a blocked origin");
-eq(groupAction({ ...base, inOurGroup: true, shared: false, justOpened: true }), null, "a tab Chrome just opened into the group is not auto-shared (OPUS-9)");
+eq(groupAction({ ...base, inOurGroup: true, shared: false, justOpened: true }), null, "a tab Chrome just opened into the group is not auto-shared");
 eq(groupAction({ ...base, inOurGroup: true, shared: false, justOpened: true, noAutoShareOpened: false }), "share", "...unless the user turned that guard off");
 eq(groupAction({ ...base, tier: "all", inOurGroup: true, shared: false }), null, "'Everything' mode: group sync is off");
 
-// ---- tab groups: one group per window; a tab the user pulled out stays out (VOPUS-14) ----------------------------
+// ---- tab groups: one group per window; a tab the user pulled out stays out ----------------------------
 {
   let gseq = 100; const calls = [];
   chrome.tabGroups = { async update() {} };

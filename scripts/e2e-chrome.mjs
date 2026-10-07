@@ -153,7 +153,7 @@ const setDeny = (list, mode = "block") => sw(`await chrome.storage.local.set({ d
 
 try {
   // ======================================================================================================
-  console.log("— B2: the page is pinned by documentId; a cross-host redirect is fine with lock off, a drift with lock on");
+  console.log("— the page is pinned by documentId; a cross-host redirect is fine with lock off, a drift with lock on");
   await setDeny([]);
   let tab = await sw(`return await openTab(${JSON.stringify(URL_A + "/redirect")});`);
   let r = await sw(`return await call("wait_for", { tabId: ${tab}, urlContains: "/final", timeoutMs: 8000 });`);
@@ -185,7 +185,7 @@ try {
   r = await sw(`return await call("get_page_content", { tabId: ${tab}, frameId: ${frameId}, _pin: "127.0.0.1" });`);
   ok(r.err === "ORIGIN_DENIED", "...and reading it is ORIGIN_DENIED", r);
   r = await sw(`return await call("screenshot", { tabId: ${tab}, _pin: "127.0.0.1" });`);
-  ok(r.err === "ORIGIN_DENIED", "screenshot of a page that shows the blocked site's iframe is refused (OPUS-5)", r);
+  ok(r.err === "ORIGIN_DENIED", "screenshot of a page that shows the blocked site's iframe is refused", r);
   r = await sw(`return await call("press_key", { tabId: ${tab}, key: "Enter", _trusted: true, _pin: "127.0.0.1" });`);
   ok(r.err === "ORIGIN_DENIED", "trusted key press is refused too while that iframe is on screen", r);
   await setDeny([]);
@@ -193,7 +193,7 @@ try {
   ok(r.ok?.mimeType === "image/png" && r.ok?.dataUrl?.length > 500, "with the filter off the same screenshot works", r && { err: r.err, msg: r.msg });
 
   // ======================================================================================================
-  console.log("— blob: document of a blocked site (OPUS-3)");
+  console.log("— blob: document of a blocked site");
   await setDeny(["localhost"]);
   tab = await sw(`return await openTab(${JSON.stringify(URL_B + "/blobmaker")});`);
   let url = "";
@@ -207,7 +207,7 @@ try {
   ok(r.ok?.content?.includes("secret"), "with the filter off the blob document reads normally", r);
 
   // ======================================================================================================
-  console.log("— F1: trusted typing, key presses and clicks are really isTrusted");
+  console.log("— trusted typing, key presses and clicks are really isTrusted");
   tab = await sw(`return await openTab(${JSON.stringify(URL_A + "/term")});`);
   r = await sw(`return await call("type", { tabId: ${tab}, selector: ".xterm-helper-textarea", text: "echo hello", trusted: true });`);
   ok(r.err === "CDP_NOT_PERMITTED", "trusted type without the gate's opt-in is refused", r);
@@ -235,11 +235,11 @@ try {
   // trusted typing INTO the cross-origin frame
   r = await sw(`return await call("list_frames", { tabId: ${tab}, _pin: "127.0.0.1" });`);
   const fid2 = r.ok?.frames?.find((f) => f.frameId !== 0)?.frameId;
-  r = await sw(`return await call("type", { tabId: ${tab}, frameId: ${fid2}, selector: "#email", text: "real@typing.io", trusted: true, _trusted: true, _pin: "127.0.0.1" });`);
+  r = await sw(`return await call("type", { tabId: ${tab}, frameId: ${fid2}, selector: "#email", text: "user@example.com", trusted: true, _trusted: true, _pin: "127.0.0.1" });`);
   ok(r.ok?.trusted === true, "trusted type INTO the cross-origin iframe succeeds", r);
   ev = JSON.parse(await sw(`return await evalIn(${tab}, "JSON.stringify(window.EVENTS)", ${fid2});`));
   ok(ev.some((e) => e[0] === "input" && e[1] === "insertText" && e[2] === true), "...and that frame saw trusted input", ev);
-  ok(await sw(`return await evalIn(${tab}, "document.getElementById('email').value", ${fid2});`) === "real@typing.io", "the cross-origin field holds the text");
+  ok(await sw(`return await evalIn(${tab}, "document.getElementById('email').value", ${fid2});`) === "user@example.com", "the cross-origin field holds the text");
   r = await sw(`return await call("click", { tabId: ${tab}, frameId: ${fid2}, selector: "#email", trusted: true, _trusted: true, _pin: "127.0.0.1" });`);
   ok(r.err === "INVALID_ARGS" && /cross-origin/.test(r.msg || ""), "a trusted click can't be placed inside a cross-origin frame — clear INVALID_ARGS with advice", r);
 
@@ -260,7 +260,7 @@ try {
   ok(r.err === "INVALID_ARGS", "wait_for with an invalid selector fails at once instead of waiting out the timeout", r);
 
   // ======================================================================================================
-  console.log("— network buffer: a redirect chain is hidden when ANY hop is on a filtered origin (CDX-5)");
+  console.log("— network buffer: a redirect chain is hidden when ANY hop is on a filtered origin");
   await setDeny([]);
   tab = await sw(`return await openTab("about:blank");`);
   await sw(`await C.setShareOptions({ allowCdp: true, cdpConsole: true }); await H.startCdpConsole(${tab}); return 1;`);
@@ -277,7 +277,7 @@ try {
 
 
   // ======================================================================================================
-  console.log("— CDP eval runs inside the judged context (uniqueContextId) — VCDX-01 / VOPUS-2");
+  console.log("— CDP eval runs inside the judged context (uniqueContextId)");
   await setDeny([]);
   tab = await sw(`return await openTab(${JSON.stringify(URL_A + "/")});`);
   r = await sw(`return await call("execute_script", { tabId: ${tab}, code: "return document.title", _engine: "cdp", _pin: "127.0.0.1" });`);
@@ -285,7 +285,7 @@ try {
   r = await sw(`const rs = await Promise.all([call("execute_script", { tabId: ${tab}, code: "return 1+1", _engine: "cdp" }), call("execute_script", { tabId: ${tab}, code: "return 2+2", _engine: "cdp" }), call("execute_script", { tabId: ${tab}, code: "return 3+3", _engine: "cdp" })]); return rs.map((x) => x.ok?.result ?? x.err);`);
   ok(JSON.stringify(r) === "[2,4,6]", "...three evaluations at once on one tab all succeed (they queue on the Runtime domain)", r);
   r = await sw(`return await call("execute_script", { tabId: ${tab}, code: "return typeof __f + typeof __g + typeof denyOrigins", _engine: "cdp" });`);
-  ok(r.ok?.result === "undefinedundefinedundefined", "...and nothing about the consent rules exists in the page for the agent's code to read (VOPUS-2)", r);
+  ok(r.ok?.result === "undefinedundefinedundefined", "...and nothing about the consent rules exists in the page for the agent's code to read", r);
   await setDeny(["unrelated.test"]);
   r = await sw(`return await call("execute_script", { tabId: ${tab}, code: "return document.title", _engine: "cdp" });`);
   ok(r.ok?.result === "Shop", "with an unrelated rule in the list the page is still allowed", r);
@@ -295,7 +295,7 @@ try {
   await setDeny([]);
 
   // ======================================================================================================
-  console.log("— a popup that INHERITED a blocked origin (about:blank, location.origin is 'null') — VOPUS-1");
+  console.log("— a popup that INHERITED a blocked origin (about:blank, location.origin is 'null')");
   const opener = await sw(`return await openTab(${JSON.stringify(URL_B + "/final")});`);
   const { targetInfos } = await cdp("Target.getTargets");
   const openerTarget = targetInfos.find((t) => t.type === "page" && t.url.startsWith(URL_B + "/final"));
@@ -319,7 +319,7 @@ try {
   ok(r.ok?.content?.includes("secret statement"), "with the filter off the popup reads normally", r);
 
   // ======================================================================================================
-  console.log("— trusted click: an overlay on an ANCESTOR document is detected — VCDX-12");
+  console.log("— trusted click: an overlay on an ANCESTOR document is detected");
   tab = await sw(`return await openTab(${JSON.stringify(URL_A + "/nested")});`);
   r = await sw(`return await call("list_frames", { tabId: ${tab}, _pin: "127.0.0.1" });`);
   const innerId = r.ok?.frames?.find((f) => f.frameId !== 0)?.frameId;
@@ -337,14 +337,14 @@ try {
   ok(!ev.some((e) => e[0] === "overlay-click"), "...and the overlay received no click", ev);
 
   // ======================================================================================================
-  console.log("— the paste shortcut is refused; keys must go to the named frame — VOPUS-5 / VCDX-08");
+  console.log("— the paste shortcut is refused; keys must go to the named frame");
   r = await sw(`return await call("press_key", { tabId: ${tab}, key: "v", modifiers: ["ctrl"], _trusted: true });`);
   ok(r.err === "INVALID_ARGS" && /clipboard/.test(r.msg || ""), "press_key Ctrl+V is refused", r);
   r = await sw(`return await call("press_key", { tabId: ${tab}, frameId: ${innerId2}, key: "Enter", _trusted: true, _pin: "127.0.0.1" });`);
   ok(r.err === "INVALID_ARGS", "press_key with a frameId and no selector while that frame holds no focus is refused", r);
 
   // ======================================================================================================
-  console.log("— console + network buffers: judged by the DOCUMENT that produced the entry (same-site hr frame) — VCDX-03 / VOPUS-11");
+  console.log("— console + network buffers: judged by the DOCUMENT that produced the entry (same-site hr frame)");
   await setDeny([]);
   const APP = `http://app.corp.test:${PA}`;
   tab = await sw(`return await openTab("about:blank");`);
@@ -367,7 +367,7 @@ try {
   await setDeny([]);
 
   // ======================================================================================================
-  console.log("— B7: restoring shares after an extension Reload (real storage and real tab ids)");
+  console.log("— restoring shares after an extension Reload (real storage and real tab ids)");
   // chrome.runtime.reload() can't be driven here: an extension installed through CDP isn't persisted
   // in the profile, so Chrome doesn't bring it back. A real Reload wipes storage.session and fires
   // runtime.onInstalled with reason "update" (documented Chrome behaviour, handled in background.js);

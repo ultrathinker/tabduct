@@ -109,7 +109,7 @@ const text = (r) => r.json?.result?.content?.[0]?.text || "";
     await sleep(300);
     ok(h3.notices.length === 1, "a build one patch/minor behind the disk still gets the reload notice");
 
-    // ---- OPUS-12: a hub that dies while the browser stays connected is brought back ----------------------------
+    // ---- a hub that dies while the browser stays connected is brought back ----------------------------
     const HPORT = 13600 + Math.floor(Date.now() % 300);
     const h4 = startHost({ TABDUCT_HUB_PORT: String(HPORT), TABDUCT_HUB_IDLE_MS: "2500" }); hosts.push(h4);
     const o4 = await h4.req("open", { port: 0, token: "t4-" + randomUUID(), protocolVersion: 0, instanceId: "watch", label: "W", hub: true, extensionVersion: DISK, features: ["frames"] });
@@ -127,7 +127,7 @@ const text = (r) => r.json?.result?.content?.[0]?.text || "";
 
     // ---- pure helpers -------------------------------------------------------------------------------------
     ok([cmpVersion("1.5.0", "1.6.0"), cmpVersion("1.6.0", "1.6.0"), cmpVersion("1.10.0", "1.9.9"), cmpVersion(null, "0.0.1")].join() === "-1,0,1,-1", "cmpVersion orders dotted versions numerically (missing = oldest)");
-    ok(invokeTimeoutMs("wait_for", { timeoutMs: 25000 }) === 30000 && invokeTimeoutMs("wait_for", {}) === 15000 && invokeTimeoutMs("click", {}) === 20000, "wait_for gets its wait plus overhead; others the generic budget (OPUS-14)");
+    ok(invokeTimeoutMs("wait_for", { timeoutMs: 25000 }) === 30000 && invokeTimeoutMs("wait_for", {}) === 15000 && invokeTimeoutMs("click", {}) === 20000, "wait_for gets its wait plus overhead; others the generic budget");
     ok(invokeTimeoutMs("wait_for", { timeoutMs: 99999 }) === 30000, "...but never more than the 25 s cap + overhead");
   } catch (e) { console.error("  ERROR:", e); fails++; }
   for (const h of hosts) h.kill();

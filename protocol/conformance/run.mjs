@@ -88,7 +88,7 @@ export async function runConformance(hostCmd) {
     // with the shared hub. The Python and .NET hosts predate them (direct mode only, see their READMEs), so these
     // checks are for the Node reference host; the direct-mode checks above and below apply to every host.
     if (NODE_HOST) {
-      // Feature gating (B4): this fake extension opened WITHOUT `features`, like a build that predates
+      // Feature gating: this fake extension opened WITHOUT `features`, like a build that predates
       // frames. The host must refuse calls that need a feature instead of forwarding them.
       const before = invokes;
       const fr = await rpc({ jsonrpc: "2.0", id: 20, method: "tools/call", params: { name: "get_page_content", arguments: { frameId: 3 } } }, { sessionId: sid });

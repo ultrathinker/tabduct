@@ -208,14 +208,14 @@ eq(hostOf("data:text/html,hi"), null, "hostOf: data: is host-less");
 eq(visibleTabIds(ALL, [{ id: 1, url: "blob:https://x.bank.com/abc" }, { id: 2, url: "blob:https://ok.com/abc" }]).map((t) => t.id), [2], "all: a blocked site's blob: tab is hidden");
 eq(code(evaluate(ALL, { tool: "get_page_content", tabId: 1, host: hostOf("blob:https://x.bank.com/abc") })), "ORIGIN_DENIED", "all: a blocked site's blob: document is denied");
 
-// OPUS-6: a sandboxed frame (opaque origin) and a frame nested in a blocked frame are still judged
+// a sandboxed frame (opaque origin) and a frame nested in a blocked frame are still judged
 eq(code(evaluateFrame(BLOCKF, { pin: "shop.com", topHost: "shop.com", frameHost: null, frameUrlHost: "pay.bank.com" })), "ORIGIN_DENIED", "frame: sandboxed frame is blocked by the host of its URL");
 eq(code(evaluateFrame(BLOCKF, { pin: "shop.com", topHost: "shop.com", frameHost: null, frameUrlHost: null, ancestorHosts: ["pay.bank.com"] })), "ORIGIN_DENIED", "frame: a frame nested inside a blocked frame is blocked");
 eq(code(evaluateFrame(BLOCKF, { pin: "shop.com", topHost: "shop.com", frameHost: "js.hsforms.net", frameUrlHost: "js.hsforms.net", ancestorHosts: ["ads.example.net"] })), "ALLOW", "frame: harmless nesting stays allowed");
 eq(code(evaluateFrame(ALLOWF, { pin: "shop.com", topHost: "shop.com", frameHost: "js-eu1.hsforms.net", frameUrlHost: null, ancestorHosts: ["ads.tracker.com"] })), "ORIGIN_DENIED", "frame: allow mode — a frame inside a non-listed frame is denied");
 eq(code(evaluateFrame(ALLOWF, { pin: "shop.com", topHost: "shop.com", frameHost: "shop.com", frameUrlHost: null })), "ALLOW", "frame: about:blank-style frame inheriting an allowed origin passes in allow mode");
 
-// OPUS-2: TTL is LIVE — counted from the later of share time and the moment the setting changed
+// TTL is LIVE — counted from the later of share time and the moment the setting changed
 const TTLS = { tier: "tabs", ttlMs: 1000, ttlSetAt: 0, allow: { "4": { host: "x.com", sharedAt: 5000 } }, denyOrigins: [] };
 eq(entryExpiresAt(TTLS.allow["4"], TTLS), 6000, "ttl: expiry = sharedAt + ttl");
 eq(code(evaluate(TTLS, { tool: "execute_script", tabId: 4, host: "x.com", now: 5500 })), "ALLOW", "ttl: live — within ttl");
@@ -228,14 +228,14 @@ eq(tierExpiresAtOf(TIERTTL), 3000, "ttl: 'Everything' share expiry derived from 
 eq(code(evaluate(TIERTTL, { tool: "execute_script", tabId: 1, host: "x.com", now: 3500 })), "NOT_SHARED", "ttl: 'Everything' share expires");
 eq(expiredGrants(TIERTTL, 3500).tier, true, "expiredGrants: flags the expired 'Everything' share");
 
-// B1 helper: switching the lock ON re-pins every grant to the host its tab is on now (and drops dead tabs)
+// switching the lock ON re-pins every grant to the host its tab is on now (and drops dead tabs)
 eq(repinGrants({ "5": { host: "a.com", sharedAt: 1 }, "6": { host: "b.com" } }, [{ id: 5, url: "https://c.com/x" }]), { "5": { host: "c.com", sharedAt: 1 } }, "repinGrants: follows the tab's current host, drops closed tabs");
 
-// B5: Chrome replaced a tab id
+// Chrome replaced a tab id
 eq(moveGrant({ "10": { host: "a.com" }, "11": { host: "b.com" } }, 10, 24), { "11": { host: "b.com" }, "24": { host: "a.com" } }, "moveGrant: grant follows the new tab id");
 eq(moveGrant({ "11": { host: "b.com" } }, 10, 24), null, "moveGrant: nothing to move for an unshared tab");
 
-// B7: restore after an extension Reload — fresh mirror, tab still exists AND still on the shared host
+// restore after an extension Reload — fresh mirror, tab still exists AND still on the shared host
 const NOW = 1_000_000;
 const MIRROR = { tier: "tabs", tierSetAt: null, aliveAt: NOW - 30_000, allow: { "5": { host: "a.com", sharedAt: NOW - 9000 }, "6": { host: "b.com", sharedAt: NOW - 9000 }, "7": { host: "c.com", sharedAt: NOW - 9000 } } };
 const LIVE = [{ id: 5, url: "https://a.com/p" }, { id: 6, url: "https://other.com/" }];
@@ -248,7 +248,7 @@ eq(restoreGrants({ tier: "all", tierSetAt: NOW - 1000, aliveAt: NOW - 1000, allo
 eq(restoreGrants({ tier: "all", tierSetAt: NOW - 9000, aliveAt: NOW - 1000, allow: {} }, LIVE, NOW, { denyOrigins: [], ttlMs: 5000, ttlSetAt: 0 })?.tier, "none", "restore: an expired 'Everything' share is not resurrected");
 eq(restoreGrants({ tier: "weird", aliveAt: NOW, allow: { "5": { host: "a.com" } } }, LIVE, NOW, { denyOrigins: [] })?.tier, "none", "restore: unknown tier → none, grants dropped");
 
-// F1/F2: press_key is a write; presets are plain settings over the ordinary flags
+// press_key is a write; presets are plain settings over the ordinary flags
 eq(REQUIRED_CAP.press_key, "execute", "REQUIRED_CAP: press_key needs execute");
 eq(code(evaluate(RO, { tool: "press_key", tabId: 3, host: "x.com" })), "CAP_NOT_GRANTED", "read-only: press_key denied");
 eq(code(evaluate(RWTOOLS, { tool: "press_key", tabId: 3, host: "x.com" })), "ALLOW", "read-write: press_key allowed");
@@ -258,20 +258,20 @@ eq(presetOptions("bogus"), null, "preset: unknown name → null");
 eq(Object.keys(presetOptions("full")).some((k) => /origin|deny|mode|frame/i.test(k)), false, "preset full never carries origin-filter or frame settings (the filter is not weakened)");
 eq([isFullAccess({ lockToDomain: false, readOnly: false, ttlMs: 0, allowCdp: true }), isFullAccess({ lockToDomain: true, readOnly: false, ttlMs: 0, allowCdp: true }), isFullAccess({ lockToDomain: false, readOnly: false, ttlMs: 300000, allowCdp: true })], [true, false, false], "isFullAccess matches only the full combination");
 
-// ---- review round 2 ----------------------------------------------------------------------------------
-// IDN rules: the host a rule is compared with is punycode (URL parser), so the rule must be too (VOPUS-7)
+// ---- IDN rules, paused grants, lock release, blank tabs ----
+// IDN rules: the host a rule is compared with is punycode (URL parser), so the rule must be too
 eq([normalizeDenyRule("\u043f\u043e\u0447\u0442\u0430.\u0440\u0444"), normalizeDenyRule("*.\u043f\u043e\u0447\u0442\u0430.\u0440\u0444"), normalizeDenyRule("https://\u043f\u043e\u0447\u0442\u0430.\u0440\u0444/x")], ["xn--80a1acny.xn--p1ai", "*.xn--80a1acny.xn--p1ai", "xn--80a1acny.xn--p1ai"], "normalize rule: an internationalized rule becomes punycode, like hostOf() does");
 eq([normalizeDenyRule("localhost:3000"), normalizeDenyRule("Example.COM."), normalizeDenyRule("   "), normalizeDenyRule("bad host")], ["localhost", "example.com", null, null], "normalize rule: port, case and trailing dot are dropped; junk is rejected");
 eq(originBlocked({ originMode: "block", denyOrigins: [normalizeDenyRule("*.\u043f\u043e\u0447\u0442\u0430.\u0440\u0444")] }, hostOf("https://www.\u043f\u043e\u0447\u0442\u0430.\u0440\u0444/")), true, "a rule typed in Cyrillic blocks the site");
 
-// a paused grant on a site the filter excludes is still listed - never invisible to its owner (VCDX-07)
+// a paused grant on a site the filter excludes is still listed - never invisible to its owner
 {
   const st = { tier: "tabs", allow: { 7: { host: "example.com", sharedAt: 1 } }, denyOrigins: ["mail.bad.com"], originMode: "block", lockToDomain: true };
   const tabs2 = [{ id: 7, url: "https://mail.bad.com/inbox" }];
   eq([visibleTabIds(st, tabs2, 2).length, pausedTabIds(st, tabs2, 2).map((t) => t.id)], [0, [7]], "a shared tab that went to a filtered-out site is hidden from the agent but listed as paused for the user");
 }
 
-// the lock goes OFF: related-site pauses wake up, tabs the user took elsewhere are released (VOPUS-3)
+// the lock goes OFF: related-site pauses wake up, tabs the user took elsewhere are released
 {
   const st = { tier: "tabs", lockToDomain: true, denyOrigins: [], originMode: "block", ttlMs: 0,
     allow: { 1: { host: "console.aws.amazon.com", sharedAt: 1 }, 2: { host: "docs.corp.example", sharedAt: 1 }, 3: { host: "a.com", sharedAt: 1 }, 4: { host: null, sharedAt: 1 } } };
@@ -281,7 +281,7 @@ eq(originBlocked({ originMode: "block", denyOrigins: [normalizeDenyRule("*.\u043
   eq(releasePausedGrants(st, [tabs3[0], tabs3[2]], 2), null, "lock off: nothing to release when every paused tab is on a related site");
 }
 
-// navigate pre-check also covers a blank tab's grant (VOPUS-15)
+// navigate pre-check also covers a blank tab's grant
 {
   const st = { tier: "tabs", allow: { 5: { host: null, sharedAt: 1 } }, denyOrigins: [], originMode: "block", lockToDomain: true, readOnly: false, ttlMs: 0 };
   eq(code(evaluate(st, { tool: "navigate", tabId: 5, host: null, destHost: "example.com", now: 2 })), "ORIGIN_DENIED", "lock on: a blank-tab grant can't navigate away either (it would pause at once) - use open_tab");

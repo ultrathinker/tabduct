@@ -133,7 +133,7 @@ const call = (name, args, sid, token) => rpc({ jsonrpc: "2.0", id: Math.floor(Ma
   const reinit = await rpc({ jsonrpc: "2.0", id: 4, method: "initialize", params: { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "t", version: "0" } } }, { sessionId: "no-such-session", token: tAgent });
   ok(reinit.status === 200 && !!reinit.sessionId && reinit.sessionId !== "no-such-session", `initialize with a stale session id → a new session (got ${reinit.status})`);
 
-  // OPUS-7: a host that restarts under the SAME instanceId (Stop → Start) gets a new port/token; the hub
+  // a host that restarts under the SAME instanceId (Stop → Start) gets a new port/token; the hub
   // must drop the dead client and reconnect instead of serving an empty list_tabs forever
   A.kill();
   const A2 = startInstance("A", "2"); ok((await A2.open()).ok, "instance A restarted under the same id");
@@ -143,7 +143,7 @@ const call = (name, args, sid, token) => rpc({ jsonrpc: "2.0", id: Math.floor(Ma
   const lt3 = toolResult(await call("list_tabs", {}, sid, tAgent));
   ok((lt3?.tabs || []).some((t) => t.title === "tab-A2"), "still served after the next poll");
 
-  // VCDX-04: the hub refuses a call that needs a feature the TARGET instance's build lacks, instead of
+  // the hub refuses a call that needs a feature the TARGET instance's build lacks, instead of
   // forwarding it to a host/extension that would run it somewhere else (frameId ignored -> top page).
   // A's fake extension reported no features (an old build); C's reports them.
   const C = startInstance("C", "", { extensionVersion: "1.6.0", features: ["frames", "pinned-docs", "cdp-input"] });
@@ -160,7 +160,7 @@ const call = (name, args, sid, token) => rpc({ jsonrpc: "2.0", id: Math.floor(Ma
   const instsC = toolResult(await call("list_instances", {}, sid, tAgent));
   ok(instsC.instances.find((i) => i.instanceId === "C")?.extensionVersion === "1.6.0", "list_instances shows the reported extension version");
 
-  // VCDX-09: /control answers 502 when the browser refuses (it used to say ok)
+  // /control answers 502 when the browser refuses (it used to say ok)
   const tControl0 = JSON.parse(readFileSync(resolve(DIR, "control"), "utf8")).tControl;
   const uns = await control({ op: "unshare", instanceId: "A", tabId: 1 }, tControl0);
   ok(uns.status === 502, `/control unshare that the browser refuses → 502 (got ${uns.status})`);
@@ -169,14 +169,14 @@ const call = (name, args, sid, token) => rpc({ jsonrpc: "2.0", id: Math.floor(Ma
   C.kill();
   await sleep(300);
 
-  // CDX-1: revokeAll reports a browser that failed to clear (B's fake extension errors on _td/revoke_all)
+  // revokeAll reports a browser that failed to clear (B's fake extension errors on _td/revoke_all)
   const tControl = JSON.parse(readFileSync(resolve(DIR, "control"), "utf8")).tControl;
   const rv = await control({ op: "revokeAll", exceptInstanceId: "nobody" }, tControl);
   ok(rv.status === 502 && rv.json?.ok === false && JSON.stringify(rv.json?.failed) === JSON.stringify(["B"]), `revokeAll with a browser that fails → 502 naming it (got ${rv.status} ${JSON.stringify(rv.json)})`);
   const rv2 = await control({ op: "revokeAll", exceptInstanceId: "B" }, tControl);
   ok(rv2.status === 200 && rv2.json?.ok === true, "revokeAll succeeds when every other browser cleared");
 
-  // VCDX-05: a browser that is alive (discovery entry, live pid) but that the hub cannot reach must be
+  // a browser that is alive (discovery entry, live pid) but that the hub cannot reach must be
   // named as unavailable, and "revoke all" must not claim success for it
   const holder = spawn(process.execPath, ["-e", "setTimeout(()=>{},120000)"], { stdio: "ignore" }); procs.push(holder);
   mkdirSync(resolve(DIR, "instances"), { recursive: true });
@@ -191,7 +191,7 @@ const call = (name, args, sid, token) => rpc({ jsonrpc: "2.0", id: Math.floor(Ma
   const rvZ2 = await control({ op: "revokeAll", exceptInstanceId: "B" }, tControl);
   ok(rvZ2.status === 200 && rvZ2.json?.ok === true, "...and once that browser's process is gone, revokeAll succeeds again");
 
-  // CDX-8: a browser that dies mid-poll is reported in list_tabs (not silently missing); the rest still answer
+  // a browser that dies mid-poll is reported in list_tabs (not silently missing); the rest still answer
   B.kill();
   await sleep(500);
   const ltPartial = toolResult(await call("list_tabs", {}, sid, tAgent));

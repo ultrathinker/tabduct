@@ -34,7 +34,7 @@ function resetChrome(tabs) {
 let NOW = 1_000_000;
 Date.now = () => NOW;
 
-// ---- OPUS-1: unrelated mutations must not wipe the 'Everything' share's clock ----
+// ---- unrelated mutations must not wipe the 'Everything' share's clock ----
 resetChrome([{ id: 1, url: "https://a.com/" }, { id: 2, url: "https://b.com/" }]);
 await C.setShareOptions({ ttlMs: 60_000 });
 await C.shareTab(2);
@@ -42,7 +42,7 @@ await C.setTier("all");
 const t0 = (await C.getState()).tierSetAt;
 eq(t0, NOW, "setTier(all) records when the share started");
 await C.unshareTab(2); // closing/unsharing ONE tab used to erase the TTL of the whole 'Everything' share
-eq((await C.getState()).tierSetAt, t0, "unshareTab keeps the 'Everything' start time (OPUS-1)");
+eq((await C.getState()).tierSetAt, t0, "unshareTab keeps the 'Everything' start time");
 await C.shareTab(1);
 eq((await C.getState()).tierSetAt, t0, "shareTab keeps it too");
 NOW += 120_000;
@@ -50,7 +50,7 @@ eq(code(C.evaluate(await C.getState(), { tool: "get_page_content", tabId: 1, hos
 eq(await C.sweepExpired(), true, "sweepExpired removes the expired 'Everything' share");
 eq((await C.getState()).tier, "none", "...and sharing is off afterwards");
 
-// ---- B1/B3: lock-to-domain is live; drift pauses, never revokes ----------------
+// ---- lock-to-domain is live; drift pauses, never revokes ----------------
 resetChrome([{ id: 5, url: "https://console.aws.amazon.com/" }]);
 await C.setShareOptions({ lockToDomain: true });
 await C.shareTab(5);
@@ -62,7 +62,7 @@ eq(code(C.evaluate(st, { tool: "get_page_content", tabId: 5, host: C.hostOf(TABS
 eq(Object.keys((await C.getState()).allow), ["5"], "...but the grant is still there (paused, not revoked)");
 await C.setShareOptions({ lockToDomain: false });
 st = await C.getState();
-eq(code(C.evaluate(st, { tool: "get_page_content", tabId: 5, host: C.hostOf(TABS[0].url), now: NOW })), "ALLOW", "lock switched OFF later frees the tab that was shared while it was on (B1)");
+eq(code(C.evaluate(st, { tool: "get_page_content", tabId: 5, host: C.hostOf(TABS[0].url), now: NOW })), "ALLOW", "lock switched OFF later frees the tab that was shared while it was on");
 TABS[0].url = "https://eu-central-1.console.aws.amazon.com/home";
 await C.setShareOptions({ lockToDomain: true });
 st = await C.getState();
@@ -75,7 +75,7 @@ TABS.length = 0;
 await C.setShareOptions({ lockToDomain: true });
 eq(Object.keys((await C.getState()).allow), [], "re-pin forgets grants of tabs that no longer exist");
 
-// ---- OPUS-2: live TTL ---------------------------------------------------------
+// ---- live TTL ---------------------------------------------------------
 resetChrome([{ id: 1, url: "https://a.com/" }]);
 await C.shareTab(1); // shared while TTL was OFF
 NOW += 3_600_000;
@@ -98,7 +98,7 @@ eq(Object.keys((await C.getState()).allow).length, 25, "25 concurrent shareTab c
 await Promise.all(TABS.slice(0, 20).map((t) => C.unshareTab(t.id)));
 eq(Object.keys((await C.getState()).allow).sort(), ["21", "22", "23", "24", "25"], "20 concurrent unshareTab calls: exactly the right five remain");
 
-// ---- B5: onReplaced -----------------------------------------------------------------
+// ---- onReplaced -----------------------------------------------------------------
 resetChrome([{ id: 10, url: "https://a.com/" }]);
 await C.shareTab(10);
 TABS[0].id = 24;
@@ -107,7 +107,7 @@ st = await C.getState();
 eq(Object.keys(st.allow), ["24"], "grant now lives under the new tab id");
 eq(await C.replaceTabId(10, 30), false, "replaceTabId on an unshared id is a no-op");
 
-// ---- B7: Reload restores sharing; browser restart does not ----------------------------
+// ---- Reload restores sharing; browser restart does not ----------------------------
 resetChrome([{ id: 1, url: "https://a.com/" }, { id: 2, url: "https://b.com/" }]);
 await C.shareTab(1);
 await C.shareTab(2);
