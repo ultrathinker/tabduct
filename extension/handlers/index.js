@@ -784,23 +784,57 @@ async function topContext(send, tabId) {
 // A script that never finishes (awaits a frame of a hidden page, a dialog is open, a promise nobody
 // resolves) must not block every later eval on that tab: after the deadline the debugger is detached
 // (which makes the pending command fail), the caller gets an error and the queue moves on.
-export const evalDeadline = { ms: 18000 }; // a little under the hub's 20 s per-call budget; mutable for the tests
+// Limits are mutable for the tests; both stay under the hub's 20 s per-call budget so the agent gets
+// OUR explanation instead of the hub's bare TIMEOUT.
+export const evalDeadline = { ms: 17000, queueMs: 8000 }; // a script's own run time; how long a caller waits behind another script
+export const callDeadline = { ms: 18000 }; // any tool call (wait_for: its own wait plus 3 s)
+
+// What a hung call usually means. A page that is waiting for the user cannot answer anything.
+const BLOCKED_HINT = "A page that is waiting for the user cannot answer: a 'Leave site?' prompt after a reload or a navigation, an alert or a print dialog. Look at the browser window (with 'Wake the browser' on it is brought forward), answer the dialog there and retry.";
+const stuck = (code, message) => Object.assign(err(code, message), { stuck: true }); // `stuck`: the caller of the tool may raise the window
+
+export function withCallDeadline(tool, args, work) {
+  const ms = tool === "wait_for" ? Math.min(Number(args?.timeoutMs) > 0 ? Number(args.timeoutMs) : 10000, 25000) + 3000 : callDeadline.ms;
+  let timer;
+  const guard = new Promise((_, reject) => { timer = setTimeout(() => reject(stuck("TIMEOUT", `the page did not answer ${tool} within ${Math.round(ms / 1000)} s. ${BLOCKED_HINT}`)), ms); });
+  work.catch(() => {}); // when the guard wins, the late outcome of the abandoned call is not an unhandled rejection
+  return Promise.race([work, guard]).finally(() => clearTimeout(timer));
+}
+
 function withDeadline(tabId, work) {
   let timer;
   const guard = new Promise((_, reject) => {
     timer = setTimeout(() => {
       cdpAttached.delete(tabId);
       chrome.debugger.detach({ tabId }).catch(() => {});
-      reject(err("SCRIPT_ERROR", `the script did not finish within ${Math.round(evalDeadline.ms / 1000)} s and was stopped (a page in a hidden or minimized window does not draw, so code that waits for a frame or an animation never completes there)`));
+      reject(stuck("SCRIPT_ERROR", `the script did not finish within ${Math.round(evalDeadline.ms / 1000)} s and was stopped. Code that waits for an animation frame never completes in a hidden or minimized window. ${BLOCKED_HINT}`));
     }, evalDeadline.ms);
   });
   work.catch(() => {}); // when the guard wins, the late failure of the detached call is not an unhandled rejection
   return Promise.race([work, guard]).finally(() => clearTimeout(timer));
 }
-const evalChain = new Map(); // tabId -> tail promise
+const evalChain = new Map(); // tabId -> tail promise (settles when everything submitted so far has finished)
+const evalRunning = new Map(); // tabId -> when the script that is running now started
 export function cdpEval(tabId, code, callArgs, pin, opts = {}) {
-  const run = (evalChain.get(tabId) || Promise.resolve()).then(() => withDeadline(tabId, cdpEvalNow(tabId, code, callArgs, pin, opts)));
-  const tail = run.then(() => {}, () => {});
+  const prev = evalChain.get(tabId);
+  const run = (async () => {
+    if (prev) { // something is ahead of us: wait for it, but not behind a script that is stuck
+      let timer;
+      const late = new Promise((res) => { timer = setTimeout(() => res("late"), evalDeadline.queueMs); });
+      const first = await Promise.race([prev.then(() => "go"), late]);
+      clearTimeout(timer);
+      if (first === "late") {
+        const since = evalRunning.get(tabId);
+        throw stuck("SCRIPT_ERROR", `another script on this tab ${since ? `has been running for ${Math.round((Date.now() - since) / 1000)} s and` : "is ahead of this call and"} has not finished. ${BLOCKED_HINT}`);
+      }
+    }
+    evalRunning.set(tabId, Date.now());
+    try { return await withDeadline(tabId, cdpEvalNow(tabId, code, callArgs, pin, opts)); }
+    finally { evalRunning.delete(tabId); }
+  })();
+  // The next caller waits for BOTH the one ahead and this one, even when this one gave up waiting:
+  // scripts on a tab still never run side by side.
+  const tail = Promise.allSettled([prev, run]).then(() => {});
   evalChain.set(tabId, tail);
   tail.then(() => { if (evalChain.get(tabId) === tail) evalChain.delete(tabId); });
   return run;

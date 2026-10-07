@@ -148,7 +148,7 @@ process and OS user shares localhost. So:
    local-server guidance). CORS is then belt-and-braces, not the gate.
 
 **Error codes** (reply `error.code`): `UNKNOWN_TOOL`, `TAB_NOT_FOUND`,
-`TIMEOUT`, `CSP_BLOCKED`, `SCRIPT_ERROR`, `FRAME_TOO_LARGE`, `VERSION_MISMATCH`,
+`TIMEOUT` (also raised by the extension itself after 18 s without an answer from the page, with a hint that a dialog may be blocking it), `CSP_BLOCKED`, `SCRIPT_ERROR`, `FRAME_TOO_LARGE`, `VERSION_MISMATCH`,
 `INVALID_ARGS`, `INTERNAL`, `EXTENSION_OUTDATED` (the loaded extension build lacks a
 feature the call needs — see "Feature gating"), the consent codes (§6a) `NOT_SHARED`,
 `ORIGIN_DRIFT`, `ORIGIN_DENIED`, `CAP_NOT_GRANTED`, and the CDP code (§6b)

@@ -82,7 +82,7 @@
     },
     {
       "name": "execute_script",
-      "description": "Run JavaScript in a tab and return the (JSON-serializable) result. Keystone tool: read AND modify the page. NOTE: your code must `return` its result (the wrapper is a statement body). On strict-CSP sites, MAIN-world eval may be blocked (see error code CSP_BLOCKED); the roadmap fix is chrome.userScripts. See ROADMAP.md.",
+      "description": "Run JavaScript in a tab and return the (JSON-serializable) result. Keystone tool: read AND modify the page. NOTE: your code must `return` its result (the wrapper is a statement body). Do not call location.reload() or navigate from here on a tab the user has been working in (use the navigate tool): the browser may ask 'Leave site?', and a page waiting for that answer cannot respond to any call until the user answers it. On strict-CSP sites, MAIN-world eval may be blocked (see error code CSP_BLOCKED); the roadmap fix is chrome.userScripts. See ROADMAP.md.",
       "inputSchema": {
         "type": "object",
         "properties": {

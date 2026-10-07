@@ -112,5 +112,28 @@ WIN.id = 123; // window closed meanwhile
 await sleep(80);
 eq(true, true, "restore of a closed window does not throw");
 
+// 11. keep: raised and left up (a call timed out; the user has to answer a dialog), even from a minimized window
+reset({ state: "minimized" }, [tab(1, { active: true }), tab(2)], true);
+rec = await W.wake(2, { keep: true });
+eq(LOG, ['tab 2 {"active":true}', 'win {"focused":true}'], "keep: the window is brought forward and the tab shown");
+W.release(rec);
+await sleep(80);
+eq(LOG.filter((l) => l.includes("minimized") || l.includes('tab 1')).length, 0, "keep: it is NOT minimized again and the previous tab is NOT put back");
+
+// 12. a call that already holds the window, then a timed-out one asks to keep it up: the pending restore is cancelled
+reset({ state: "minimized" }, [tab(1, { active: true })], true);
+const h1 = await W.wake(1);
+const h2 = await W.wake(1, { keep: true });
+W.release(h1); W.release(h2);
+await sleep(80);
+eq(LOG.filter((l) => l.includes("minimized")).length, 0, "keep after a normal wake: the window stays up");
+
+// 13. a page that never answers the visibility probe must not hang wake()
+reset({ focused: false }, [tab(1, { active: true })], false);
+chrome.scripting.executeScript = () => new Promise(() => {});
+Object.assign(W.timing, { probeMs: 30 });
+const t0 = Date.now(); const blocked = await W.wake(1);
+eq([blocked, Date.now() - t0 < 1000], [null, true], "a blocked page (probe never answers) does not hang wake: treated as visible, nothing touched");
+
 console.log(fails ? `\n${fails} FAILED` : "\nall wake tests passed");
 process.exit(fails ? 1 : 0);

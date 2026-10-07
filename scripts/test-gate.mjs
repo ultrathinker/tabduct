@@ -312,5 +312,24 @@ eq(groupAction({ ...base, tier: "all", inOurGroup: true, shared: false }), null,
   eq([stSt, stoppedFlag], ["disconnected", true], "...and stays stopped (no auto-rejoin) until Start");
 }
 
+// ---- a tool call the page never answers: TIMEOUT with the hint, and the window is raised and LEFT up ----------
+{
+  const { callDeadline } = await import("../extension/handlers/index.js");
+  callDeadline.ms = 80;
+  await C.revokeAll(); await C.setShareOptions({ lockToDomain: false });
+  TABS = [{ id: 1, url: "https://claude.ai/directory/manage", active: true, windowId: 1, title: "Dir" }];
+  await C.shareTab(1);
+  WINSTATE = "minimized"; WINLOG = [];
+  const real = chrome.scripting.executeScript;
+  chrome.scripting.executeScript = (d) => (d.func?.name === "probeFrame" ? real(d) : new Promise(() => {})); // the page is blocked after it was probed
+  const { port: P3 } = await connect();
+  const r = await call(P3, "get_page_content", { tabId: 1 });
+  chrome.scripting.executeScript = real;
+  eq([r?.ok, r?.error?.code, /Leave site/.test(r?.error?.message || "")], [false, "TIMEOUT", true], "a blocked page: the agent gets TIMEOUT with the dialog hint (not a silent hang)");
+  await sleep(300);
+  eq([WINLOG.filter((p) => p.focused).length >= 1, WINLOG.some((p) => p.state === "minimized")], [true, false], "...the window was brought forward and is NOT minimized again, so the user can answer the dialog");
+  callDeadline.ms = 18000; WINSTATE = "normal";
+}
+
 console.log(fails ? `\nGATE TESTS FAILED (${fails})` : "\nGATE TESTS PASSED");
 process.exit(fails ? 1 : 0);

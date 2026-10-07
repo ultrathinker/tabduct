@@ -4,7 +4,7 @@
 // invoke chokepoint with per-tab CONSENT enforcement (Feature B), shared-tab
 // badges, the share hotkey, and popup messaging. See PROTOCOL.md + consent.js.
 
-import { HANDLERS, detachCdpTab, detachAllCdp, startCdpConsole, stopCdpConsole, stopAllCdpConsole, reconcileCdpForce, cdpConsoleTabs, cdpUserCancelled } from "./handlers/index.js";
+import { HANDLERS, withCallDeadline, detachCdpTab, detachAllCdp, startCdpConsole, stopCdpConsole, stopAllCdpConsole, reconcileCdpForce, cdpConsoleTabs, cdpUserCancelled } from "./handlers/index.js";
 import * as CONSENT from "./consent.js";
 import { GroupMask, groupAction } from "./groupsync.js";
 import { WAKE_TOOLS, wake as wakeTab, release as releaseTab } from "./wake.js";
@@ -330,7 +330,14 @@ async function handleInvoke(msg) {
     // user left "Wake the browser" on; wake.js puts it back afterwards. Only after the gate said yes.
     const woken = decision.wake && WAKE_TOOLS.has(tool) && decision.tabId != null ? await wakeTab(decision.tabId) : null;
     let result;
-    try { result = await handler(callArgs); } finally { releaseTab(woken); }
+    try { result = await withCallDeadline(tool, callArgs, handler(callArgs)); }
+    catch (e) {
+      // The page did not answer: most likely it is waiting for the user (a "Leave site?" prompt, an alert).
+      // Bring the window forward and leave it there so the user can see and answer it.
+      if (e?.stuck && decision.wake && decision.tabId != null) { try { releaseTab(await wakeTab(decision.tabId, { keep: true })); } catch {} }
+      throw e;
+    }
+    finally { releaseTab(woken); }
     // open_tab auto-share is OPT-IN (off by default): only re-share the new tab
     // when the user explicitly disabled the "don't auto-share opened tabs" guard.
     if (tool === "open_tab" && result?.id != null) {

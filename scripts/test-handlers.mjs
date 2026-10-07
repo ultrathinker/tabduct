@@ -391,5 +391,34 @@ injected = {};
   evalDeadline.ms = saved;
 }
 
+// ---- a caller queued behind a stuck script is told at once, not after the stuck one's whole deadline -----
+{
+  const { evalDeadline, callDeadline, withCallDeadline } = await import("../extension/handlers/index.js");
+  const saved = { ...evalDeadline };
+  Object.assign(evalDeadline, { ms: 400, queueMs: 60 });
+  page({ 0: probe("https://a.com") }); CDP = [];
+  PAGE.evalHang = true;
+  const a = run(() => HANDLERS.execute_script({ tabId: 1, code: "await new Promise(() => {})", _engine: "cdp", _pin: "a.com" })); // stuck
+  await new Promise((r) => setTimeout(r, 30));
+  const t0 = Date.now();
+  const b = await run(() => HANDLERS.execute_script({ tabId: 1, code: "return 1", _engine: "cdp", _pin: "a.com" }));
+  const waited = Date.now() - t0;
+  eq([b.err, waited < 300], ["SCRIPT_ERROR", true], `queued behind a stuck script: refused after ~queueMs (${waited} ms), not after the stuck script's deadline`);
+  const msg = await (async () => { try { await HANDLERS.execute_script({ tabId: 1, code: "return 1", _engine: "cdp", _pin: "a.com" }); } catch (e) { return e; } })();
+  eq([/has been running for|is ahead of this call/.test(msg.message || ""), /Leave site/.test(msg.message || ""), msg.stuck], [true, true, true], "...and says why: a script is still running, a page waiting for a dialog cannot answer");
+  await a; // the stuck one hits its own deadline (detach frees it)
+  PAGE.evalHang = false;
+  const c = await run(() => HANDLERS.execute_script({ tabId: 1, code: "return 1", _engine: "cdp", _pin: "a.com" }));
+  eq(c.ok?.result, 42, "...and once the stuck script is gone the next call runs normally");
+  Object.assign(evalDeadline, saved);
+
+  // any tool call has a deadline of its own, with the same explanation (list_frames is not a CDP eval)
+  callDeadline.ms = 60;
+  let e2 = null; try { await withCallDeadline("list_frames", {}, new Promise(() => {})); } catch (e) { e2 = e; }
+  eq([e2?.code, e2?.stuck, /did not answer list_frames within/.test(e2?.message || "")], ["TIMEOUT", true, true], "a tool call that never answers ends with TIMEOUT and the dialog hint");
+  eq(await withCallDeadline("list_frames", {}, Promise.resolve("fine")), "fine", "...and a call that answers in time is untouched");
+  callDeadline.ms = 18000;
+}
+
 console.log(fails ? `\nHANDLER TESTS FAILED (${fails})` : "\nHANDLER TESTS PASSED");
 process.exit(fails ? 1 : 0);

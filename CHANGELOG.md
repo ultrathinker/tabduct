@@ -4,12 +4,26 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims for
 [Semantic Versioning](https://semver.org/) once it reaches 1.0.
 
-## [Unreleased]
+## [1.6.6] — 2026-10-07
 
 ### Fixed
 - A targeted call on a hub that has no browser connected (right after a hub restart) now answers
   `INSTANCE_GONE: no browser is connected to the hub right now ...` instead of the misleading
   `0 browsers are connected, so say which one ()`. Hub-only change: no extension reload needed.
+- **A page that is waiting for the user no longer leaves the agent with silent 20 s timeouts.** A page
+  with a `beforeunload` handler (and any earlier click on it) answers a script-initiated
+  `location.reload()` with a "Leave site?" prompt; until someone answers it, every call to that page
+  hangs, and in a minimized window nobody sees the prompt (reproduced in a real Chrome). Now:
+  - any tool call that the page does not answer ends after 18 s with `TIMEOUT` and an explanation that
+    names the likely cause (a dialog) instead of the hub's bare timeout;
+  - with *Wake the browser* on, that timeout also brings the window forward **and leaves it there**, so
+    the prompt becomes visible and can be answered;
+  - a script queued behind another one on the same tab is told after 8 s that the other one is still
+    running (it used to wait for the stuck script's whole deadline, so the third caller in a row could
+    never succeed inside the hub's 20 s); scripts on a tab still never run side by side;
+  - the visibility check of *Wake the browser* cannot hang on a blocked page any more.
+- The `execute_script` description now says not to call `location.reload()` / navigate from it on a tab
+  the user has been working in (use the `navigate` tool): the "Leave site?" prompt is the reason.
 
 ## [1.6.5] — 2026-10-07
 
