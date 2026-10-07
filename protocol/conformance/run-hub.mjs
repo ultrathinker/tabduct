@@ -7,7 +7,7 @@
 import { spawn } from "node:child_process";
 import http from "node:http";
 import { mkdtempSync, readFileSync, existsSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { tmpdir, homedir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve, join } from "node:path";
 import { randomUUID } from "node:crypto";
@@ -16,8 +16,11 @@ const __dir = dirname(fileURLToPath(import.meta.url));
 const REPO = resolve(__dir, "../..");
 const HOST = resolve(REPO, "hosts/node/src/index.js");
 const HUB = resolve(REPO, "hosts/node/src/hub.js");
-const DIR = mkdtempSync(join(tmpdir(), "tabduct-hub-"));
-const HUB_PORT = 12800 + Math.floor((Date.now() % 900));
+// Isolated by construction: the caller's TABDUCT_DIR / TABDUCT_HUB_PORT win (so a test run can be
+// pinned to a scratch folder and a reserved port); otherwise a fresh temp dir and a random test port.
+const DIR = process.env.TABDUCT_DIR || mkdtempSync(join(tmpdir(), "tabduct-hub-"));
+const HUB_PORT = Number(process.env.TABDUCT_HUB_PORT) || 12800 + Math.floor((Date.now() % 900));
+if (HUB_PORT === 12311 || resolve(DIR) === resolve(homedir(), ".tabduct")) { console.error("REFUSING to run hub conformance against the live hub (port 12311 / ~/.tabduct)"); process.exit(1); }
 const ENV = { ...process.env, TABDUCT_DIR: DIR, TABDUCT_HUB_PORT: String(HUB_PORT), TABDUCT_HUB_IDLE_MS: "2500" };
 const BIG = "QUpE".repeat(600000); // ~2.4 MB base64 → exercises large-reply traversal through the hub
 

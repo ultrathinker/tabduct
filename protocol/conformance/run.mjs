@@ -9,10 +9,10 @@
 
 import { spawn } from "node:child_process";
 import http from "node:http";
-import { readFileSync, existsSync } from "node:fs";
+import { readFileSync, existsSync, mkdtempSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { dirname, resolve } from "node:path";
-import { homedir } from "node:os";
+import { dirname, resolve, join } from "node:path";
+import { homedir, tmpdir } from "node:os";
 import { randomUUID } from "node:crypto";
 
 const __dir = dirname(fileURLToPath(import.meta.url));
@@ -25,8 +25,13 @@ export async function runConformance(hostCmd) {
   const TOKEN = "conf-" + randomUUID();
   let PORT = 0, fails = 0, done = false;
 
+  // The host under test always runs in an ISOLATED state dir (the caller's TABDUCT_DIR, else a
+  // fresh temp dir) — never the real ~/.tabduct, where a fake instance would show up in a live hub.
+  const BASE = process.env.TABDUCT_DIR || mkdtempSync(join(tmpdir(), "tabduct-conf-"));
+  if (resolve(BASE) === resolve(homedir(), ".tabduct")) { console.error("REFUSING to run conformance against the real ~/.tabduct (set TABDUCT_DIR to a scratch folder)"); return 1; }
+
   const ok = (c, m) => { if (!c) { console.error("  FAIL:", m); fails++; } else console.log("  ok:", m); };
-  const host = spawn(cmd[0], cmd.slice(1), { stdio: ["pipe", "pipe", "inherit"] });
+  const host = spawn(cmd[0], cmd.slice(1), { stdio: ["pipe", "pipe", "inherit"], env: { ...process.env, TABDUCT_DIR: BASE } });
   const guard = setTimeout(() => { console.error("CONFORMANCE TIMEOUT (30s)"); finish(1); }, 30_000); guard.unref();
   function finish(code) { if (done) return; done = true; clearTimeout(guard); try { host.kill(); } catch {} }
 
@@ -53,7 +58,7 @@ export async function runConformance(hostCmd) {
     const opened = await hostReq("open", { port: 0, token: TOKEN, protocolVersion: CATALOG.protocolVersion, instanceId: INSTANCE, label: "Conf" });
     ok(opened.ok === true && opened.result?.port > 0, "open handshake + ephemeral port bound");
     PORT = opened.result.port;
-    const discFile = resolve(homedir(), ".tabduct", "instances", `${INSTANCE}.json`);
+    const discFile = resolve(BASE, "instances", `${INSTANCE}.json`);
     ok(existsSync(discFile), "discovery entry written (§9a)");
     ok((await hostReq("open", { port: 0, token: TOKEN, protocolVersion: CATALOG.protocolVersion })).ok === false, "second open rejected (already running)");
     ok((await hostReq("open", { port: 0, token: "x".repeat(20), protocolVersion: 999 })).ok === false, "version mismatch rejected");
