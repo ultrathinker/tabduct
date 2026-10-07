@@ -18,7 +18,7 @@ const OPEN_TIMEOUT_MS = 20000;
 // What this build can do beyond the base protocol. Sent in `open`; the host refuses calls that
 // need a feature an older extension build doesn't have (instead of silently running them
 // elsewhere — e.g. a frameId ignored by a build that predates frames).
-const FEATURES = ["frames", "pinned-docs"];
+const FEATURES = ["frames", "pinned-docs", "cdp-input"];
 const EXT_VERSION = chrome.runtime.getManifest().version;
 
 // Is a shared hub already listening on this machine? (any HTTP response = up; connection
@@ -254,6 +254,14 @@ async function gate(tool, args) {
     out._allowCdp = state.allowCdp === true; // authorizes the auto CSP→CDP fallback
     out._cdpAlways = state.allowCdp === true && state.cdpAlways === true; // keep the tab attached (force mode)
   }
+  // Trusted input (CDP Input.*: click/type with trusted:true, press_key) drives the page through
+  // the debugger, so it needs the same opt-in as CDP eval — refused BEFORE any debugger attach,
+  // and only for tools that allow it. The handlers re-check `_trusted` (set only here).
+  if (d.allow && (tool === "press_key" || ((tool === "type" || tool === "click") && args?.trusted))) {
+    const cd = CONSENT.cdpDecision(state, { engine: "cdp" });
+    if (!cd.permitted) return { allow: false, code: cd.code, message: "trusted input drives the page through the browser's debugger: turn on 'Allow CDP eval' in the Tabduct popup and turn read-only off" };
+    out._trusted = true;
+  }
   return out; // resolved ONCE — the handler reuses this exact tab + authorized host (no TOCTOU re-resolve)
 }
 
@@ -304,6 +312,7 @@ async function handleInvoke(msg) {
     // internal: stripped from wire args above and never returned.
     if (decision.pin !== undefined) callArgs._pin = decision.pin;
     // execute_script engine/CDP flags (PART 4): passed internal-only from the gate.
+    if (decision._trusted) callArgs._trusted = true;
     if (tool === "execute_script") {
       if (decision._engine != null) callArgs._engine = decision._engine;
       if (decision._allowCdp != null) callArgs._allowCdp = decision._allowCdp;
@@ -768,6 +777,19 @@ chrome.runtime.onMessage.addListener((req, _sender, sendResponse) => {
         // actually starts even on an idle browser.
         if (req.allowCdp === false) await detachAllCdp();
         scheduleBadges();
+        sendResponse(await sharingStatus());
+        break;
+      }
+      case "sharing.preset": {
+        // One click over the ordinary settings (consent.presetOptions): "full" / "safe". The origin
+        // list, its mode and the frame rule are untouched either way.
+        const opts = CONSENT.presetOptions(req.name);
+        if (opts) {
+          await CONSENT.setShareOptions(opts);
+          if (opts.allowCdp === false) await detachAllCdp(); // CDP off = release every held session now
+          if (opts.allowCdp !== undefined) cdpUserCancelled.clear();
+          scheduleBadges();
+        }
         sendResponse(await sharingStatus());
         break;
       }

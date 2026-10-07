@@ -19,10 +19,17 @@ const area = (d) => ({
 // the scripted page(s): frames[frameId] = probe result (+ optional documentId); content = what get_page_content reads
 let PAGE = { frames: {}, content: "hello", tabs: {} };
 let LOG = [];
+let CDP = []; // what was sent to the (mock) debugger
 const probe = (origin, extra = {}) => ({ url: origin + "/", origin, top: origin, ancestors: [], depth: 0, title: "t", width: 800, height: 600, ...extra });
 globalThis.chrome = {
   storage: { session: area(store.session), local: area(store.local) },
-  permissions: {},
+  permissions: { contains: async () => true },
+  debugger: {
+    onEvent: { addListener() {} },
+    async attach() { CDP.push({ method: "attach" }); },
+    async detach() { CDP.push({ method: "detach" }); },
+    async sendCommand(_t, method, params) { CDP.push({ method, params }); return {}; },
+  },
   tabs: {
     async get(id) { return PAGE.tabs[id] || { id, url: "https://a.com/", active: true, windowId: 1 }; },
     async query() { return [{ id: 1, active: true, windowId: 1 }]; },
@@ -41,7 +48,7 @@ globalThis.chrome = {
     },
   },
 };
-const { HANDLERS, cdpGuardSource } = await import("../extension/handlers/index.js");
+const { HANDLERS, cdpGuardSource, keyDescriptor } = await import("../extension/handlers/index.js");
 const setState = (o) => { store.local.originMode = o.originMode || "block"; store.local.denyOrigins = o.denyOrigins || []; };
 const run = async (fn) => { try { return { ok: await fn() }; } catch (e) { return { err: e.code || String(e) }; } };
 const page = (frames) => { PAGE = { frames, content: "hello", tabs: {} }; LOG = []; };
@@ -142,6 +149,88 @@ eq(runGuard(cdpGuardSource(undefined, { originMode: "allow", denyOrigins: ["ok.c
 eq(runGuard(cdpGuardSource(undefined, { originMode: "allow", denyOrigins: ["ok.com"] }), "https://other.com"), { __tabduct_denied: true }, "cdp guard, allow mode: unlisted host refused");
 eq(runGuard(cdpGuardSource(undefined, { originMode: "allow", denyOrigins: ["ok.com"] }), "null"), { __tabduct_denied: true }, "cdp guard, allow mode: opaque origin refused (no wildcard)");
 eq(runGuard(cdpGuardSource("a.com", ST), "https://a.com./"), "ran", "cdp guard: trailing-dot origin normalizes");
+
+// ---- trusted input (F1): CDP Input.* ------------------------------------------------------------------------
+eq([keyDescriptor("Enter").key, keyDescriptor("Enter").text, keyDescriptor("Enter").windowsVirtualKeyCode], ["Enter", "\r", 13], "keyDescriptor: Enter types a carriage return");
+eq([keyDescriptor("c", ["ctrl"]).text, keyDescriptor("c", ["ctrl"]).modifiers, keyDescriptor("c", ["ctrl"]).code, keyDescriptor("c", ["ctrl"]).windowsVirtualKeyCode], [undefined, 2, "KeyC", 67], "keyDescriptor: Ctrl+C is a command (no text), modifier bit 2");
+eq([keyDescriptor("a").text, keyDescriptor("A", ["shift"]).modifiers], ["a", 8], "keyDescriptor: a plain letter types itself; shift is bit 8");
+eq([keyDescriptor("tab").key, keyDescriptor("esc").key, keyDescriptor("f5").windowsVirtualKeyCode, keyDescriptor("ArrowDown").windowsVirtualKeyCode, keyDescriptor("Space").text], ["Tab", "Escape", 116, 40, " "], "keyDescriptor: names are case-insensitive; F5, arrows, Space");
+eq([keyDescriptor("alt+x"), keyDescriptor(""), keyDescriptor("F13")], [null, null, null], "keyDescriptor: unknown keys are rejected");
+
+const FOCUS_OK = { ok: true, focused: true, hasFocus: true, tag: "textarea" };
+let injected = {};
+const trustedMock = async (d) => {
+  const fn = d.func?.name;
+  LOG.push({ target: d.target, fn });
+  if (fn === "probeFrame") {
+    if (d.target.allFrames) return Object.entries(PAGE.frames).map(([fid, r]) => ({ frameId: Number(fid), documentId: `doc${fid}`, result: r }));
+    const fid = d.target.frameIds?.[0] ?? 0; const r = PAGE.frames[fid];
+    if (!r) throw new Error(`No frame with id ${fid} in tab 1`);
+    return [{ frameId: fid, documentId: `doc${fid}`, result: r }];
+  }
+  if (fn === "focusElement") return [{ result: injected.focus ?? FOCUS_OK }];
+  if (fn === "locateElement") return [{ result: injected.locate ?? { ok: true, x: 100.4, y: 50.6, tag: "div" } }];
+  return [{ result: "x" }];
+};
+chrome.scripting.executeScript = trustedMock;
+const cdpMethods = () => CDP.map((c) => c.method);
+setState({ denyOrigins: ["*.bank.com"] });
+page({ 0: probe("https://console.aws.amazon.com") }); injected = {}; CDP = [];
+
+r = await run(() => HANDLERS.type({ tabId: 1, selector: ".xterm-helper-textarea", text: "echo hello", trusted: true }));
+eq([r.err, CDP.length], ["CDP_NOT_PERMITTED", 0], "trusted type without the gate's opt-in (_trusted) is refused before any debugger attach");
+
+r = await run(() => HANDLERS.type({ tabId: 1, selector: ".xterm-helper-textarea", text: "echo hello", trusted: true, _trusted: true }));
+eq([r.ok?.trusted, cdpMethods(), CDP.find((c) => c.method === "Input.insertText")?.params], [true, ["attach", "Input.insertText", "detach"], { text: "echo hello" }], "trusted type: focuses in the pinned document, then Input.insertText, then detaches");
+eq(LOG.some((l) => l.fn === "focusElement" && l.target.documentIds?.[0] === "doc0"), true, "...the focus ran in the probed document");
+
+CDP = []; injected = { focus: { ok: true, focused: true, hasFocus: true, tag: "textarea" } };
+r = await run(() => HANDLERS.type({ text: "x", trusted: true, _trusted: true, tabId: 1 }));
+eq(r.ok?.selector, null, "trusted type with no selector types into whatever is focused");
+
+CDP = []; injected = { focus: { ok: true, focused: false, hasFocus: true, tag: "div" } };
+r = await run(() => HANDLERS.type({ tabId: 1, selector: "#term", text: "x", trusted: true, _trusted: true }));
+eq([r.err, CDP.length], ["INVALID_ARGS", 0], "an element that doesn't take focus is an INVALID_ARGS with advice, and nothing is typed");
+injected = { focus: { __nofocus: true } }; CDP = [];
+eq((await run(() => HANDLERS.type({ tabId: 1, text: "x", trusted: true, _trusted: true }))).err, "INVALID_ARGS", "no selector and nothing focused → INVALID_ARGS");
+
+injected = {}; CDP = [];
+r = await run(() => HANDLERS.type({ tabId: 1, selector: "#a", text: "", clear: true, trusted: true, _trusted: true }));
+eq(CDP.filter((c) => c.method === "Input.dispatchKeyEvent").map((c) => c.params.key), ["Delete", "Delete"], "trusted type of an empty string with clear presses Delete (the content was selected)");
+
+injected = {}; CDP = [];
+r = await run(() => HANDLERS.press_key({ tabId: 1, key: "Enter", _trusted: true }));
+const ks = CDP.filter((c) => c.method === "Input.dispatchKeyEvent").map((c) => [c.params.type, c.params.key, c.params.text ?? null]);
+eq([r.ok?.pressed, ks], [true, [["keyDown", "Enter", "\r"], ["keyUp", "Enter", null]]], "press_key Enter: keyDown with text, keyUp");
+CDP = [];
+await run(() => HANDLERS.press_key({ tabId: 1, key: "c", modifiers: ["ctrl"], count: 3, _trusted: true }));
+const kc = CDP.filter((c) => c.method === "Input.dispatchKeyEvent");
+eq([kc.length, kc[0].params.type, kc[0].params.modifiers, "text" in kc[0].params], [6, "rawKeyDown", 2, false], "press_key Ctrl+C x3: six events, raw (no text), ctrl modifier");
+CDP = [];
+eq([(await run(() => HANDLERS.press_key({ tabId: 1, key: "Hyper", _trusted: true }))).err, CDP.length], ["INVALID_ARGS", 0], "press_key with an unknown key: INVALID_ARGS, no debugger attach");
+eq((await run(() => HANDLERS.press_key({ tabId: 1, key: "Enter" }))).err, "CDP_NOT_PERMITTED", "press_key without the gate's opt-in is refused");
+
+// a visible frame of a filtered-out site: nothing is typed/clicked/pressed
+page({ 0: probe("https://shop.com"), 3: probe("https://pay.bank.com", { top: "https://shop.com", depth: 1, width: 300, height: 200 }) }); injected = {}; CDP = [];
+eq([(await run(() => HANDLERS.type({ tabId: 1, selector: "#a", text: "x", trusted: true, _trusted: true }))).err, (await run(() => HANDLERS.press_key({ tabId: 1, key: "Enter", _trusted: true }))).err, (await run(() => HANDLERS.click({ tabId: 1, selector: "#a", trusted: true, _trusted: true }))).err, CDP.length], ["ORIGIN_DENIED", "ORIGIN_DENIED", "ORIGIN_DENIED", 0], "a visible blocked-site frame on the page: trusted type/key/click refused, debugger never attached");
+
+// typing into a cross-origin frame works (focus is browser-level)
+page({ 0: probe("https://shop.com"), 3: probe("https://js.hsforms.net", { top: "https://shop.com", depth: 1 }) }); injected = {}; CDP = [];
+r = await run(() => HANDLERS.type({ tabId: 1, frameId: 3, selector: "#email", text: "a@b.c", trusted: true, _trusted: true, _pin: "shop.com" }));
+eq([r.ok?.typed, cdpMethods().includes("Input.insertText"), LOG.some((l) => l.fn === "focusElement" && l.target.documentIds?.[0] === "doc3")], [true, true, true], "trusted type inside a cross-origin frame: focused in that frame's document, text inserted");
+
+// trusted click
+page({ 0: probe("https://a.com") }); injected = {}; CDP = [];
+r = await run(() => HANDLERS.click({ tabId: 1, selector: "button", trusted: true, _trusted: true }));
+eq([r.ok, CDP.filter((c) => c.method === "Input.dispatchMouseEvent").map((c) => [c.params.type, c.params.x, c.params.y, c.params.button ?? null])], [{ clicked: true, trusted: true, selector: "button", x: 100, y: 51 }, [["mouseMoved", 100.4, 50.6, null], ["mousePressed", 100.4, 50.6, "left"], ["mouseReleased", 100.4, 50.6, "left"]]], "trusted click: move, press, release at the element's centre");
+injected = { locate: { __covered: "div#overlay" } }; CDP = [];
+r = await run(() => HANDLERS.click({ tabId: 1, selector: "button", trusted: true, _trusted: true }));
+eq([r.err, CDP.length], ["INVALID_ARGS", 0], "trusted click on a covered element is refused (a real click would hit the overlay)");
+injected = { locate: { __crossOrigin: true } }; CDP = [];
+eq([(await run(() => HANDLERS.click({ tabId: 1, frameId: 0, selector: "b", trusted: true, _trusted: true }))).err, CDP.length], ["INVALID_ARGS", 0], "trusted click that can't be located (cross-origin frame) is refused with advice");
+injected = {}; CDP = [];
+r = await run(() => HANDLERS.click({ tabId: 1, selector: "button", trusted: false }));
+eq(cdpMethods().length, 0, "click without trusted never touches the debugger");
 
 console.log(fails ? `\nHANDLER TESTS FAILED (${fails})` : "\nHANDLER TESTS PASSED");
 process.exit(fails ? 1 : 0);

@@ -339,6 +339,7 @@ export const HANDLERS = {
 
   async click(args) {
     if (!args.selector) throw err("INVALID_ARGS", "click requires a selector");
+    if (args.trusted) return trustedClick(args);
     const t = await injectionTarget(args);
     const results = await exec(t.target, {
       args: [args.selector],
@@ -360,8 +361,9 @@ export const HANDLERS = {
   },
 
   async type(args) {
-    if (!args.selector) throw err("INVALID_ARGS", "type requires a selector");
     if (typeof args.text !== "string") throw err("INVALID_ARGS", "type requires text");
+    if (args.trusted) return trustedType(args); // a selector is optional here: omit it to type into whatever has focus
+    if (!args.selector) throw err("INVALID_ARGS", "type requires a selector");
     const clear = !!args.clear;
     const t = await injectionTarget(args);
     const results = await exec(t.target, {
@@ -416,6 +418,10 @@ export const HANDLERS = {
     if (r.__noteditable) throw err("INVALID_ARGS", `<${r.tag}> is not editable - type works on input, textarea, select and contenteditable elements`);
     return { typed: true, selector: args.selector };
   },
+
+  // Trusted (isTrusted) keyboard input through CDP: Enter in a terminal, Tab, Escape, arrows,
+  // Ctrl+C... See "Trusted input" below.
+  async press_key(args) { return pressKey(args); },
 
   async get_dom_snapshot(args) {
     const t = await injectionTarget(args);
@@ -719,7 +725,10 @@ export function cdpGuardSource(pin, state) {
     `if(__f.mode==="allow"?(__h===""||!__hit):(__h!==""&&__hit)) return {__tabduct_denied:true}; } `;
 }
 
-export async function cdpEval(tabId, code, callArgs, pin, { hold } = {}) {
+// Run `fn(send)` with the debugger attached to the tab (attach is idempotent; the session is
+// detached afterwards unless force mode / console capture / another in-flight call holds it).
+// `send(method, params)` is chrome.debugger.sendCommand bound to the tab.
+async function cdpWith(tabId, { hold = false } = {}, fn) {
   if (!chrome.debugger) throw err("CDP_NOT_PERMITTED", "debugger API unavailable");
   if (!(await chrome.permissions.contains({ permissions: ["debugger"] }))) throw err("CDP_NOT_PERMITTED", "debugger permission not granted");
   // Attach (idempotent): "Another debugger is already attached" (us re-attaching
@@ -730,13 +739,25 @@ export async function cdpEval(tabId, code, callArgs, pin, { hold } = {}) {
   if (hold) cdpAttached.add(tabId); // force mode: keep attached past this call
   cdpInFlight.set(tabId, (cdpInFlight.get(tabId) || 0) + 1); // hold across concurrent stops
   try {
+    return await fn((method, params) => chrome.debugger.sendCommand({ tabId }, method, params));
+  } finally {
+    const n = (cdpInFlight.get(tabId) || 1) - 1;
+    if (n <= 0) cdpInFlight.delete(tabId); else cdpInFlight.set(tabId, n);
+    // Detach unless force mode / console capture / another in-flight call holds it.
+    if (!cdpHeld(tabId)) { try { await chrome.debugger.detach({ tabId }); } catch {} }
+  }
+}
+
+export async function cdpEval(tabId, code, callArgs, pin, { hold } = {}) {
+  const state = await getConsentState();
+  return cdpWith(tabId, { hold }, async (send) => {
     // The origin re-check is folded INTO the eval expression so it is ATOMIC with
     // the agent's code — a navigation can't slip between a separate check and the
     // payload (the scripting path gets this for free by being one injected func).
     // allowUnsafeEvalBlockedByCSP lets eval run even under a strict page CSP. The
     // agent's code `return`s its value inside the async IIFE; `args` is by name.
-    const r = await chrome.debugger.sendCommand({ tabId }, "Runtime.evaluate", {
-      expression: `(async()=>{ ${cdpGuardSource(pin, await getConsentState())} const args = ${JSON.stringify(callArgs)}; ${code} })()`,
+    const r = await send("Runtime.evaluate", {
+      expression: `(async()=>{ ${cdpGuardSource(pin, state)} const args = ${JSON.stringify(callArgs)}; ${code} })()`,
       awaitPromise: true, returnByValue: true, allowUnsafeEvalBlockedByCSP: true, userGesture: false,
     });
     if (r?.exceptionDetails) {
@@ -754,12 +775,170 @@ export async function cdpEval(tabId, code, callArgs, pin, { hold } = {}) {
     let s; try { s = JSON.stringify(value); } catch { s = undefined; }
     if (s !== undefined && s.length > CAP) return { result: s.slice(0, CAP), truncated: true, note: "result truncated to 8MB", via: "cdp" };
     return { result: value, via: "cdp" };
-  } finally {
-    const n = (cdpInFlight.get(tabId) || 1) - 1;
-    if (n <= 0) cdpInFlight.delete(tabId); else cdpInFlight.set(tabId, n);
-    // Detach unless force mode / console capture / another in-flight eval holds it.
-    if (!cdpHeld(tabId)) { try { await chrome.debugger.detach({ tabId }); } catch {} }
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Trusted input (CDP Input.*). xterm.js terminals (AWS CloudShell), Cloudscape / Material
+// dropdowns and canvas or rich-text editors react only to events the BROWSER itself created
+// (isTrusted): a scripted el.click() or an `input` event does nothing there. These calls need
+// the same opt-in as CDP eval ('Allow CDP eval' on, read-only off; the gate sets `_trusted`),
+// work on the page and — for typing and keys — inside cross-origin frames, and refuse while
+// the page shows a frame of a site the origin filter excludes (focus and coordinates are
+// browser-level, so they could otherwise end up in that frame).
+
+const KEY_NAMES = {
+  enter: { key: "Enter", code: "Enter", vk: 13, text: "\r" }, tab: { key: "Tab", code: "Tab", vk: 9 },
+  escape: { key: "Escape", code: "Escape", vk: 27 }, esc: { key: "Escape", code: "Escape", vk: 27 },
+  backspace: { key: "Backspace", code: "Backspace", vk: 8 }, delete: { key: "Delete", code: "Delete", vk: 46 },
+  space: { key: " ", code: "Space", vk: 32, text: " " }, " ": { key: " ", code: "Space", vk: 32, text: " " },
+  arrowup: { key: "ArrowUp", code: "ArrowUp", vk: 38 }, arrowdown: { key: "ArrowDown", code: "ArrowDown", vk: 40 },
+  arrowleft: { key: "ArrowLeft", code: "ArrowLeft", vk: 37 }, arrowright: { key: "ArrowRight", code: "ArrowRight", vk: 39 },
+  home: { key: "Home", code: "Home", vk: 36 }, end: { key: "End", code: "End", vk: 35 },
+  pageup: { key: "PageUp", code: "PageUp", vk: 33 }, pagedown: { key: "PageDown", code: "PageDown", vk: 34 },
+  insert: { key: "Insert", code: "Insert", vk: 45 },
+};
+
+// A key name (Enter, Tab, Escape, Backspace, Delete, Space, Arrow*, Home/End, PageUp/PageDown,
+// F1-F12, or one character) + modifiers (ctrl/alt/shift/meta) → the fields CDP's
+// Input.dispatchKeyEvent wants. PURE (unit-tested). Returns null for an unknown key.
+export function keyDescriptor(key, modifiers) {
+  const mods = (Array.isArray(modifiers) ? modifiers : []).map((m) => String(m).toLowerCase());
+  const bits = (mods.includes("alt") ? 1 : 0) | (mods.includes("ctrl") || mods.includes("control") ? 2 : 0)
+    | (mods.includes("meta") || mods.includes("cmd") ? 4 : 0) | (mods.includes("shift") ? 8 : 0);
+  const k = String(key ?? "");
+  if (!k) return null;
+  let d = KEY_NAMES[k.toLowerCase()] || KEY_NAMES[k];
+  const f = /^f([1-9]|1[0-2])$/i.exec(k);
+  if (!d && f) d = { key: `F${f[1]}`, code: `F${f[1]}`, vk: 111 + Number(f[1]) };
+  if (!d && [...k].length === 1) {
+    const up = k.toUpperCase();
+    if (/[a-z]/i.test(k)) d = { key: k, code: `Key${up}`, vk: up.charCodeAt(0), text: k };
+    else if (/[0-9]/.test(k)) d = { key: k, code: `Digit${k}`, vk: k.charCodeAt(0), text: k };
+    else d = { key: k, code: "", vk: 0, text: k };
   }
+  if (!d) return null;
+  // Printable text only when no ctrl/alt/meta is held (Ctrl+C is a command, not the letter c).
+  const text = d.text !== undefined && !(bits & 7) ? d.text : undefined;
+  return { key: d.key, code: d.code, windowsVirtualKeyCode: d.vk, text, modifiers: bits };
+}
+
+async function pressKeyCdp(send, d, count = 1) {
+  for (let i = 0; i < count; i++) {
+    await send("Input.dispatchKeyEvent", { type: d.text !== undefined ? "keyDown" : "rawKeyDown", modifiers: d.modifiers, key: d.key, code: d.code, windowsVirtualKeyCode: d.windowsVirtualKeyCode, ...(d.text !== undefined ? { text: d.text, unmodifiedText: d.text } : {}) });
+    await send("Input.dispatchKeyEvent", { type: "keyUp", modifiers: d.modifiers, key: d.key, code: d.code, windowsVirtualKeyCode: d.windowsVirtualKeyCode });
+  }
+}
+
+// Judge + pin the target document and make sure nothing filtered is on screen.
+async function prepareTrusted(args) {
+  if (!args._trusted) throw err("CDP_NOT_PERMITTED", "trusted input drives the page through the browser's debugger: turn on 'Allow CDP eval' in the Tabduct popup (and turn read-only off)");
+  const t = await injectionTarget(args);
+  await assertCapturable(t.tabId, args._pin);
+  return t;
+}
+
+// Injected: find the element (or take the one already focused), focus it, optionally select its
+// content so the next insertText replaces it. Self-contained.
+function focusElement(sel, clear) {
+  let el;
+  if (sel) {
+    try { el = document.querySelector(sel); } catch (e) { return { __badselector: String((e && e.message) || e) }; }
+    if (!el) return { __notfound: true };
+  } else {
+    el = document.activeElement;
+    if (!el || el === document.body || el === document.documentElement) return { __nofocus: true };
+  }
+  try { el.scrollIntoView?.({ block: "center", inline: "center" }); } catch {}
+  try { el.focus?.({ preventScroll: true }); } catch {}
+  const focused = document.activeElement === el || el.contains(document.activeElement);
+  if (clear) {
+    try {
+      const tag = (el.tagName || "").toLowerCase();
+      if (tag === "input" || tag === "textarea") el.select();
+      else if (el.isContentEditable) { const r = document.createRange(); r.selectNodeContents(el); const g = getSelection(); g.removeAllRanges(); g.addRange(r); }
+      else document.execCommand("selectAll");
+    } catch {}
+  }
+  return { ok: true, focused, hasFocus: document.hasFocus(), tag: (el.tagName || "").toLowerCase() };
+}
+
+// Injected: where is the element's centre, in the MAIN frame's viewport (what CDP wants)?
+// Checks that nothing covers it, and walks same-process parent frames; a cross-origin frame
+// can't be located from inside.
+function locateElement(sel) {
+  let el; try { el = document.querySelector(sel); } catch (e) { return { __badselector: String((e && e.message) || e) }; }
+  if (!el) return { __notfound: true };
+  try { el.scrollIntoView({ block: "center", inline: "center" }); } catch {}
+  const rect = el.getBoundingClientRect();
+  if (rect.width === 0 || rect.height === 0) return { __invisible: true };
+  let x = rect.left + rect.width / 2, y = rect.top + rect.height / 2;
+  const hit = document.elementFromPoint(x, y);
+  const ok = hit && (hit === el || el.contains(hit) || (hit.closest && hit.closest("label")?.control === el));
+  if (!ok) return { __covered: hit && hit.tagName ? hit.tagName.toLowerCase() + (hit.id ? `#${hit.id}` : "") : "nothing" };
+  let w = window;
+  while (w !== w.top) {
+    let fe = null; try { fe = w.frameElement; } catch {}
+    if (!fe) return { __crossOrigin: true };
+    const fr = fe.getBoundingClientRect(), cs = getComputedStyle(fe);
+    x += fr.left + fe.clientLeft + (parseFloat(cs.paddingLeft) || 0);
+    y += fr.top + fe.clientTop + (parseFloat(cs.paddingTop) || 0);
+    w = w.parent;
+  }
+  return { ok: true, x, y, tag: el.tagName.toLowerCase() };
+}
+
+function focusProblem(r, args) {
+  if (!r) return err("SCRIPT_ERROR", "no result frame (target unavailable?)");
+  if (r.__badselector) return err("INVALID_ARGS", `invalid CSS selector: ${r.__badselector}`);
+  if (r.__notfound) return err("SCRIPT_ERROR", `no element matches ${args.selector}`);
+  if (r.__nofocus) return err("INVALID_ARGS", "no element has focus: pass a selector, or click the target first (click with trusted:true)");
+  if (!r.focused) return err("INVALID_ARGS", `${args.selector} (<${r.tag}>) did not take focus: it is not focusable. Click it first (click with trusted:true), target the real input inside it (a terminal's helper textarea, e.g. .xterm-helper-textarea), or omit selector to type into whatever is focused`);
+  return null;
+}
+
+async function trustedType(args) {
+  const t = await prepareTrusted(args);
+  const clear = !!args.clear;
+  const r = (await exec(t.target, { args: [args.selector || null, clear], func: focusElement }))?.[0]?.result;
+  const bad = focusProblem(r, args);
+  if (bad) throw bad;
+  await cdpWith(t.tabId, {}, async (send) => {
+    if (args.text === "") { if (clear) await pressKeyCdp(send, keyDescriptor("Delete")); }
+    else await send("Input.insertText", { text: args.text });
+  });
+  return { typed: true, trusted: true, selector: args.selector ?? null, ...(r.hasFocus ? {} : { warning: "the page did not report focus (is its tab/window in the background?); the input may have been ignored" }) };
+}
+
+async function trustedClick(args) {
+  const t = await prepareTrusted(args);
+  const r = (await exec(t.target, { args: [args.selector], func: locateElement }))?.[0]?.result;
+  if (!r) throw err("SCRIPT_ERROR", "no result frame (target unavailable?)");
+  if (r.__badselector) throw err("INVALID_ARGS", `invalid CSS selector: ${r.__badselector}`);
+  if (r.__notfound) throw err("SCRIPT_ERROR", `no element matches ${args.selector}`);
+  if (r.__invisible) throw err("INVALID_ARGS", `${args.selector} has no size on screen (hidden?)`);
+  if (r.__covered) throw err("INVALID_ARGS", `${args.selector} is covered by <${r.__covered}> at its centre; a real click would hit that instead. Scroll/close the overlay first`);
+  if (r.__crossOrigin) throw err("INVALID_ARGS", "can't work out where an element of a cross-origin frame is on screen. Focus it another way (click its container) and use type / press_key, which work inside cross-origin frames");
+  await cdpWith(t.tabId, {}, async (send) => {
+    await send("Input.dispatchMouseEvent", { type: "mouseMoved", x: r.x, y: r.y });
+    await send("Input.dispatchMouseEvent", { type: "mousePressed", x: r.x, y: r.y, button: "left", buttons: 1, clickCount: 1 });
+    await send("Input.dispatchMouseEvent", { type: "mouseReleased", x: r.x, y: r.y, button: "left", buttons: 0, clickCount: 1 });
+  });
+  return { clicked: true, trusted: true, selector: args.selector, x: Math.round(r.x), y: Math.round(r.y) };
+}
+
+async function pressKey(args) {
+  const d = keyDescriptor(args.key, args.modifiers);
+  if (!d) throw err("INVALID_ARGS", `unknown key ${JSON.stringify(args.key)}: use Enter, Tab, Escape, Backspace, Delete, Space, ArrowUp/Down/Left/Right, Home, End, PageUp, PageDown, F1-F12 or a single character (modifiers: ctrl, alt, shift, meta)`);
+  const count = Math.min(Math.max(Math.trunc(Number(args.count)) || 1, 1), 100);
+  const t = await prepareTrusted(args);
+  if (args.selector) {
+    const r = (await exec(t.target, { args: [args.selector, false], func: focusElement }))?.[0]?.result;
+    const bad = focusProblem(r, args);
+    if (bad) throw bad;
+  }
+  await cdpWith(t.tabId, {}, (send) => pressKeyCdp(send, d, count));
+  return { pressed: true, key: args.key, modifiers: args.modifiers ?? [], count };
 }
 
 // A tab is "held" attached if EITHER cdpEval force mode (cdpAttached) OR console

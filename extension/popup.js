@@ -94,6 +94,8 @@ function renderSharing(s) {
   // Header chip: hidden when CDP is off; amber when the capability is enabled
   // (attaches only on demand); red when a developer-mode sub-option keeps the
   // debugger attached continuously. Each state carries its own explaining hint.
+  // "Full access" preset indicator: shown while the flags it sets are all in place.
+  $("fullChip").hidden = !(s.lockToDomain === false && !s.readOnly && !(Number(s.ttlMs) > 0) && s.allowCdp === true);
   const cdpOn = !!s.allowCdp;
   const cdpDev = cdpOn && (!!s.cdpAlways || !!s.cdpConsole);
   const chip = $("cdpChip");
@@ -267,6 +269,11 @@ $("allowCdp").addEventListener("change", async () => {
 });
 $("cdpAlways").addEventListener("change", async () => renderSharing(await send({ cmd: "sharing.setOptions", cdpAlways: $("cdpAlways").checked })));
 $("cdpConsole").addEventListener("change", async () => renderSharing(await send({ cmd: "sharing.setOptions", cdpConsole: $("cdpConsole").checked })));
+$("presetFull").addEventListener("click", async () => {
+  if (!confirm("Full access for shared tabs?\n\nThe agent will be able to navigate them to any site, click and type (not only read), keep access without a time limit, and use browser-level (debugger) input. Chrome will show its 'is being debugged' banner while that is in use.\n\nYour blocked-origins list still applies to everything. You can switch individual options back at any time, or press 'Safe defaults'.")) return;
+  renderSharing(await send({ cmd: "sharing.preset", name: "full" }));
+});
+$("presetSafe").addEventListener("click", async () => renderSharing(await send({ cmd: "sharing.preset", name: "safe" })));
 $("originMode").addEventListener("change", async () => renderSharing(await send({ cmd: "sharing.setOriginMode", mode: $("originMode").value })));
 $("revokeAllGlobal").addEventListener("click", async () => {
   // Acts across ALL browsers: revokes this instance locally + every other instance

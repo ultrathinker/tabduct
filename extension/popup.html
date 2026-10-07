@@ -11,6 +11,7 @@
         <span id="count" class="pill"><span id="countText">0 tabs</span><button id="countClear" class="pill-x" title="Unshare all" aria-label="Unshare all" hidden>✕</button></span>
       </div>
       <div class="hdr-right">
+        <span id="fullChip" class="cdp-chip cdp-chip-dev" hidden title="FULL ACCESS preset is active: the agent may navigate shared tabs anywhere, act (not just read), never auto-expires, and may use trusted (debugger-level) input. The blocked-origins list still applies to everything. Open Settings and press 'Safe defaults' to go back.">FULL</span>
         <span id="cdpChip" class="cdp-chip" hidden title="CDP mode is ENABLED (the 'Allow CDP eval' toggle is on) — this is a capability indicator, not live usage. Nothing is attached until an eval actually needs CDP; Chrome's yellow 'this tab is being debugged' banner is the real-time signal that CDP is running right now. Turn the toggle off to hide this chip.">CDP</span>
         <span id="dot" class="dot" data-state="disconnected" title="stopped" role="button" tabindex="0"></span>
         <button id="gear" class="icon-btn" title="Settings" aria-label="Settings">⚙</button>
@@ -94,7 +95,11 @@
 
           <section class="setcard">
             <div class="setrow"><span class="muted">Sharing defaults</span><span class="help" title="Apply to EVERY shared tab (global, not per-tab). Read-only lets the agent read the page and take screenshots but not click, type, navigate, run scripts or open/close tabs. Auto-expire un-shares tabs after the chosen time (counted from when each was shared, or from when you last changed this setting). Lock-to-domain keeps a shared tab pinned to its site (off lets the agent navigate it freely). All of these apply LIVE to tabs that are already shared. Don't auto-share leaves tabs the agent opens un-shared until you share them. Tab group gathers shared tabs into a ⚡ group in the strip. Read-only + auto-expire default off; the others default on.">?</span></div>
-            <label class="tg" style="margin-top: 0">
+            <div class="actions">
+              <button id="presetFull" class="btn small ghost" title="One click for 'let the agent work freely on the tabs I shared': lock-to-domain OFF, read-only OFF, auto-expire OFF, Allow CDP eval ON (needed for trusted clicks and typing). Your blocked-origins list, its mode and the iframe rule are NOT touched. You can change any of these individually afterwards.">Full access</button>
+              <button id="presetSafe" class="btn small ghost" title="Back to the factory defaults: lock-to-domain on, read-only off, no auto-expire, all CDP options off.">Safe defaults</button>
+            </div>
+            <label class="tg" style="margin-top: 6px">
               <input type="checkbox" id="readOnly" />
               Read-only (agent can look, not act)
             </label>

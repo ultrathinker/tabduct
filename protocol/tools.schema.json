@@ -130,13 +130,14 @@
     },
     {
       "name": "click",
-      "description": "Click an element in a shared tab by CSS selector. CSP-safe: injects a function (page CSP blocks string eval, not extension-injected functions).",
+      "description": "Click an element in a shared tab by CSS selector. CSP-safe: injects a function (page CSP blocks string eval, not extension-injected functions). With trusted:true the click is a real, browser-generated mouse click (CDP Input) — needed by controls that ignore scripted clicks (many custom dropdowns/menus, canvas UIs); it requires the user to have enabled 'Allow CDP eval', is refused if the element is covered by something else at its centre, can't locate elements inside cross-origin frames (use type / press_key there), and is refused while the page shows a frame of a site excluded by the user's origin filter.",
       "inputSchema": {
         "type": "object",
         "properties": {
           "tabId": { "type": "integer", "description": "Target tab; omit for active tab." },
           "frameId": { "type": "integer", "minimum": 0, "x-requires": "frames", "description": "Act inside this frame of the tab (frameId from list_frames or get_dom_snapshot) — e.g. an embedded, cross-origin form. Omit (or 0) for the page itself." },
-          "selector": { "type": "string", "description": "CSS selector of the element to click." }
+          "selector": { "type": "string", "description": "CSS selector of the element to click." },
+          "trusted": { "type": "boolean", "default": false, "x-requires": "cdp-input", "description": "Send a real browser-level mouse click (isTrusted events) instead of a scripted el.click(). Needs 'Allow CDP eval'." }
         },
         "required": ["selector"],
         "additionalProperties": false
@@ -144,17 +145,36 @@
     },
     {
       "name": "type",
-      "description": "Type text into an input/textarea/contenteditable element in a shared tab by CSS selector. Dispatches input/change events so frameworks (React/Vue) notice the change. CSP-safe (injected function).",
+      "description": "Type text into an input/textarea/select/contenteditable element in a shared tab by CSS selector (a <select> picks the option by value or visible text). Dispatches input/change events so frameworks (React/Vue) notice the change. CSP-safe (injected function). With trusted:true the text is inserted by the browser itself (CDP Input.insertText): use it for terminals (xterm.js, e.g. AWS CloudShell) and rich/canvas editors that ignore scripted input; there `selector` is optional (omit it to type into whatever is focused, e.g. after a trusted click), and the target must be focusable (for xterm.js: its helper textarea, `.xterm-helper-textarea`). Works inside cross-origin frames. Needs 'Allow CDP eval'; refused while the page shows a frame of a site excluded by the origin filter. Newlines are inserted as text, not as Enter: use press_key for that.",
       "inputSchema": {
         "type": "object",
         "properties": {
           "tabId": { "type": "integer", "description": "Target tab; omit for active tab." },
           "frameId": { "type": "integer", "minimum": 0, "x-requires": "frames", "description": "Act inside this frame of the tab (frameId from list_frames or get_dom_snapshot) — e.g. an embedded, cross-origin form. Omit (or 0) for the page itself." },
-          "selector": { "type": "string", "description": "CSS selector of the element to type into." },
+          "selector": { "type": "string", "description": "CSS selector of the element to type into (optional only with trusted:true: then the currently focused element is used)." },
           "text": { "type": "string", "description": "Text to enter." },
-          "clear": { "type": "boolean", "default": false, "description": "Replace the current value (true) instead of appending (false)." }
+          "clear": { "type": "boolean", "default": false, "description": "Replace the current value (true) instead of appending (false)." },
+          "trusted": { "type": "boolean", "default": false, "x-requires": "cdp-input", "description": "Insert the text with browser-level input (isTrusted events) instead of a scripted value change. Needs 'Allow CDP eval'." }
         },
-        "required": ["selector", "text"],
+        "required": ["text"],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "press_key",
+      "x-requires": "cdp-input",
+      "description": "Press a key (with optional modifiers) as REAL browser-level keyboard input (CDP Input.dispatchKeyEvent, isTrusted) in a shared tab: Enter to run a command in a terminal (xterm.js / AWS CloudShell), Tab, Escape, arrows, Ctrl+C, Ctrl+A... The key goes to the focused element (pass `selector` to focus one first); it works inside cross-origin frames (pass the frameId, or just focus the element). Needs the user to have enabled 'Allow CDP eval' (and read-only off); refused while the page shows a frame of a site excluded by the user's origin filter. To enter text use type with trusted:true.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "tabId": { "type": "integer", "description": "Target tab; omit for active tab." },
+          "frameId": { "type": "integer", "minimum": 0, "x-requires": "frames", "description": "Act inside this frame of the tab (frameId from list_frames or get_dom_snapshot) — e.g. an embedded, cross-origin form. Omit (or 0) for the page itself." },
+          "key": { "type": "string", "minLength": 1, "maxLength": 20, "description": "Enter, Tab, Escape, Backspace, Delete, Space, ArrowUp, ArrowDown, ArrowLeft, ArrowRight, Home, End, PageUp, PageDown, F1-F12, or a single character such as c." },
+          "modifiers": { "type": "array", "items": { "type": "string", "enum": ["ctrl", "alt", "shift", "meta"] }, "description": "Modifier keys held during the press, e.g. [\"ctrl\"] with key \"c\" for Ctrl+C." },
+          "selector": { "type": "string", "description": "Optional CSS selector of an element to focus before pressing." },
+          "count": { "type": "integer", "minimum": 1, "maximum": 100, "default": 1, "description": "Press the key this many times." }
+        },
+        "required": ["key"],
         "additionalProperties": false
       }
     },

@@ -2,7 +2,7 @@
 // Unit test for the PURE consent decision logic (no Chrome). Covers the
 // security-critical cases from PROTOCOL.md §6a.
 
-import { evaluate, denyMatch, originBlocked, visibleTabIds, pausedTabIds, hostOf, normalizeDenyRule, REQUIRED_CAP, cdpDecision, evaluateFrame, entryExpiresAt, tierExpiresAtOf, expiredGrants, repinGrants, moveGrant, restoreGrants, RESTORE_FRESH_MS } from "../extension/consent.js";
+import { presetOptions, isFullAccess, evaluate, denyMatch, originBlocked, visibleTabIds, pausedTabIds, hostOf, normalizeDenyRule, REQUIRED_CAP, cdpDecision, evaluateFrame, entryExpiresAt, tierExpiresAtOf, expiredGrants, repinGrants, moveGrant, restoreGrants, RESTORE_FRESH_MS } from "../extension/consent.js";
 
 let fails = 0;
 const eq = (a, b, m) => { const p = JSON.stringify(a) === JSON.stringify(b); console.log(`${p ? "ok" : "FAIL"}: ${m}${p ? "" : ` (got ${JSON.stringify(a)}, want ${JSON.stringify(b)})`}`); if (!p) fails++; };
@@ -247,6 +247,16 @@ eq(restoreGrants(MIRROR, LIVE, NOW, { denyOrigins: [], ttlMs: 5000, ttlSetAt: 0 
 eq(restoreGrants({ tier: "all", tierSetAt: NOW - 1000, aliveAt: NOW - 1000, allow: {} }, LIVE, NOW, { denyOrigins: [] }), { tier: "all", allow: {}, tierSetAt: NOW - 1000 }, "restore: the 'Everything' share comes back too");
 eq(restoreGrants({ tier: "all", tierSetAt: NOW - 9000, aliveAt: NOW - 1000, allow: {} }, LIVE, NOW, { denyOrigins: [], ttlMs: 5000, ttlSetAt: 0 })?.tier, "none", "restore: an expired 'Everything' share is not resurrected");
 eq(restoreGrants({ tier: "weird", aliveAt: NOW, allow: { "5": { host: "a.com" } } }, LIVE, NOW, { denyOrigins: [] })?.tier, "none", "restore: unknown tier → none, grants dropped");
+
+// F1/F2: press_key is a write; presets are plain settings over the ordinary flags
+eq(REQUIRED_CAP.press_key, "execute", "REQUIRED_CAP: press_key needs execute");
+eq(code(evaluate(RO, { tool: "press_key", tabId: 3, host: "x.com" })), "CAP_NOT_GRANTED", "read-only: press_key denied");
+eq(code(evaluate(RWTOOLS, { tool: "press_key", tabId: 3, host: "x.com" })), "ALLOW", "read-write: press_key allowed");
+eq(presetOptions("full"), { lockToDomain: false, readOnly: false, ttlMs: 0, allowCdp: true }, "preset full: lock off, read-only off, no TTL, CDP eval on — and nothing about the origin list");
+eq(presetOptions("safe"), { lockToDomain: true, readOnly: false, ttlMs: 0, allowCdp: false, cdpAlways: false, cdpConsole: false }, "preset safe: factory defaults");
+eq(presetOptions("bogus"), null, "preset: unknown name → null");
+eq(Object.keys(presetOptions("full")).some((k) => /origin|deny|mode|frame/i.test(k)), false, "preset full never carries origin-filter or frame settings (the filter is not weakened)");
+eq([isFullAccess({ lockToDomain: false, readOnly: false, ttlMs: 0, allowCdp: true }), isFullAccess({ lockToDomain: true, readOnly: false, ttlMs: 0, allowCdp: true }), isFullAccess({ lockToDomain: false, readOnly: false, ttlMs: 300000, allowCdp: true })], [true, false, false], "isFullAccess matches only the full combination");
 
 console.log(fails ? `\nCONSENT TESTS FAILED (${fails})` : "\nCONSENT TESTS PASSED");
 process.exit(fails ? 1 : 0);

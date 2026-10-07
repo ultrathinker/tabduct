@@ -78,7 +78,7 @@ const code = (r) => (r?.ok ? "ok" : r?.error?.code);
 TABS = [{ id: 1, url: "https://console.aws.amazon.com/home", active: true, windowId: 1, title: "AWS" }];
 const { port: P1, open, st } = await connect();
 eq(st.state, "connected", "connect: the fake host's reply connects");
-eq([open.payload.extensionVersion, open.payload.features, open.payload.hub], ["9.9.9", ["frames", "pinned-docs"], true], "open carries extensionVersion + features (B4)");
+eq([open.payload.extensionVersion, open.payload.features, open.payload.hub], ["9.9.9", ["frames", "pinned-docs", "cdp-input"], true], "open carries extensionVersion + features (B4)");
 eq(open.payload.port, 0, "open asks for an ephemeral port (no lastPort reuse)");
 
 // ---- lock on: pins, drift pauses, navigate pre-check -------------------------------------
@@ -122,6 +122,20 @@ delete PAGE[1];
 await C.setShareOptions({ lockToDomain: true });
 eq((await C.getState()).allow["1"].host, "support.console.aws.amazon.com", "lock back ON re-pins to the tab's current host");
 eq(code(await call(P1, "get_page_content", { tabId: 1 })), "ok", "...and it keeps working there");
+
+// ---- trusted input needs the CDP opt-in; refused at the gate before any debugger attach ----------------------------
+await C.setShareOptions({ lockToDomain: false, allowCdp: false });
+let tr = await call(P1, "press_key", { tabId: 1, key: "Enter" });
+eq([code(tr), /Allow CDP eval/.test(tr.error?.message || "")], ["CDP_NOT_PERMITTED", true], "press_key without 'Allow CDP eval': refused at the gate with the way out");
+eq(code(await call(P1, "type", { tabId: 1, selector: "#a", text: "x", trusted: true })), "CDP_NOT_PERMITTED", "type trusted without the opt-in: refused");
+eq(code(await call(P1, "click", { tabId: 1, selector: "#a", trusted: true })), "CDP_NOT_PERMITTED", "click trusted without the opt-in: refused");
+await C.setShareOptions({ allowCdp: true, readOnly: true });
+tr = await call(P1, "press_key", { tabId: 1, key: "Enter" });
+eq(code(tr), "CAP_NOT_GRANTED", "read-only wins: press_key is a write");
+await C.setShareOptions({ readOnly: false });
+tr = await call(P1, "press_key", { tabId: 1, key: "Enter" });
+eq([code(tr), /Allow CDP eval/.test(tr.error?.message || "")], ["CDP_NOT_PERMITTED", false], "with the opt-in the gate lets it through (this mock has no debugger, so the handler says so itself)");
+await C.setShareOptions({ allowCdp: false, lockToDomain: true });
 
 // ---- oversized reply -> a clear error, not a silent drop ----------------------------------------
 TABS[0].active = true;

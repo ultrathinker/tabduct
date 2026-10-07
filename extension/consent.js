@@ -29,6 +29,7 @@ export const REQUIRED_CAP = {
   list_network_requests: "read", get_network_request: "read",
   click: "execute", type: "execute",
   list_frames: "read",
+  press_key: "execute", // trusted keyboard input (CDP); also needs the CDP opt-in, see background.js gate
 };
 
 // Hostname only (drops port), lowercased by URL, trailing FQDN dot stripped —
@@ -192,6 +193,22 @@ export function pausedTabIds(state, tabs, now) {
     const host = hostOf(t.url);
     return !originBlocked(state, host) && driftsSticky(entry, host, state);
   });
+}
+
+// One-click presets over the ordinary settings (the user sees the flags change; there is no
+// second source of truth to evaluate). They never touch the origin list/mode or the frame rule.
+//  full — "let the agent work freely on what I shared": lock off, read-only off, no auto-expire,
+//         CDP eval on (trusted input needs it). Continuous console/network capture (which keeps the
+//         browser's "being debugged" banner up) and "always use CDP" stay as they are.
+//  safe — the factory defaults.
+export function presetOptions(name) {
+  if (name === "full") return { lockToDomain: false, readOnly: false, ttlMs: 0, allowCdp: true };
+  if (name === "safe") return { lockToDomain: true, readOnly: false, ttlMs: 0, allowCdp: false, cdpAlways: false, cdpConsole: false };
+  return null;
+}
+// Does the current state match the "full" preset? (drives the header indicator)
+export function isFullAccess(state) {
+  return state.lockToDomain === false && !state.readOnly && !(Number(state.ttlMs) > 0) && state.allowCdp === true;
 }
 
 // CDP eval gating (PART 4) — PURE (no chrome refs), unit-tested.
