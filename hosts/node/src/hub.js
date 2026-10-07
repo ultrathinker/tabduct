@@ -232,6 +232,7 @@ class Hub {
     let instanceId = args.instanceId;
     if (!instanceId) {
       if (this.clients.size === 1) instanceId = [...this.clients.keys()][0];
+      else if (this.clients.size === 0) throw codeErr(ERR.INSTANCE_GONE, "no browser is connected to the hub right now (it may have just restarted: the browsers rejoin within a minute or two; otherwise press Start in the Tabduct popup)");
       else {
         const who = [...this.clients.keys()].map((id) => `${this.meta.get(id)?.label ?? "?"} = ${id}`).join("; ");
         throw codeErr(ERR.AMBIGUOUS_INSTANCE, `${this.clients.size} browsers are connected, so say which one: pass instanceId, or use the composite tabId "<instanceId>:<tabId>" exactly as list_tabs returns it (${who})`);

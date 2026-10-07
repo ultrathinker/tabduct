@@ -4,6 +4,13 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims for
 [Semantic Versioning](https://semver.org/) once it reaches 1.0.
 
+## [Unreleased]
+
+### Fixed
+- A targeted call on a hub that has no browser connected (right after a hub restart) now answers
+  `INSTANCE_GONE: no browser is connected to the hub right now ...` instead of the misleading
+  `0 browsers are connected, so say which one ()`. Hub-only change: no extension reload needed.
+
 ## [1.6.5] — 2026-10-07
 
 ### Added

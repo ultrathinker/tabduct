@@ -54,13 +54,13 @@ function startInstance(instanceId, gen = "", extra = {}) {
   return { proc, instanceId, invokes, req: hostReq, kill: () => { try { proc.kill(); } catch {} }, open: () => hostReq("open", { port: 0, token: `tok-${instanceId}-${randomUUID()}`, protocolVersion: 0, instanceId, label: `L-${instanceId}`, ...extra }) };
 }
 
-function rpc(body, { sessionId, token } = {}) {
+function rpc(body, { sessionId, token, port } = {}) {
   return new Promise((resolve) => {
     const p = Buffer.from(JSON.stringify(body));
     const headers = { "content-type": "application/json", "accept": "application/json, text/event-stream", "content-length": p.length };
     if (token) headers.authorization = `Bearer ${token}`;
     if (sessionId) headers["mcp-session-id"] = sessionId;
-    const req = http.request({ host: "127.0.0.1", port: HUB_PORT, path: "/mcp", method: "POST", headers }, (r) => {
+    const req = http.request({ host: "127.0.0.1", port: port ?? HUB_PORT, path: "/mcp", method: "POST", headers }, (r) => {
       let d = ""; r.on("data", (x) => (d += x)); r.on("end", () => { let j; if ((r.headers["content-type"] || "").includes("text/event-stream")) { const l = d.split("\n").filter((x) => x.startsWith("data:")).pop(); j = l ? JSON.parse(l.slice(5).trim()) : undefined; } else if (d) { try { j = JSON.parse(d); } catch {} } resolve({ status: r.statusCode, sessionId: r.headers["mcp-session-id"], json: j }); });
     });
     req.on("error", () => resolve({ status: "REFUSED" })); req.end(p);
@@ -227,6 +227,20 @@ const call = (name, args, sid, token) => rpc({ jsonrpc: "2.0", id: Math.floor(Ma
   A2.kill();
   await sleep(6000);
   ok(!existsSync(resolve(DIR, "hub.json")), "hub self-exits + removes hub.json when empty");
+
+  // A hub nobody is connected to answers a targeted call with a message that says so (not "0 browsers ... say which one").
+  {
+    const DIR2 = mkdtempSync(join(tmpdir(), "tabduct-hub0-")), PORT2 = HUB_PORT + 1;
+    const hub0 = spawn(process.execPath, [HUB], { stdio: ["ignore", "ignore", "inherit"], env: { ...ENV, TABDUCT_DIR: DIR2, TABDUCT_HUB_PORT: String(PORT2), TABDUCT_HUB_IDLE_MS: "6000" } }); procs.push(hub0);
+    let t0 = null;
+    for (let i = 0; i < 40 && !t0; i++) { await sleep(200); try { t0 = JSON.parse(readFileSync(resolve(DIR2, "token"), "utf8")).tAgent; } catch {} }
+    const i0 = await rpc({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "t", version: "0" } } }, { token: t0, port: PORT2 });
+    await rpc({ jsonrpc: "2.0", method: "notifications/initialized" }, { sessionId: i0.sessionId, token: t0, port: PORT2 });
+    const none = await rpc({ jsonrpc: "2.0", id: 2, method: "tools/call", params: { name: "get_active_tab", arguments: {} } }, { sessionId: i0.sessionId, token: t0, port: PORT2 });
+    const txt = none.json?.result?.content?.[0]?.text || "";
+    ok(none.json?.result?.isError && /INSTANCE_GONE/.test(txt) && /no browser is connected/.test(txt) && !/say which one/.test(txt), `no browser connected + a targeted call → "no browser is connected" (got ${txt.slice(0, 90)})`);
+    try { hub0.kill(); } catch {}
+  }
 
   // "Stop for all browsers": the other browsers are told to disconnect, the hub exits only when all confirmed.
   const D = startInstance("D", "", { hub: true }), E = startInstance("E", "", { hub: true }); // hub:true → the host starts a hub, as a real extension asks
