@@ -1,14 +1,16 @@
 // Tabduct extension — per-tab consent (Feature B).
 //
 // THE security boundary. Default-deny. Tiers: "none" | "tabs" | "all".
-// Grants live in chrome.storage.session (die with the browser). The origin
-// denylist lives in chrome.storage.local (persists; overrides even "all").
-// v2 adds per-tab capabilities (read vs execute) and TTL expiry.
+// Grants live in chrome.storage.session (die with the browser) and are mirrored to
+// chrome.storage.local so an extension Reload/update can restore them (see
+// restoreGrants). The origin denylist lives in chrome.storage.local (persists;
+// overrides even "all"). v2 adds per-tab capabilities (read vs execute) and TTL expiry.
 // See docs/DESIGN-consent-and-multibrowser.md and PROTOCOL.md §6/§6a.
 //
-// evaluate()/denyMatch()/visibleTabIds() are PURE (no chrome refs) and
-// unit-tested (scripts/test-consent.mjs). All mutators are SERIALIZED so
-// read-modify-write on chrome.storage is atomic (no lost-revoke races).
+// evaluate()/evaluateFrame()/visibleTabIds()/restoreGrants() and the other pure
+// helpers have NO chrome refs and are unit-tested (scripts/test-consent.mjs). All
+// mutators are SERIALIZED so read-modify-write on chrome.storage is atomic (no
+// lost-revoke races); scripts/test-store.mjs drives them against a mock `chrome`.
 
 // ---------------------------------------------------------------------------
 // Pure decision logic
@@ -31,9 +33,17 @@ export const REQUIRED_CAP = {
 
 // Hostname only (drops port), lowercased by URL, trailing FQDN dot stripped —
 // so "mail.google.com", "mail.google.com.", and "mail.google.com:8443" all
-// normalize to the same value the denylist compares against.
+// normalize to the same value the denylist compares against. blob:/filesystem:
+// URLs carry their origin inside the path ("blob:https://bank.com/<id>") and have
+// no hostname of their own — resolve it, or a blocked site's blob document would
+// look host-less and slip past the filter.
 export function hostOf(url) {
-  try { const h = new URL(url).hostname; return h ? h.replace(/\.$/, "") : null; } catch { return null; }
+  try {
+    const u = new URL(url);
+    let h = u.hostname;
+    if (!h && (u.protocol === "blob:" || u.protocol === "filesystem:")) { try { h = new URL(u.pathname).hostname; } catch {} }
+    return h ? h.replace(/\.$/, "") : null;
+  } catch { return null; }
 }
 
 // Normalize a user-entered deny rule to a bare hostname (or "*.host"), so
@@ -67,14 +77,30 @@ export function originBlocked(state, host) {
 
 const deny = (code, message) => ({ allow: false, code, message });
 
-function driftsSticky(entry, host) {
-  if (entry.mode === "anyOrigin") return false;
+// lock-to-domain is a LIVE global setting (state.lockToDomain, default on): turning it
+// off frees every already-shared tab at once, turning it on pins them again (see
+// repinGrants). A grant only remembers the host it was shared on.
+function driftsSticky(entry, host, state) {
+  if (state?.lockToDomain === false) return false;
   if (entry.host == null) return host != null; // blank-tab grant drifts on any real origin
   return entry.host !== host;
 }
-function isExpired(entry, now) { return entry.expiresAt != null && now != null && now > entry.expiresAt; }
 
-export function evaluate(state, { tool, tabId, host, now, needCap }) {
+// Expiry is LIVE too: the global TTL (state.ttlMs) is counted from the later of when the
+// tab was shared and when the TTL setting last changed (state.ttlSetAt), so enabling or
+// changing it covers tabs that are already shared without instantly expiring ones shared
+// long ago. An explicit entry.expiresAt (legacy / tests) wins.
+function ttlExpiry(sinceMs, state) {
+  const ttl = Number(state?.ttlMs) || 0;
+  if (ttl <= 0 || sinceMs == null) return null;
+  return Math.max(sinceMs, state.ttlSetAt || 0) + ttl;
+}
+export function entryExpiresAt(entry, state) { return entry.expiresAt != null ? entry.expiresAt : ttlExpiry(entry.sharedAt, state); }
+export function tierExpiresAtOf(state) { return state.tierExpiresAt != null ? state.tierExpiresAt : ttlExpiry(state.tierSetAt, state); }
+function isExpired(entry, now, state) { const e = entryExpiresAt(entry, state); return e != null && now != null && now > e; }
+function tierExpired(state, now) { const e = tierExpiresAtOf(state); return e != null && now != null && now > e; }
+
+export function evaluate(state, { tool, tabId, host, now, needCap, destHost }) {
   // Denied replies use GENERIC messages — never echo an unshared/denylisted
   // tab's host back to the agent (that would be an info leak).
   // read-only is a GLOBAL setting (state.readOnly): write tools are blocked in
@@ -95,50 +121,76 @@ export function evaluate(state, { tool, tabId, host, now, needCap }) {
   // authorized contexts (all-tier + shared tabs).
   if (state.tier === "none") return deny("NOT_SHARED", "sharing is off");
   if (state.tier === "all") {
-    if (state.tierExpiresAt != null && now != null && now > state.tierExpiresAt) return deny("NOT_SHARED", "share expired");
+    if (tierExpired(state, now)) return deny("NOT_SHARED", "share expired");
     if (originBlocked(state, host)) return deny("ORIGIN_DENIED", "destination not allowed by consent policy");
     if (writeBlocked) return capDeny();
     return { allow: true };
   }
   const entry = state.allow?.[String(tabId)];
   if (!entry) return deny("NOT_SHARED", "tab is not shared");
-  if (isExpired(entry, now)) return { allow: false, code: "NOT_SHARED", message: "share expired", revoke: true };
+  if (isExpired(entry, now, state)) return { allow: false, code: "NOT_SHARED", message: "share expired", revoke: true };
   if (originBlocked(state, host)) return deny("ORIGIN_DENIED", "destination not allowed by consent policy");
-  if (driftsSticky(entry, host)) return { allow: false, code: "ORIGIN_DRIFT", message: "tab navigated away from the shared origin; access revoked", revoke: true };
+  // A tab that wandered off its shared origin is PAUSED, not unshared: the call is refused
+  // and the tab is hidden from list_tabs, but the grant stays, so access resumes by itself
+  // when the tab is back on that origin (or the lock is switched off).
+  if (driftsSticky(entry, host, state)) return deny("ORIGIN_DRIFT", "this tab is no longer on the origin it was shared on (lock-to-domain); it stays shared and works again when it returns there, or when the user turns the lock off in the Tabduct popup");
+  // With the lock on, refuse a navigation that would leave the shared origin BEFORE it
+  // happens — otherwise the agent cuts its own access with one call.
+  if (destHost !== undefined && state.lockToDomain !== false && entry.host != null && destHost !== entry.host) {
+    return deny("ORIGIN_DENIED", "lock-to-domain is on: this navigation would leave the origin the tab was shared on. Ask the user to turn the lock off in the Tabduct popup, or use open_tab");
+  }
   if (writeBlocked) return capDeny();
   return { allow: true };
 }
 
 // Frame decision — PURE, unit-tested. evaluate() authorizes the TAB; this decides
 // whether one frame inside that already-authorized tab may be touched, from what
-// the frame itself reports. Two rules:
-//  - the tab's top-level page must still be the authorized origin (a frame seen
-//    through a drifted page is refused, never read);
-//  - the FRAME's own origin must pass the origin filter, so a blocked site embedded
-//    as an iframe (a bank widget inside a shop) stays untouchable.
-// lockToDomain governs where the TAB goes and is deliberately not applied: an
-// embedded form on the shared page is part of what the user shared. A frame with
-// an opaque origin (sandboxed) has a null host: fine in block mode, refused in
-// allow mode — the same rule as a null-host tab.
-export function evaluateFrame(state, { authHost, topHost, frameHost }) {
-  if (authHost && topHost !== authHost) return deny("ORIGIN_DRIFT", "tab navigated away from the authorized origin");
-  if (originBlocked(state, frameHost)) return deny("ORIGIN_DENIED", "frame not allowed by consent policy");
+// the frame itself reports. Rules:
+//  - when the tab is PINNED (lock-to-domain on: `pin` is the host it was authorized on,
+//    possibly null for a blank tab), the tab's top-level page must still be that origin;
+//    a frame seen through a drifted page is refused, never read. `pin: undefined` = no pin;
+//  - the FRAME's origin must pass the origin filter — judged by its own origin, by the host
+//    of its URL, and by every intermediate ancestor — so a blocked site embedded as an
+//    iframe stays untouchable even when the frame is sandboxed (opaque origin) or nested
+//    inside another blocked frame.
+// lockToDomain governs where the TAB goes and is deliberately not applied to frames: an
+// embedded form on the shared page is part of what the user shared. A frame with an
+// opaque origin (sandboxed) has a null host: fine in block mode (unless its URL or an
+// ancestor is blocked), refused in allow mode — the same rule as a null-host tab.
+export function evaluateFrame(state, { pin, topHost, frameHost, frameUrlHost, ancestorHosts }) {
+  if (pin !== undefined && topHost !== pin) return deny("ORIGIN_DRIFT", "tab navigated away from the authorized origin");
+  const hosts = [frameHost];
+  if (frameUrlHost) hosts.push(frameUrlHost);
+  for (const a of ancestorHosts || []) hosts.push(a);
+  if (hosts.some((h) => originBlocked(state, h))) return deny("ORIGIN_DENIED", "frame not allowed by consent policy");
   return { allow: true };
 }
 
 export function visibleTabIds(state, tabs, now) {
   if (state.tier === "all") {
-    if (state.tierExpiresAt != null && now != null && now > state.tierExpiresAt) return [];
+    if (tierExpired(state, now)) return [];
     return tabs.filter((t) => !originBlocked(state, hostOf(t.url)));
   }
   if (state.tier === "none") return [];
   return tabs.filter((t) => {
     const entry = state.allow?.[String(t.id)];
-    if (!entry || isExpired(entry, now)) return false;
+    if (!entry || isExpired(entry, now, state)) return false;
     const host = hostOf(t.url);
     if (originBlocked(state, host)) return false;
-    if (driftsSticky(entry, host)) return false;
+    if (driftsSticky(entry, host, state)) return false;
     return true;
+  });
+}
+
+// Tabs that hold a grant but are PAUSED because they left the shared origin (the popup
+// lists them so a dormant grant is never invisible to the user).
+export function pausedTabIds(state, tabs, now) {
+  if (state.tier !== "tabs") return [];
+  return tabs.filter((t) => {
+    const entry = state.allow?.[String(t.id)];
+    if (!entry || isExpired(entry, now, state)) return false;
+    const host = hostOf(t.url);
+    return !originBlocked(state, host) && driftsSticky(entry, host, state);
   });
 }
 
@@ -160,6 +212,70 @@ export function cdpDecision(state, { engine } = {}) {
 }
 
 // ---------------------------------------------------------------------------
+// Pure grant bookkeeping — unit-tested; the store below only adds storage I/O.
+
+// Which grants have expired? → { tier: bool (the "Everything" share), ids: [tabId...] }.
+export function expiredGrants(state, now) {
+  const ids = [];
+  for (const [k, e] of Object.entries(state.allow || {})) if (isExpired(e, now, state)) ids.push(k);
+  return { tier: state.tier === "all" && tierExpired(state, now), ids };
+}
+
+// Re-pin every grant to the host its tab is on NOW (used when the user switches the lock
+// ON: "lock" means "stay where the tab is now"). Grants whose tab no longer exists are
+// dropped. tabs = chrome.tabs.query({}) result.
+export function repinGrants(allow, tabs) {
+  const byId = new Map(tabs.map((t) => [t.id, t]));
+  const out = {};
+  for (const [k, e] of Object.entries(allow || {})) {
+    const t = byId.get(Number(k));
+    if (!t) continue;
+    out[k] = { ...e, host: hostOf(t.url) };
+  }
+  return out;
+}
+
+// Chrome replaced a tab id with another (prerender / instant): carry the grant over.
+// Returns the new allow map, or null when `fromId` held no grant.
+export function moveGrant(allow, fromId, toId) {
+  const k = String(fromId);
+  if (!allow || !allow[k]) return null;
+  const out = { ...allow };
+  out[String(toId)] = out[k];
+  delete out[k];
+  return out;
+}
+
+// Restore grants after an extension Reload/update. A pure function of what we mirrored
+// before the reload and what the browser looks like now. Tab ids are REUSED across browser
+// sessions, so a grant is only restored for a tab that still exists AND is still on the
+// host it was shared on (and still passes the filter and TTL); the mirror itself must be
+// fresh (its heartbeat is refreshed every minute while the extension runs, so a reload
+// finds it seconds old, while stale leftovers from an earlier session are ignored).
+export const RESTORE_FRESH_MS = 5 * 60 * 1000;
+export function restoreGrants(mirror, tabs, now, state) {
+  if (!mirror || typeof mirror !== "object" || typeof mirror.aliveAt !== "number") return null;
+  if (now - mirror.aliveAt > RESTORE_FRESH_MS) return null;
+  const byId = new Map(tabs.map((t) => [t.id, t]));
+  const allow = {};
+  for (const [k, e] of Object.entries(mirror.allow || {})) {
+    if (!e || typeof e !== "object") continue;
+    const t = byId.get(Number(k));
+    if (!t) continue;
+    const host = hostOf(t.url);
+    if (host !== (e.host ?? null)) continue;
+    if (originBlocked(state, host)) continue;
+    if (isExpired(e, now, state)) continue;
+    allow[k] = e;
+  }
+  let tier = mirror.tier === "tabs" || mirror.tier === "all" ? mirror.tier : "none";
+  const tierSetAt = typeof mirror.tierSetAt === "number" ? mirror.tierSetAt : null;
+  if (tier === "all" && tierExpired({ ...state, tierSetAt, tierExpiresAt: null }, now)) tier = "none";
+  if (tier === "none") return { tier, allow: {}, tierSetAt: null };
+  return { tier, allow, tierSetAt: tier === "all" ? tierSetAt : null };
+}
+
+// ---------------------------------------------------------------------------
 // Chrome-bound store — mutators serialized via `serial()`
 
 const FULL_CAPS = ["read", "execute"];
@@ -171,13 +287,13 @@ export async function getState() {
   // Read both stores in one shot so a concurrent mutator can't yield a mixed snapshot.
   const [sess, loc] = await Promise.all([
     chrome.storage.session.get("consent"),
-    chrome.storage.local.get(["denyOrigins", "shareReadOnly", "shareTtlMs", "originMode", "lockToDomain", "allowCdp", "cdpAlways", "cdpConsole"]),
+    chrome.storage.local.get(["denyOrigins", "shareReadOnly", "shareTtlMs", "shareTtlSetAt", "originMode", "lockToDomain", "allowCdp", "cdpAlways", "cdpConsole"]),
   ]);
   const s = sess.consent ?? { tier: "none", allow: {} };
   const { denyOrigins = [], shareReadOnly = false, shareTtlMs = 0 } = loc;
   return {
-    tier: s.tier ?? "none", allow: s.allow ?? {}, tierExpiresAt: s.tierExpiresAt ?? null,
-    denyOrigins, readOnly: !!shareReadOnly, ttlMs: Number(shareTtlMs) || 0,
+    tier: s.tier ?? "none", allow: s.allow ?? {}, tierSetAt: s.tierSetAt ?? null,
+    denyOrigins, readOnly: !!shareReadOnly, ttlMs: Number(shareTtlMs) || 0, ttlSetAt: Number(loc.shareTtlSetAt) || 0,
     originMode: loc.originMode === "allow" ? "allow" : "block", // "block" default → list is a denylist
     lockToDomain: loc.lockToDomain !== false, // default true: shared tabs can't navigate to other origins
     // CDP settings (PART 4) — all DEFAULT FALSE (storage.local, opt-in from the popup).
@@ -185,16 +301,21 @@ export async function getState() {
     allowCdp: !!loc.allowCdp, cdpAlways: !!loc.cdpAlways, cdpConsole: !!loc.cdpConsole,
   };
 }
-async function saveConsent(next) {
-  await chrome.storage.session.set({ consent: { tier: next.tier, allow: next.allow, tierExpiresAt: next.tierExpiresAt ?? null } });
+// Persist the WHOLE consent record. Mutators always pass the full state they read (never a
+// hand-picked subset), so a field they don't touch — e.g. the "Everything" share's start
+// time — can't be wiped by an unrelated mutation.
+async function saveConsent(st) {
+  const consent = { tier: st.tier, allow: st.allow, tierSetAt: st.tierSetAt ?? null };
+  await chrome.storage.session.set({ consent });
+  // Mirror to storage.local (survives an extension Reload, unlike storage.session); the
+  // heartbeat (aliveAt) lets restoreGrants tell a reload from a stale leftover.
+  await chrome.storage.local.set({ allowMirror: { ...consent, aliveAt: Date.now() } });
 }
-function grant(tab, opts = {}) {
+function grant(tab) {
   return {
     host: hostOf(tab.url),
-    mode: opts.lockToDomain === false ? "anyOrigin" : "stickyOrigin", // lockToDomain off → free to navigate anywhere
     caps: FULL_CAPS, // read-only is enforced globally in evaluate(), not per-entry
-    expiresAt: opts.ttlMs ? Date.now() + opts.ttlMs : undefined,
-    sharedAt: Date.now(),
+    sharedAt: Date.now(), // TTL and lock-to-domain are applied LIVE from global settings
   };
 }
 
@@ -202,8 +323,7 @@ export function setTier(tier) {
   if (tier === "none") return revokeAll();
   return serial(async () => {
     const st = await getState();
-    const tierExpiresAt = tier === "all" && st.ttlMs ? Date.now() + st.ttlMs : null;
-    await saveConsent({ tier, allow: st.allow, tierExpiresAt });
+    await saveConsent({ tier, allow: st.allow, tierSetAt: tier === "all" ? Date.now() : null });
     return getState();
   });
 }
@@ -211,39 +331,50 @@ export function shareTab(tabId) {
   return serial(async () => {
     const tab = await chrome.tabs.get(tabId);
     const st = await getState();
-    st.allow[String(tabId)] = grant(tab, { ttlMs: st.ttlMs, lockToDomain: st.lockToDomain });
-    await saveConsent({ tier: st.tier === "all" ? "all" : "tabs", allow: st.allow, tierExpiresAt: st.tierExpiresAt });
+    st.allow[String(tabId)] = grant(tab);
+    await saveConsent({ ...st, tier: st.tier === "all" ? "all" : "tabs" });
     return getState();
   });
 }
-// Global share defaults (apply to every tab, not per-tab). Persisted in storage.local.
+// Global share defaults (apply to every tab, live — not per-tab). Persisted in storage.local.
 // Also carries the CDP opt-ins (allowCdp / cdpAlways / cdpConsole) — all DEFAULT FALSE.
-export function setShareOptions({ readOnly, ttlMs, lockToDomain, noAutoShareOpened, allowCdp, cdpAlways, cdpConsole } = {}) {
+export function setShareOptions({ readOnly, ttlMs, lockToDomain, noAutoShareOpened, allowCdp, cdpAlways, cdpConsole, unshareOnGroupLeave } = {}) {
   return serial(async () => {
+    const prev = await getState();
     const patch = {};
     if (readOnly !== undefined) patch.shareReadOnly = !!readOnly;
-    if (ttlMs !== undefined) patch.shareTtlMs = Number(ttlMs) || 0;
+    if (ttlMs !== undefined) {
+      const ttl = Number(ttlMs) || 0;
+      patch.shareTtlMs = ttl;
+      if (ttl !== prev.ttlMs) patch.shareTtlSetAt = Date.now(); // restart the clock of existing shares
+    }
     if (lockToDomain !== undefined) patch.lockToDomain = !!lockToDomain;
     if (noAutoShareOpened !== undefined) patch.noAutoShareOpened = !!noAutoShareOpened;
     if (allowCdp !== undefined) patch.allowCdp = !!allowCdp;
     if (cdpAlways !== undefined) patch.cdpAlways = !!cdpAlways;
     if (cdpConsole !== undefined) patch.cdpConsole = !!cdpConsole;
+    if (unshareOnGroupLeave !== undefined) patch.unshareOnGroupLeave = !!unshareOnGroupLeave;
     await chrome.storage.local.set(patch);
+    // Lock switched ON: pin every already-shared tab to the host it is on right now.
+    if (lockToDomain === true && prev.lockToDomain === false && Object.keys(prev.allow).length) {
+      const st = await getState();
+      await saveConsent({ ...st, allow: repinGrants(st.allow, await chrome.tabs.query({})) });
+    }
     return getState();
   });
 }
 export function unshareTab(tabId) {
-  return serial(async () => { const st = await getState(); delete st.allow[String(tabId)]; await saveConsent({ tier: st.tier, allow: st.allow }); return getState(); });
+  return serial(async () => { const st = await getState(); delete st.allow[String(tabId)]; await saveConsent(st); return getState(); });
 }
 export function revokeAll() {
-  return serial(async () => { await saveConsent({ tier: "none", allow: {} }); return getState(); });
+  return serial(async () => { await saveConsent({ tier: "none", allow: {}, tierSetAt: null }); return getState(); });
 }
 export function autoShareCreated(tab) {
   return serial(async () => {
     const st = await getState();
     if (st.tier !== "tabs") return;
-    st.allow[String(tab.id)] = grant(tab, { ttlMs: st.ttlMs, lockToDomain: st.lockToDomain });
-    await saveConsent({ tier: "tabs", allow: st.allow });
+    st.allow[String(tab.id)] = grant(tab);
+    await saveConsent(st);
   });
 }
 export function setDenyOrigins(list) {
@@ -257,15 +388,46 @@ export function setDenyOrigins(list) {
 export function sweepExpired() {
   return serial(async () => {
     const st = await getState();
-    const now = Date.now();
+    const exp = expiredGrants(st, Date.now());
     // "Everything" tier with a global TTL: expire the whole share.
-    if (st.tier === "all" && st.tierExpiresAt != null && now > st.tierExpiresAt) {
-      await saveConsent({ tier: "none", allow: {}, tierExpiresAt: null });
-      return true;
-    }
-    let changed = false;
-    for (const [k, e] of Object.entries(st.allow)) if (e.expiresAt != null && now > e.expiresAt) { delete st.allow[k]; changed = true; }
-    if (changed) await saveConsent({ tier: st.tier, allow: st.allow, tierExpiresAt: st.tierExpiresAt });
-    return changed;
+    if (exp.tier) { await saveConsent({ tier: "none", allow: {}, tierSetAt: null }); return true; }
+    if (!exp.ids.length) return false;
+    for (const k of exp.ids) delete st.allow[k];
+    await saveConsent(st);
+    return true;
   });
 }
+
+// chrome.tabs.onReplaced: carry the grant from the old tab id to the new one.
+export function replaceTabId(removedId, addedId) {
+  return serial(async () => {
+    const st = await getState();
+    const allow = moveGrant(st.allow, removedId, addedId);
+    if (!allow) return false;
+    await saveConsent({ ...st, allow });
+    return true;
+  });
+}
+
+// Extension Reload/update: bring the mirrored grants back (only when nothing is shared yet).
+// Returns how many tab grants were restored (or 1 for a restored "Everything" share).
+export function restoreFromMirror(tabs, now = Date.now()) {
+  return serial(async () => {
+    const st = await getState();
+    if (st.tier !== "none" || Object.keys(st.allow).length) return 0; // something already shared — leave it alone
+    const { allowMirror } = await chrome.storage.local.get("allowMirror");
+    const r = restoreGrants(allowMirror, tabs, now, st);
+    if (!r || (r.tier === "none")) return 0;
+    await saveConsent(r);
+    return r.tier === "all" ? 1 : Object.keys(r.allow).length;
+  });
+}
+// Heartbeat: refreshed every minute by the alarm so a Reload finds a fresh mirror.
+export function touchMirror() {
+  return serial(async () => {
+    const { allowMirror } = await chrome.storage.local.get("allowMirror");
+    if (allowMirror) await chrome.storage.local.set({ allowMirror: { ...allowMirror, aliveAt: Date.now() } });
+  });
+}
+// Browser restart: grants die with the session, and so must their mirror.
+export function clearMirror() { return chrome.storage.local.remove("allowMirror"); }
