@@ -26,6 +26,7 @@
           <!-- One-time first-run helper: shown only until the very first successful connect. -->
           <button id="quickSetupMain" class="btn setup" hidden>🚀 Set up with your AI</button>
         </div>
+        <p id="connWarn" class="hint warn" hidden></p>
         <div id="shareArea" hidden>
           <button id="shareThis" class="btn share">Share Current Tab</button>
           <div id="allBadge" class="allbadge" hidden>⚡ Everything is shared</div>
@@ -92,7 +93,7 @@
           </section>
 
           <section class="setcard">
-            <div class="setrow"><span class="muted">Sharing defaults</span><span class="help" title="Apply to EVERY shared tab (global, not per-tab). Read-only lets the agent read the page and take screenshots but not click, type, navigate, run scripts or open/close tabs. Auto-expire un-shares all tabs after the chosen time. Lock-to-domain keeps a shared tab pinned to its origin (off lets the agent navigate it freely). Don't auto-share leaves tabs the agent opens un-shared until you share them. Tab group gathers shared tabs into a ⚡ group in the strip. Read-only + auto-expire default off; the others default on.">?</span></div>
+            <div class="setrow"><span class="muted">Sharing defaults</span><span class="help" title="Apply to EVERY shared tab (global, not per-tab). Read-only lets the agent read the page and take screenshots but not click, type, navigate, run scripts or open/close tabs. Auto-expire un-shares tabs after the chosen time (counted from when each was shared, or from when you last changed this setting). Lock-to-domain keeps a shared tab pinned to its site (off lets the agent navigate it freely). All of these apply LIVE to tabs that are already shared. Don't auto-share leaves tabs the agent opens un-shared until you share them. Tab group gathers shared tabs into a ⚡ group in the strip. Read-only + auto-expire default off; the others default on.">?</span></div>
             <label class="tg" style="margin-top: 0">
               <input type="checkbox" id="readOnly" />
               Read-only (agent can look, not act)
@@ -113,7 +114,7 @@
             <label class="tg">
               <input type="checkbox" id="lockToDomain" checked />
               Lock shared tabs to their domain (prevent navigating to other sites)
-              <span class="help" title="When on (default), a shared tab that navigates to a different site loses access (ORIGIN_DRIFT). Turn off to let the agent navigate a shared tab freely across sites. Off is riskier: a shared tab could follow you into sensitive pages.">?</span>
+              <span class="help" title="When on (default), a shared tab that navigates to a different site is PAUSED: the agent is refused (ORIGIN_DRIFT) and the tab disappears from its list, but the share is kept, so access resumes by itself when the tab is back on its site. While on, the agent also can't navigate a shared tab off its site. Turn off to let the agent navigate a shared tab freely across sites (applies at once to tabs already shared). Off is riskier: a shared tab could follow you into sensitive pages. The blocked-origins list always applies.">?</span>
             </label>
             <label class="tg">
               <input type="checkbox" id="noAutoShareOpened" checked />
@@ -123,7 +124,12 @@
             <label class="tg">
               <input type="checkbox" id="tabGroup" />
               Mark shared tabs with a "⚡" tab group
-              <span class="help" title="Puts your shared tabs into a coloured '⚡' tab group in the tab strip, so you can see at a glance which tabs the agent can access. May rearrange your tabs.">?</span>
+              <span class="help" title="Puts your shared tabs into a coloured '⚡' tab group in the tab strip, so you can see at a glance which tabs the agent can access. May rearrange your tabs. Dragging a tab INTO the group shares it.">?</span>
+            </label>
+            <label class="tg">
+              <input type="checkbox" id="unshareOnGroupLeave" />
+              Unshare a tab when I take it out of the group
+              <span class="help" title="Off by default. When on, dragging a shared tab out of the '⚡' group (or into another group) stops sharing it. Left off, moving tabs around never ends a share; use the ✕, the shortcut or the context menu to unshare.">?</span>
             </label>
           </section>
 
@@ -206,24 +212,24 @@ Do steps 1 and 3 yourself; I'll do step 2 in the browser. Ask me for the endpoin
 
         <h3>Sharing &amp; how you stay in control</h3>
         <ul>
-          <li><strong>Two ways to share:</strong> <strong>Share Current Tab</strong> (just the tab you're on) or <strong>Share Everything</strong> (all current and future tabs). Sharing resets when you restart Chrome, so you never leave something shared by accident.</li>
+          <li><strong>Two ways to share:</strong> <strong>Share Current Tab</strong> (just the tab you're on) or <strong>Share Everything</strong> (all current and future tabs). Sharing resets when you restart Chrome, so you never leave something shared by accident; reloading the extension (after an update) keeps what you shared.</li>
           <li><strong>Origin filter</strong> (Settings) decides which sites are eligible at all, and overrides every sharing mode:
             <ul>
               <li><strong>Block mode</strong> (default): the listed sites are <em>never</em> shared — put your email, bank, etc. here.</li>
               <li><strong>Allow mode</strong>: flips it — <em>only</em> the listed sites can be shared, everything else is blocked (an empty allow list blocks everything). Best if you want the agent confined to a known set of sites.</li>
             </ul>
           </li>
-          <li><strong>Lock shared tabs to their domain</strong> (Settings, on by default): a shared tab that navigates to another site loses access — so a shared shopping tab can't quietly follow you into your bank. Turn it off to let the agent browse freely within a shared tab. Embedded frames on a shared page (e.g. a sign-up form served from another domain) stay reachable either way — the origin filter still applies to them.</li>
+          <li><strong>Lock shared tabs to their domain</strong> (Settings, on by default): a shared tab that navigates to another site is paused — the agent is refused and the tab vanishes from its list, so a shared shopping tab can't quietly follow you into your bank; the share is kept and resumes when the tab is back. Turn it off to let the agent browse freely within a shared tab (it applies to tabs you already shared, immediately). Embedded frames on a shared page (e.g. a sign-up form served from another domain) stay reachable either way — the origin filter still applies to them.</li>
           <li><strong>Don't auto-share tabs the agent opens</strong> (Settings, on by default): tabs the agent opens itself aren't shared until you approve them, so it can't silently reach a brand-new site.</li>
           <li><strong>Read-only</strong> (Settings): the agent may look (read text, screenshot) but never click, type, navigate, run scripts, or open/close tabs.</li>
-          <li><strong>Auto-expire</strong> (Settings): un-shares everything after a time you pick (5 min … 10 h).</li>
+          <li><strong>Auto-expire</strong> (Settings): un-shares tabs after a time you pick (5 min … 10 h), counted from when each was shared or from when you changed the setting.</li>
         </ul>
 
         <h3>Marking shared tabs &amp; indicators</h3>
         <ul>
           <li><strong>Header dot:</strong> green = running, red = stopped. Click it to start / stop.</li>
           <li><strong>Toolbar icon:</strong> plain = idle; green dot = the current tab is shared; red dot = Tabduct is stopped.</li>
-          <li><strong>"⚡" tab group</strong> (Settings, on by default): shared tabs are gathered into a coloured ⚡ group. It's two-way — drag a tab <em>into</em> the group to share it, drag it <em>out</em> to unshare.</li>
+          <li><strong>"⚡" tab group</strong> (Settings, on by default): shared tabs are gathered into a coloured ⚡ group. Drag a tab <em>into</em> the group to share it; to also unshare by dragging it <em>out</em>, switch that on in Settings.</li>
           <li><strong>Right-click a page → "⚡ Tabduct: share / unshare this tab"</strong> — the quickest way to toggle one tab.</li>
           <li><strong>Shortcut Ctrl+Shift+Y</strong> toggles sharing for the current tab.</li>
         </ul>
@@ -248,7 +254,7 @@ Do steps 1 and 3 yourself; I'll do step 2 in the browser. Ask me for the endpoin
     }
   }
 }</pre>
-        <p>Replace the token with the value shown in Settings once running (the endpoint is always the hub at <code class="inline">127.0.0.1:12311</code>). Reload your agent and it will discover the Tabduct tools: <code class="inline">list_tabs</code>, <code class="inline">get_active_tab</code>, <code class="inline">get_page_content</code>, <code class="inline">get_dom_snapshot</code>, <code class="inline">screenshot</code>, <code class="inline">wait_for</code>, <code class="inline">click</code>, <code class="inline">type</code>, <code class="inline">navigate</code>, <code class="inline">open_tab</code>, <code class="inline">close_tab</code>, <code class="inline">activate_tab</code>, <code class="inline">get_console_logs</code>, <code class="inline">list_network_requests</code>, <code class="inline">get_network_request</code> and <code class="inline">execute_script</code>.</p>
+        <p>Replace the token with the value shown in Settings once running (the endpoint is always the hub at <code class="inline">127.0.0.1:12311</code>). Reload your agent and it will discover the Tabduct tools: <code class="inline">list_tabs</code>, <code class="inline">get_active_tab</code>, <code class="inline">get_page_content</code>, <code class="inline">get_dom_snapshot</code>, <code class="inline">list_frames</code>, <code class="inline">screenshot</code>, <code class="inline">wait_for</code>, <code class="inline">click</code>, <code class="inline">type</code>, <code class="inline">navigate</code>, <code class="inline">open_tab</code>, <code class="inline">close_tab</code>, <code class="inline">activate_tab</code>, <code class="inline">get_console_logs</code>, <code class="inline">list_network_requests</code>, <code class="inline">get_network_request</code> and <code class="inline">execute_script</code>.</p>
 
         <p><strong>Add it at the global / user scope.</strong> Some agents (Claude Code included) scope MCP servers to the working directory you configured them in — so a second session started from another folder won't see Tabduct. Register it globally instead. In Claude Code: <code class="inline">claude mcp add --scope user tabduct http://127.0.0.1:12311/mcp --header "Authorization: Bearer &lt;token&gt;"</code> (or move an existing project entry to user scope). Cursor and most GUI clients already store MCP servers globally.</p>
 

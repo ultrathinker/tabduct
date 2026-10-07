@@ -4,14 +4,22 @@
 // invoke chokepoint with per-tab CONSENT enforcement (Feature B), shared-tab
 // badges, the share hotkey, and popup messaging. See PROTOCOL.md + consent.js.
 
-import { HANDLERS, detachCdpTab, detachAllCdp, startCdpConsole, stopCdpConsole, stopAllCdpConsole, reconcileCdpForce, cdpConsoleTabs } from "./handlers/index.js";
+import { HANDLERS, detachCdpTab, detachAllCdp, startCdpConsole, stopCdpConsole, stopAllCdpConsole, reconcileCdpForce, cdpConsoleTabs, cdpUserCancelled } from "./handlers/index.js";
 import * as CONSENT from "./consent.js";
+import { GroupMask, groupAction } from "./groupsync.js";
 
 const HOST_NAME = "com.tabduct.host";
 const DEFAULT_PORT = 0; // 0 = ephemeral: the host picks a free port (no manual port config)
 const HUB_PORT = 12311; // the shared hub's fixed endpoint (must match hosts' constants)
 const PROTOCOL_VERSION = 0; // MUST match protocol/tools.schema.json
-const OPEN_TIMEOUT_MS = 8000;
+// Must outlast the host's own wait for the hub to come up (~13.5 s on a cold start), or Start
+// reports a timeout while the hub is still coming up fine.
+const OPEN_TIMEOUT_MS = 20000;
+// What this build can do beyond the base protocol. Sent in `open`; the host refuses calls that
+// need a feature an older extension build doesn't have (instead of silently running them
+// elsewhere — e.g. a frameId ignored by a build that predates frames).
+const FEATURES = ["frames", "pinned-docs"];
+const EXT_VERSION = chrome.runtime.getManifest().version;
 
 // Is a shared hub already listening on this machine? (any HTTP response = up; connection
 // refused = down). Used to auto-join a new instance to an already-running hub.
@@ -72,15 +80,21 @@ function connect(port = DEFAULT_PORT) {
   connecting = (async () => {
     chrome.storage.session.set({ userStopped: false }).catch(() => {}); // a (re)connect clears the explicit-stop intent
     const { instanceId, label, token } = await getIdentity();
-    let usePort = port;
-    if (usePort === 0) { const { lastPort } = await chrome.storage.local.get("lastPort"); usePort = lastPort || 0; } // reuse last bound port
+    // Always an ephemeral port: agents only ever see the hub (the per-instance direct port is an
+    // implementation detail the hub reads from the discovery file), so remembering one only
+    // risked reusing a port that had since become busy or reserved (a permanent Start failure).
+    const usePort = port;
     await setState({ state: "connecting", port: usePort, token, error: null });
-    try { hostPort = chrome.runtime.connectNative(HOST_NAME); }
+    let thisPort;
+    try { thisPort = chrome.runtime.connectNative(HOST_NAME); hostPort = thisPort; }
     catch (e) { await setState({ state: "error", error: String(e) }); return getConnState(); }
 
-    hostPort.onMessage.addListener(onHostMessage);
-    hostPort.onDisconnect.addListener(async () => {
+    // Everything below is bound to THIS port: a late event from a port we already replaced
+    // (quick Stop → Start) must neither tear down the new connection nor be answered on it.
+    thisPort.onMessage.addListener((m) => { if (hostPort === thisPort) onHostMessage(m); });
+    thisPort.onDisconnect.addListener(async () => {
       const err = chrome.runtime.lastError;
+      if (hostPort !== thisPort) return;
       hostPort = null; rejectAllPending("native host disconnected");
       await detachAllCdp(); // port dropped → drop any held debugger sessions (PART 4)
       await setState({ state: err ? "error" : "disconnected", error: err ? err.message : null });
@@ -89,12 +103,11 @@ function connect(port = DEFAULT_PORT) {
 
     try {
       // Hub is the ONLY agent-facing endpoint — always request it (the toggle is gone).
-      const res = await request("open", { port: usePort, token, protocolVersion: PROTOCOL_VERSION, instanceId, label, hub: true }, OPEN_TIMEOUT_MS);
+      const res = await request("open", { port: usePort, token, protocolVersion: PROTOCOL_VERSION, instanceId, label, hub: true, extensionVersion: EXT_VERSION, features: FEATURES }, OPEN_TIMEOUT_MS);
       if (gen !== connGen) { // user hit Disconnect while we were handshaking → honor it
-        try { hostPort?.disconnect(); } catch {} hostPort = null; rejectAllPending("disconnected during connect");
+        try { thisPort.disconnect(); } catch {} if (hostPort === thisPort) hostPort = null; rejectAllPending("disconnected during connect");
         await setState({ state: "disconnected", error: null }); scheduleBadges(); return getConnState();
       }
-      await chrome.storage.local.set({ lastPort: res?.port ?? usePort });
       // The shared hub is REQUIRED. If it didn't come up, surface a LOUD error instead of
       // silently exposing the per-instance direct port (which used to confuse everyone).
       if (!(res?.hub && res.endpoint)) throw new Error("Couldn't start the shared hub — see ~/.tabduct/hub.log");
@@ -104,8 +117,8 @@ function connect(port = DEFAULT_PORT) {
       lastBadge = new Map();
       await refreshBadges();
     } catch (e) {
-      try { hostPort?.disconnect(); } catch {}
-      hostPort = null;
+      try { thisPort.disconnect(); } catch {}
+      if (hostPort === thisPort) hostPort = null;
       await setState({ state: "error", error: e?.message ?? String(e) });
       scheduleBadges(); // failed connect → red icons
     }
@@ -169,9 +182,20 @@ async function onHostMessage(msg) {
   if (msg.type === "notice") { const lvl = msg.payload?.level; if (lvl === "warn" || lvl === "error") await setState({ error: msg.payload?.message ?? null }); return; } // info notices aren't errors
 }
 
+// Chrome lets us send the host up to 64 MiB, but the host drops anything over 32 MiB without a
+// word (it can't even read the replyTo to answer), which the agent then sees as a 20 s TIMEOUT.
+// Measure big replies here and answer with a clear error instead.
+const MAX_REPLY_BYTES = 30 * 1024 * 1024;
+function replyTooLarge(msg) {
+  let s; try { s = JSON.stringify(msg); } catch { return false; }
+  if (s.length <= 10_000_000) return false; // <= 3 bytes/char < the cap: no need to measure exactly
+  return new TextEncoder().encode(s).length > MAX_REPLY_BYTES;
+}
 function reply(id, ok, payload) {
   if (!hostPort) return;
-  hostPort.postMessage(ok ? { replyTo: id, ok: true, result: payload } : { replyTo: id, ok: false, error: payload });
+  let msg = ok ? { replyTo: id, ok: true, result: payload } : { replyTo: id, ok: false, error: payload };
+  if (replyTooLarge(msg)) msg = { replyTo: id, ok: false, error: { code: "FRAME_TOO_LARGE", message: "the result is larger than the 30 MiB transport limit; ask for less (maxChars, a selector, a smaller format)" } };
+  hostPort.postMessage(msg);
 }
 
 // ---------------------------------------------------------------------------
@@ -183,14 +207,18 @@ async function resolveActiveTabId() {
 }
 
 // Decide whether a tab-targeting/create tool may run; handle sticky-origin revoke.
+const pausedNow = new Set(); // tabs we already reported as paused (one event per pause, not per refused call)
 async function gate(tool, args) {
   const state = await CONSENT.getState();
   // Destination guard for tools carrying a target URL: only http(s), never a
   // denylisted/allow-list-blocked origin (and don't disclose which). Blocks file:/data:/javascript:.
+  let destHost;
   if ((tool === "navigate" || tool === "open_tab") && args?.url) {
     let scheme = null; try { scheme = new URL(args.url).protocol; } catch {}
     if (scheme !== "http:" && scheme !== "https:") return { allow: false, code: "INVALID_ARGS", message: "only http(s) destinations are allowed" };
-    if (CONSENT.originBlocked(state, CONSENT.hostOf(args.url))) return { allow: false, code: "ORIGIN_DENIED", message: "destination not allowed by consent policy" };
+    destHost = CONSENT.hostOf(args.url);
+    if (CONSENT.originBlocked(state, destHost)) return { allow: false, code: "ORIGIN_DENIED", message: "destination not allowed by consent policy" };
+    if (tool === "open_tab") destHost = undefined; // a NEW tab isn't bound by the lock of an existing one
   }
 
   if (CONSENT.CREATE.has(tool)) return { ...CONSENT.evaluate(state, { tool }) };
@@ -201,14 +229,24 @@ async function gate(tool, args) {
   try { tab = await chrome.tabs.get(tabId); } catch { return { allow: false, code: "TAB_NOT_FOUND", message: `tab ${tabId} not found` }; }
   const host = CONSENT.hostOf(tab.url);
   const needCap = (tool === "screenshot" && args?.activate) ? "execute" : undefined; // activating steals focus → treat as write
-  const d = CONSENT.evaluate(state, { tool, tabId, host, now: Date.now(), needCap });
-  if (d.revoke) { await CONSENT.unshareTab(tabId); detachCdpTab(tabId); emitEvent({ kind: "permission_revoked", tabId, reason: d.code }); scheduleBadges(); }
+  const d = CONSENT.evaluate(state, { tool, tabId, host, now: Date.now(), needCap, destHost });
+  if (d.revoke) { await CONSENT.unshareTab(tabId); detachCdpTab(tabId); emitEvent({ kind: "permission_revoked", tabId, reason: d.code }); scheduleBadges(); } // an EXPIRED share
+  // A tab that left its shared origin is PAUSED, not unshared: refuse the call, stop capturing
+  // what it does elsewhere (debugger + buffers), keep the grant so access resumes on return.
+  if (d.code === "ORIGIN_DRIFT") {
+    detachCdpTab(tabId);
+    if (!pausedNow.has(tabId)) { pausedNow.add(tabId); emitEvent({ kind: "permission_paused", tabId, reason: d.code }); scheduleBadges(); chrome.runtime.sendMessage({ evt: "sharing" }).catch(() => {}); }
+  } else if (d.allow) pausedNow.delete(tabId);
   // execute_script CDP gating (PART 4): compute the effective engine + whether the
   // auto CSP→CDP fallback is allowed, from the user's CDP settings. Only when base
   // consent already allowed the call — otherwise a consent denial (e.g. read-only)
   // must surface as-is, not be masked by CDP_NOT_PERMITTED. Force/always CDP
   // requires allowCdp AND not read-only; refused BEFORE any debugger attach.
-  const out = { ...d, tabId, host };
+  // The origin the call is PINNED to inside the page: the host the tab was authorized on, when
+  // lock-to-domain is on and this is a per-tab share (null = a blank page). Undefined = not
+  // pinned (lock off, or the "Everything" tier): the page tools then only apply the origin filter.
+  const pin = state.lockToDomain && state.tier === "tabs" ? host : undefined;
+  const out = { ...d, tabId, host, pin };
   if (tool === "execute_script" && d.allow) {
     const cd = CONSENT.cdpDecision(state, { engine: args?.engine });
     if (!cd.permitted) return { allow: false, code: cd.code, message: "CDP eval is not enabled (enable 'Allow CDP eval' in the popup, or switch engine to auto/scripting)" };
@@ -219,14 +257,10 @@ async function gate(tool, args) {
   return out; // resolved ONCE — the handler reuses this exact tab + authorized host (no TOCTOU re-resolve)
 }
 
-// Tools that read or act inside a page — each gets the gate-authorized host to
-// re-check in-page (or, in a child frame, to pin the frame against).
-const PAGE_TOOLS = new Set(["get_page_content", "execute_script", "wait_for", "click", "type", "get_dom_snapshot", "get_console_logs", "list_network_requests", "get_network_request", "screenshot", "list_frames"]);
-
 async function handleInvoke(msg) {
   const { id, payload } = msg;
   const tool = payload?.tool;
-  // `_`-prefixed args are internal (set below from the consent gate: _authHost,
+  // `_`-prefixed args are internal (set below from the consent gate: _pin,
   // _engine, …) — never accept them from the wire, where an agent could forge one.
   const args = Object.fromEntries(Object.entries(payload?.args ?? {}).filter(([k]) => !k.startsWith("_")));
   // Internal `_td/*` control ops arrive only via the hub's /control channel (never
@@ -264,11 +298,11 @@ async function handleInvoke(msg) {
 
     // Reuse the exact tab the gate authorized (prevents active-tab TOCTOU).
     const callArgs = decision.tabId == null ? args : { ...args, tabId: decision.tabId };
-    // TOCTOU defense-in-depth: re-check the authorized origin IN-PAGE for every
-    // script-injection tool — a tab can self-navigate in the ~ms window between
-    // gate and executeScript. _authHost is internal and stripped before reaching
-    // the wire (handlers never return it).
-    if (PAGE_TOOLS.has(tool)) callArgs._authHost = decision.host ?? null;
+    // The pin (see gate) rides along to EVERY tool, not a hand-kept list: a tool someone adds
+    // later can't silently lose lock-to-domain by being left out. Handlers that act inside a
+    // page probe the document and judge it against it (handlers/index.js, pinFrame). `_pin` is
+    // internal: stripped from wire args above and never returned.
+    if (decision.pin !== undefined) callArgs._pin = decision.pin;
     // execute_script engine/CDP flags (PART 4): passed internal-only from the gate.
     if (tool === "execute_script") {
       if (decision._engine != null) callArgs._engine = decision._engine;
@@ -451,17 +485,22 @@ async function _reconcileCdp(sharedTabIds) {
 }
 
 // Exact-correlation mask for the group<->sharing sync listener: when WE
-// programmatically move a tab in/out of a group, we record its id here so the
-// listener consumes that one event instead of mistaking it for a user gesture.
-// Precise per-tab (no blanket time window) → user drags are never masked; a
-// safety timeout drops an id if its event never arrives (e.g. tab closed).
-const pendingGroupMoves = new Set();
-function markGroupMoves(ids) {
-  for (const id of ids) { pendingGroupMoves.add(id); setTimeout(() => pendingGroupMoves.delete(id), 2000); }
-}
+// programmatically move a tab in/out of a group, we record each expected event here so the
+// listener consumes it instead of mistaking it for a user gesture. A counter per tab (two
+// overlapping moves of one tab raise two events), expiring after 2 s if an event never
+// arrives (e.g. the tab closed). See groupsync.js.
+const groupMask = new GroupMask(2000);
+function markGroupMoves(ids) { groupMask.mark(ids); }
+
+// applyTabGroup and cleanupTabGroups both move tabs in and out of groups; run strictly one at a
+// time, or two overlapping runs move the same tab twice (and the second event looks like a user
+// dragging the tab out).
+let groupQueue = Promise.resolve();
+function inGroupQueue(fn) { const r = groupQueue.then(fn); groupQueue = r.then(() => {}, () => {}); return r; }
 
 // Optional: mark shared tabs with a native "⚡" tab group (opt-in; may rearrange tabs).
-async function applyTabGroup(sharedIds, allTabs) {
+function applyTabGroup(sharedIds, allTabs) { return inGroupQueue(() => _applyTabGroup(sharedIds, allTabs)); }
+async function _applyTabGroup(sharedIds, allTabs) {
   if (!chrome.tabGroups) return;
   const { useTabGroup } = await chrome.storage.local.get("useTabGroup");
   if (useTabGroup === false) return; // ON by default (only skip when explicitly turned off)
@@ -481,8 +520,9 @@ async function applyTabGroup(sharedIds, allTabs) {
     for (const ids of byWin.values()) {
       markGroupMoves(ids);
       const gid = await chrome.tabs.group({ tabIds: ids });
-      await chrome.tabGroups.update(gid, { title: "⚡", color: "purple" });
       gids.add(gid);
+      await chrome.storage.local.set({ tdGroups: [...gids] }); // remember the group before its first events are judged
+      await chrome.tabGroups.update(gid, { title: "⚡", color: "purple" });
     }
     await chrome.storage.local.set({ tdGroups: [...gids] });
   } catch {}
@@ -490,7 +530,8 @@ async function applyTabGroup(sharedIds, allTabs) {
 
 // Ungroup every tab still in a group WE created, and forget them. Used on
 // reload/update (orphaned groups) and when the feature is turned off / revoke-all.
-async function cleanupTabGroups() {
+function cleanupTabGroups() { return inGroupQueue(_cleanupTabGroups); }
+async function _cleanupTabGroups() {
   try {
     const { tdGroups = [] } = await chrome.storage.local.get("tdGroups");
     if (tdGroups.length && chrome.tabGroups) {
@@ -502,15 +543,16 @@ async function cleanupTabGroups() {
   } catch {}
 }
 
-let flashTimer = null;
+const flashTimers = new Map(); // one timer PER TAB: a shared one let a second denial cancel the first tab's reset
 function flashDenied(tabId) {
   try {
     const t = typeof tabId === "number" ? { tabId } : {}; // scope the ✕ to the denied tab (not a global flash on every icon)
     chrome.action.setBadgeTextColor?.({ color: "#ffffff", ...t });
     chrome.action.setBadgeBackgroundColor({ color: "#dc2626", ...t });
     chrome.action.setBadgeText({ text: "✕", ...t });
-    clearTimeout(flashTimer);
-    flashTimer = setTimeout(() => { chrome.action.setBadgeText({ text: "", ...t }); refreshBadges(); }, 900); // refreshBadges repaints the correct state (no blind green reset)
+    const key = typeof tabId === "number" ? tabId : "all";
+    clearTimeout(flashTimers.get(key));
+    flashTimers.set(key, setTimeout(() => { flashTimers.delete(key); chrome.action.setBadgeText({ text: "", ...t }); refreshBadges(); }, 900)); // refreshBadges repaints the correct state (no blind green reset)
   } catch {}
 }
 
@@ -521,11 +563,14 @@ async function sharingStatus() {
   const st = await CONSENT.getState();
   const all = await chrome.tabs.query({});
   const shared = CONSENT.visibleTabIds(st, all, Date.now()).map((t) => ({ id: t.id, title: t.title, url: t.url, favIconUrl: t.favIconUrl }));
+  // Grants that are alive but paused because the tab left its shared origin (lock-to-domain):
+  // shown greyed in the popup so a dormant grant is never invisible.
+  const paused = CONSENT.pausedTabIds(st, all, Date.now()).map((t) => ({ id: t.id, title: t.title, url: t.url, favIconUrl: t.favIconUrl, sharedHost: st.allow[String(t.id)]?.host ?? null }));
   const [active] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
-  const { useTabGroup, noAutoShareOpened } = await chrome.storage.local.get(["useTabGroup", "noAutoShareOpened"]);
+  const { useTabGroup, noAutoShareOpened, unshareOnGroupLeave } = await chrome.storage.local.get(["useTabGroup", "noAutoShareOpened", "unshareOnGroupLeave"]);
   const { label } = await getIdentity(); // ensures + returns the auto default label
   const allShared = st.tier === "all" ? all.filter((t) => !CONSENT.originBlocked(st, CONSENT.hostOf(t.url))).length : shared.length;
-  return { tier: st.tier, denyOrigins: st.denyOrigins, originMode: st.originMode, sharedCount: allShared, tabs: shared, activeTabId: active?.id, label, useTabGroup: useTabGroup !== false, readOnly: st.readOnly, ttlMs: st.ttlMs, lockToDomain: st.lockToDomain, noAutoShareOpened: noAutoShareOpened !== false, allowCdp: st.allowCdp, cdpAlways: st.cdpAlways, cdpConsole: st.cdpConsole };
+  return { tier: st.tier, denyOrigins: st.denyOrigins, originMode: st.originMode, sharedCount: allShared, tabs: shared, paused, activeTabId: active?.id, label, useTabGroup: useTabGroup !== false, unshareOnGroupLeave: unshareOnGroupLeave === true, readOnly: st.readOnly, ttlMs: st.ttlMs, lockToDomain: st.lockToDomain, noAutoShareOpened: noAutoShareOpened !== false, allowCdp: st.allowCdp, cdpAlways: st.cdpAlways, cdpConsole: st.cdpConsole, extensionVersion: EXT_VERSION };
 }
 
 // Cross-instance view for the popup: ask our host to fetch the hub's /control
@@ -568,7 +613,7 @@ async function captureToViewer() {
     // Hard timeout so a wedged capture can NEVER hang the popup silently — it surfaces
     // as a clear error instead of an eternal "Capturing…".
     const result = await Promise.race([
-      HANDLERS.screenshot({ tabId: tab.id, format: "png", _authHost: null }),
+      HANDLERS.screenshot({ tabId: tab.id, format: "png", _manual: true }),
       new Promise((_, rej) => setTimeout(() => rej(new Error("capture timed out after 8000ms")), 8000)),
     ]);
     const id = String(Date.now());
@@ -602,56 +647,97 @@ chrome.commands?.onCommand.addListener(async (cmd) => {
 
 chrome.tabs.onRemoved.addListener(async (tabId) => {
   detachCdpTab(tabId); // a held debugger session dies with its tab (PART 4)
+  cdpUserCancelled.delete(tabId);
+  pausedNow.delete(tabId);
   const st = await CONSENT.getState();
   if (st.allow?.[String(tabId)]) { await CONSENT.unshareTab(tabId); emitEvent({ kind: "tab_removed", tabId }); }
 });
 
+// Chrome swapped a tab for another (prerender / instant): same user-visible tab, new id. Carry
+// the grant over, or the share silently vanishes.
+chrome.tabs.onReplaced?.addListener(async (addedTabId, removedTabId) => {
+  detachCdpTab(removedTabId);
+  cdpUserCancelled.delete(removedTabId);
+  pausedNow.delete(removedTabId);
+  if (await CONSENT.replaceTabId(removedTabId, addedTabId)) {
+    scheduleBadges();
+    chrome.runtime.sendMessage({ evt: "sharing" }).catch(() => {});
+  }
+});
+
 // DevTools open on a tab (or the user closing the banner) steals the CDP session
-// from us — forget the bookkeeping so we don't try to detach an already-gone one.
-chrome.debugger?.onDetach?.addListener((source) => { if (source?.tabId != null) detachCdpTab(source.tabId); });
+// from us — forget the bookkeeping so we don't try to detach an already-gone one. If the USER
+// dismissed the "is being debugged" banner, respect it: don't re-attach on the next refresh.
+chrome.debugger?.onDetach?.addListener((source, reason) => {
+  if (source?.tabId == null) return;
+  if (reason === "canceled_by_user") cdpUserCancelled.add(source.tabId);
+  detachCdpTab(source.tabId);
+});
 
 chrome.tabs.onUpdated.addListener((_id, info) => { if (info.status === "complete") scheduleBadges(); });
 
-// Two-way sync between our "⚡" group and sharing (only user gestures — our own
-// moves are masked by groupSync). Into our group → share; out of it (ungrouped OR
-// moved to any non-our group) → unshare.
+// Tabs Chrome opened a moment ago: if it drops one into our "⚡" group (a link opened from a
+// grouped tab), that is Chrome, not the user sharing it.
+const createdAt = new Map();
+chrome.tabs.onCreated.addListener((t) => { createdAt.set(t.id, Date.now()); setTimeout(() => createdAt.delete(t.id), 4000); });
+
+// Sync between our "⚡" group and sharing — user gestures only (our own moves are masked).
+// Into our group → share. Out of it → unshare ONLY if the user opted in ("Unshare when a tab is
+// taken out of the group"): Chrome also emits group changes for moves between windows, closed
+// groups and session restore, and none of those should end a share.
 chrome.tabs.onUpdated.addListener(async (tabId, info, tab) => {
   if (info.groupId === undefined) return; // not a group-membership change
-  if (pendingGroupMoves.has(tabId)) { pendingGroupMoves.delete(tabId); return; } // our own programmatic move — consume, don't act
-  const { useTabGroup, tdGroups = [] } = await chrome.storage.local.get(["useTabGroup", "tdGroups"]);
-  if (useTabGroup === false) return;
+  if (groupMask.consume(tabId)) return; // our own programmatic move — consume, don't act
+  const { useTabGroup, tdGroups = [], unshareOnGroupLeave, noAutoShareOpened } = await chrome.storage.local.get(["useTabGroup", "tdGroups", "unshareOnGroupLeave", "noAutoShareOpened"]);
   const st = await CONSENT.getState();
-  if (st.tier !== "tabs") return; // per-tab mode only
-  const inOurGroup = info.groupId >= 0 && tdGroups.includes(info.groupId);
-  const shared = !!st.allow?.[String(tabId)];
-  if (inOurGroup && !shared) {
-    if (CONSENT.originBlocked(st, CONSENT.hostOf(tab?.url))) return; // blocked (deny/allow) can't be shared
-    await CONSENT.shareTab(tabId); // dragged INTO our ⚡ group
-  } else if (!inOurGroup && shared) {
-    await CONSENT.unshareTab(tabId); // dragged OUT of our ⚡ group (ungrouped or into another group)
-  } else return;
+  const action = groupAction({
+    tier: st.tier, useTabGroup,
+    inOurGroup: info.groupId >= 0 && tdGroups.includes(info.groupId),
+    shared: !!st.allow?.[String(tabId)],
+    blocked: CONSENT.originBlocked(st, CONSENT.hostOf(tab?.url)),
+    justOpened: createdAt.has(tabId), noAutoShareOpened, unshareOnLeave: unshareOnGroupLeave === true,
+  });
+  if (action === "share") await CONSENT.shareTab(tabId);
+  else if (action === "unshare") await CONSENT.unshareTab(tabId);
+  else return;
   scheduleBadges();
   chrome.runtime.sendMessage({ evt: "sharing" }).catch(() => {});
 });
 
-// TTL sweep: expire timed grants (Phase 4). "alarms" permission.
-chrome.alarms?.create("tabduct-ttl", { periodInMinutes: 1 });
+// TTL sweep: expire timed grants (Phase 4). "alarms" permission. Also the heartbeat that keeps
+// the Reload mirror fresh. Create the alarm only if missing: every service-worker start used to
+// re-create it, pushing its first firing a minute further out.
+chrome.alarms?.get("tabduct-ttl").then((a) => { if (!a) chrome.alarms.create("tabduct-ttl", { periodInMinutes: 1 }); }).catch(() => {});
 chrome.alarms?.onAlarm.addListener(async (a) => {
   if (a.name !== "tabduct-ttl") return;
   await ensureConnected(); // SW may have just been revived by this alarm
+  await CONSENT.touchMirror().catch(() => {});
   if (await CONSENT.sweepExpired()) { scheduleBadges(); chrome.runtime.sendMessage({ evt: "sharing" }).catch(() => {}); }
 });
 
-// On reload/update the session-scoped consent is wiped but browser tab groups
-// persist → clean up the "⚡" groups we created last time so they don't linger.
-chrome.runtime.onInstalled.addListener(() => { cleanupTabGroups(); });
+// Extension Reload / update: storage.session (where grants live) is wiped, so bring the shares
+// back from the storage.local mirror — only for tabs that still exist on the host they were
+// shared on, and only if the mirror is fresh (see restoreGrants). A browser restart is a
+// different event (onStartup) and never restores. The ⚡ groups survive a reload and stay valid
+// when shares are restored; otherwise clean up the orphans as before.
+chrome.runtime.onInstalled.addListener(async ({ reason }) => {
+  if (reason === "update") {
+    try {
+      const n = await CONSENT.restoreFromMirror(await chrome.tabs.query({}), Date.now());
+      if (n) { scheduleBadges(); updateContextMenu(); return; }
+    } catch {}
+  }
+  await cleanupTabGroups();
+});
 
 scheduleBadges(); // paint icons on service-worker start (red until connected)
 updateContextMenu(); // reconcile the right-click item with current state on SW start
 
 chrome.runtime.onStartup.addListener(async () => {
   // session consent is wiped on restart but native tab groups persist → drop any
-  // leftover "⚡" groups so they don't imply sharing that no longer exists.
+  // leftover "⚡" groups so they don't imply sharing that no longer exists; and the mirror must
+  // go too, or the next Reload could resurrect shares from a previous browser session.
+  CONSENT.clearMirror().catch(() => {});
   cleanupTabGroups();
   // Auto-join an already-running hub (or revive if we were connected). Respects Stop.
   await ensureConnected();
@@ -673,7 +759,8 @@ chrome.runtime.onMessage.addListener((req, _sender, sendResponse) => {
       case "sharing.unshare": await CONSENT.unshareTab(req.tabId); scheduleBadges(); sendResponse(await sharingStatus()); break;
       case "sharing.tier": await CONSENT.setTier(req.tier); if (req.tier !== "tabs") await cleanupTabGroups(); updateContextMenu(); scheduleBadges(); sendResponse(await sharingStatus()); break;
       case "sharing.setOptions": {
-        await CONSENT.setShareOptions({ readOnly: req.readOnly, ttlMs: req.ttlMs, lockToDomain: req.lockToDomain, noAutoShareOpened: req.noAutoShareOpened, allowCdp: req.allowCdp, cdpAlways: req.cdpAlways, cdpConsole: req.cdpConsole });
+        await CONSENT.setShareOptions({ readOnly: req.readOnly, ttlMs: req.ttlMs, lockToDomain: req.lockToDomain, noAutoShareOpened: req.noAutoShareOpened, allowCdp: req.allowCdp, cdpAlways: req.cdpAlways, cdpConsole: req.cdpConsole, unshareOnGroupLeave: req.unshareOnGroupLeave });
+        if (req.allowCdp !== undefined || req.cdpConsole !== undefined) cdpUserCancelled.clear(); // a deliberate settings change re-arms capture on tabs whose banner the user dismissed
         // allowCdp OFF = CDP fully off → release every held session immediately.
         // Other CDP-flag changes (cdpAlways/cdpConsole on OR off) are reconciled by
         // scheduleBadges → reconcileCdpConsole/Force against the new settings, so
@@ -688,13 +775,14 @@ chrome.runtime.onMessage.addListener((req, _sender, sendResponse) => {
       case "sharing.revokeAll": await CONSENT.revokeAll(); await cleanupTabGroups(); updateContextMenu(); scheduleBadges(); sendResponse(await sharingStatus()); break;
       case "sharing.revokeEverywhere": {
         // Clear THIS instance fully (setTier("none") also clears the allow map), then ask
-        // every other instance to do the same via the hub. If the hub is unreachable we
-        // report peersReachable:false so the popup can warn (other browsers may still share).
+        // every other instance to do the same via the hub. If the hub is unreachable, or ANY other
+        // browser failed to clear (the hub now says so instead of reporting success), we report
+        // peersReachable:false so the popup keeps warning that other browsers may still share.
         await CONSENT.setTier("none"); await cleanupTabGroups(); updateContextMenu(); scheduleBadges();
-        let peersReachable = true;
-        try { await request("peerRevokeAll", {}, 8000); } catch { peersReachable = false; }
+        let peersReachable = true, peersError = null;
+        try { await request("peerRevokeAll", {}, 8000); } catch (e) { peersReachable = false; peersError = e?.message ?? String(e); }
         chrome.runtime.sendMessage({ evt: "sharing" }).catch(() => {});
-        sendResponse({ ...(await sharingStatus()), peersReachable });
+        sendResponse({ ...(await sharingStatus()), peersReachable, peersError });
         break;
       }
       case "sharing.setDeny": await CONSENT.setDenyOrigins(req.list ?? []); scheduleBadges(); sendResponse(await sharingStatus()); break;

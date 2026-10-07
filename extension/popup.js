@@ -34,6 +34,11 @@ function renderConn(s) {
   if (connected) everConnected = true; // a successful connect retires the one-time helper in-session too (bg persists it)
   $("quickSetupMain").hidden = connected || everConnected; // one-time first-run helper
   $("shareArea").hidden = !connected; // sharing is meaningless until connected
+  // While connected the status line is hidden (the dot is the indicator), so a warning from the
+  // host (e.g. "this extension build is older than the host - reload it") would be invisible:
+  // show it on its own line.
+  $("connWarn").hidden = !(connected && s?.error);
+  $("connWarn").textContent = connected && s?.error ? `⚠ ${s.error}` : "";
   $("toggle").disabled = state === "connecting";
   $("port").disabled = state === "connecting";
   $("status").dataset.state = state; // colour: red disconnected/error, green connected
@@ -74,6 +79,8 @@ function renderSharing(s) {
   $("countClear").hidden = !(tier === "all" || (s.sharedCount ?? 0) > 0);
   if (document.activeElement !== $("label")) $("label").value = s.label ?? "";
   $("tabGroup").checked = !!s.useTabGroup;
+  $("unshareOnGroupLeave").checked = !!s.unshareOnGroupLeave;
+  $("unshareOnGroupLeave").disabled = !s.useTabGroup;
   $("readOnly").checked = !!s.readOnly;
   $("ttl").value = String(s.ttlMs || 0);
   $("lockToDomain").checked = s.lockToDomain !== false;
@@ -194,12 +201,23 @@ function renderShareList(s) {
   const grouped = others.length > 0;
   // "Revoke all sharing" shows whenever ANYTHING is shared anywhere (this browser or
   // another) and clears every instance at once.
-  const currentShared = s.tier === "all" || (s.sharedCount ?? 0) > 0 || (s.tabs && s.tabs.length > 0);
+  const currentShared = s.tier === "all" || (s.sharedCount ?? 0) > 0 || (s.tabs && s.tabs.length > 0) || (s.paused && s.paused.length > 0);
   $("revokeAllGlobal").hidden = !(currentShared || others.length > 0);
   // Show the "Current" header (and any rows) only when this browser actually shares
   // something — an empty current instance renders nothing, no placeholder.
   if (grouped && currentShared) ul.appendChild(groupHeader("Current"));
-  if (currentShared) appendInstanceRows(ul, { self: true, tier: s.tier ?? "none", tabs: s.tabs ?? [] });
+  if (currentShared && (s.tier === "all" || (s.tabs && s.tabs.length) || (s.sharedCount ?? 0) > 0)) appendInstanceRows(ul, { self: true, tier: s.tier ?? "none", tabs: s.tabs ?? [] });
+  // Paused grants (the tab left its shared site while lock-to-domain is on): still shared, just
+  // dormant — listed greyed so a dormant share is never invisible; ✕ ends it.
+  for (const t of s.paused ?? []) {
+    const li = makeRow({
+      favIconUrl: t.favIconUrl, title: `${t.title || host(t.url)} - paused (left ${t.sharedHost ?? "its site"})`, url: t.url, muted: true,
+      xTitle: "stop sharing",
+      onX: async () => renderSharing(await send({ cmd: "sharing.unshare", tabId: t.id })),
+    });
+    li.classList.add("paused");
+    ul.appendChild(li);
+  }
   let n = 0;
   for (const inst of others) {
     n++;
@@ -261,11 +279,13 @@ $("revokeAllGlobal").addEventListener("click", async () => {
   // implying an all-clear (their rows may also be missing from the snapshot).
   if (s && s.peersReachable === false) {
     const orig = btn.innerHTML;
-    btn.hidden = false; btn.classList.add("warn"); btn.innerHTML = "⚠ Couldn't reach other browsers";
-    setTimeout(() => { btn.innerHTML = orig; btn.classList.remove("warn"); }, 3500);
+    btn.hidden = false; btn.classList.add("warn"); btn.innerHTML = "⚠ Couldn't clear other browsers";
+    btn.title = s.peersError || "Another browser did not confirm - it may still be sharing";
+    setTimeout(() => { btn.innerHTML = orig; btn.classList.remove("warn"); }, 6000);
   }
 });
 $("tabGroup").addEventListener("change", async () => renderSharing(await send({ cmd: "sharing.setTabGroup", on: $("tabGroup").checked })));
+$("unshareOnGroupLeave").addEventListener("change", async () => renderSharing(await send({ cmd: "sharing.setOptions", unshareOnGroupLeave: $("unshareOnGroupLeave").checked })));
 $("label").addEventListener("change", async () => renderSharing(await send({ cmd: "sharing.setLabel", label: $("label").value })));
 $("denyAdd").addEventListener("click", async () => {
   const v = $("denyInput").value.trim(); if (!v) return;
