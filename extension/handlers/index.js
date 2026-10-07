@@ -25,70 +25,85 @@ function tabInfo(t) {
 }
 
 // ---------------------------------------------------------------------------
-// Frames. Page tools run in the tab's top frame unless the agent passes a frameId
-// (from list_frames / get_dom_snapshot); then they run in that one frame — including
-// cross-origin iframes (embedded forms, widgets), which neither page JS nor CDP's
-// top-level eval can reach. Host permissions already cover every frame, so this
-// needs no new permission and no debugger.
+// Pinned documents. Every page tool acts on ONE document that was probed, judged by
+// consent.evaluateFrame and then targeted by its documentId — for the top frame exactly
+// like for child frames (cross-origin iframes: embedded forms, widgets — which neither
+// page JS nor CDP's top-level eval can reach). Host permissions already cover every
+// frame, so this needs no new permission and no debugger.
 //
-// Safety: the top frame keeps its in-page authHost re-check. A child frame is
-// instead PINNED: probed once, judged by consent.evaluateFrame (page still on the
-// authorized origin, frame origin passes the origin filter), then targeted by its
-// documentId. A document never changes origin and dies with its page, so if the
-// frame navigates or the tab drifts the injection simply fails — no in-page guard
-// needed.
+// Why a documentId and not an in-page "location.host == the host the gate saw" check: a
+// document never changes origin and dies with its page, so if the page navigates between
+// the check and the action the injection simply fails — it can never land on a different
+// (possibly blocked) origin. The old host comparison did the same job only when the host
+// could not legitimately change; with lock-to-domain off it produced false ORIGIN_DRIFT on
+// every redirect, and it needed a copy of the check inside every tool.
+//
+// `pin` (args._pin, set by the gate) is the host the tab was authorized on, or undefined
+// when lock-to-domain is off: then only the origin filter applies to the page and frames.
 
 // Runs inside a frame: what it is, and which top-level page it lives in.
-// Self-contained (serialized by chrome.scripting).
+// Self-contained (serialized by chrome.scripting). `ancestors` are the intermediate parents
+// (nearest first, the top-level page excluded); `top` is the top-level page's origin.
 function probeFrame() {
-  const a = location.ancestorOrigins;
+  const a = location.ancestorOrigins ? Array.from(location.ancestorOrigins) : [];
   return {
-    url: location.href, origin: location.origin, top: a && a.length ? a[a.length - 1] : location.origin,
-    depth: a ? a.length : 0, title: document.title, width: innerWidth, height: innerHeight,
+    url: location.href, origin: location.origin, top: a.length ? a[a.length - 1] : location.origin,
+    ancestors: a.slice(0, -1),
+    depth: a.length, title: document.title, width: innerWidth, height: innerHeight,
   };
 }
 
 // Consent verdict for one probed frame (the top frame included).
-function frameVerdict(state, authHost, f) {
-  return evaluateFrame(state, { authHost, topHost: hostOf(f.top), frameHost: hostOf(f.origin) });
+function frameVerdict(state, pin, f) {
+  return evaluateFrame(state, {
+    pin, topHost: hostOf(f.top), frameHost: hostOf(f.origin), frameUrlHost: hostOf(f.url),
+    ancestorHosts: (f.ancestors || []).map(hostOf),
+  });
+}
+
+// executeScript with a readable error: a call that lands on a document that has just been
+// replaced fails here, which is the safe outcome.
+async function exec(target, details) {
+  try { return await chrome.scripting.executeScript({ target, ...details }); }
+  catch (e) { throw err("SCRIPT_ERROR", `${e?.message ?? e} (the page may have navigated or closed during the call - retry)`); }
 }
 
 // Every frame of a shared tab the consent policy lets the agent see, top first.
 // Frames whose origin is filtered out are omitted, like unshared tabs; a drifted
 // top-level page refuses the whole call.
-async function framesOf(tabId, authHost) {
-  const results = await chrome.scripting.executeScript({ target: { tabId, allFrames: true }, func: probeFrame });
+async function framesOf(tabId, pin) {
+  const results = await exec({ tabId, allFrames: true }, { func: probeFrame });
   const state = await getConsentState();
   const frames = [];
   for (const r of results || []) {
     if (!r?.result) continue;
-    const d = frameVerdict(state, authHost, r.result);
+    const d = frameVerdict(state, pin, r.result);
     if (d.code === "ORIGIN_DRIFT") throw err(d.code, d.message);
     if (d.allow) frames.push({ frameId: r.frameId, documentId: r.documentId, ...r.result });
   }
   return frames.sort((a, b) => (a.frameId === 0 ? -1 : b.frameId === 0 ? 1 : 0));
 }
 
-// Probe + judge one child frame and return its documentId.
-async function pinFrame(tabId, frameId, authHost) {
+// Probe + judge one frame (0 = the page itself) and return its documentId.
+async function pinFrame(tabId, frameId, pin) {
   if (!Number.isInteger(frameId) || frameId < 0) throw err("INVALID_ARGS", "frameId must be a non-negative integer (from list_frames)");
-  let r;
-  try { [r] = await chrome.scripting.executeScript({ target: { tabId, frameIds: [frameId] }, func: probeFrame }); } catch {}
-  if (!r?.result) throw Object.assign(err("INVALID_ARGS", `no frame ${frameId} in this tab (it may have closed) — call list_frames`), { frameGone: true });
-  const d = frameVerdict(await getConsentState(), authHost, r.result);
+  let r, why = "";
+  try { [r] = await chrome.scripting.executeScript({ target: { tabId, frameIds: [frameId] }, func: probeFrame }); } catch (e) { why = e?.message ?? String(e); }
+  if (!r?.result) {
+    if (frameId === 0) throw Object.assign(err("SCRIPT_ERROR", `can't read this page${why ? `: ${why}` : ""}`), { transient: true });
+    throw Object.assign(err("INVALID_ARGS", `no frame ${frameId} in this tab (it may have closed) - call list_frames`), { frameGone: true, transient: true });
+  }
+  const d = frameVerdict(await getConsentState(), pin, r.result);
   if (!d.allow) throw err(d.code, d.message);
   return r.documentId;
 }
 
-// Where a tool's injected function runs: the top frame, re-checked in-page against
-// authHost; or one pinned child document, which needs no in-page check (authHost
-// null). Handlers pass `authHost` from here as their injected func's guard arg.
+// Where a tool's injected function runs: one pinned document (the page, or a child frame).
 async function injectionTarget(args) {
   const tabId = await resolveTabId(args);
-  const authHost = args._authHost ?? null;
-  if (!args.frameId) return { tabId, target: { tabId }, authHost };
-  const documentId = await pinFrame(tabId, args.frameId, authHost);
-  return { tabId, frameId: args.frameId, target: { tabId, documentIds: [documentId] }, authHost: null };
+  const frameId = args.frameId || 0;
+  const documentId = await pinFrame(tabId, frameId, args._pin);
+  return { tabId, frameId, target: { tabId, documentIds: [documentId] } };
 }
 
 // NOTE: list_tabs / get_active_tab are handled entirely in background.js
@@ -131,28 +146,32 @@ export const HANDLERS = {
         clearTimeout(timer);
       };
       const finish = (fn, v) => { if (settled) return; settled = true; cleanup(); fn(v); };
-      const onUpd = (id, info) => { if (id === tabId && info.status === "complete") finish(resolve); };
+      const onUpd = (id, info) => { if (id === tabId && info.status === "complete") finish(resolve, "complete"); };
       const onRem = (id) => { if (id === tabId) finish(reject, err("TAB_NOT_FOUND", "tab closed during navigation")); };
       const timer = setTimeout(() => finish(resolve, "deadline"), 15000);
       chrome.tabs.onUpdated.addListener(onUpd);
       chrome.tabs.onRemoved.addListener(onRem);
     });
     await chrome.tabs.update(tabId, { url: args.url });
-    await done;
-    return tabInfo(await chrome.tabs.get(tabId));
+    const outcome = await done;
+    const info = tabInfo(await chrome.tabs.get(tabId));
+    // The deadline is not a failure of the navigation itself (slow SPAs, consoles that never
+    // go idle), but it must not be reported as "complete" either: say what happened.
+    return outcome === "complete" ? { ...info, completed: true }
+      : { ...info, completed: false, note: "still loading after 15s; use wait_for (selector / urlContains / loadState) for what you need" };
   },
 
   async get_page_content(args) {
     const t = await injectionTarget(args);
     const format = args?.format ?? "text";
-    const maxChars = args?.maxChars ?? 200000;
-    const results = await chrome.scripting.executeScript({
-      target: t.target,
-      args: [format, t.authHost],
-      func: (fmt, authHost) => {
-        // TOCTOU re-check IN-PAGE: a shared tab can self-navigate between gate time
-        // and now; refuse to read the wrong origin. (MAIN world, kept inline.)
-        if (authHost) { const h = (location.hostname || "").toLowerCase().replace(/\.$/, ""); if (h !== authHost) return { __originMismatch: true }; }
+    // 0 used to mean "no limit": a huge DOM then exceeded the native-messaging frame cap and
+    // the reply was dropped (a misleading TIMEOUT). Hard-cap it instead.
+    const HARD = 8_000_000;
+    const asked = args?.maxChars ?? 200000;
+    const maxChars = asked > 0 ? Math.min(asked, HARD) : HARD;
+    const results = await exec(t.target, {
+      args: [format],
+      func: (fmt) => {
         if (fmt === "html") return document.documentElement.innerHTML;
         if (fmt === "outerHTML") return document.documentElement.outerHTML;
         if (fmt === "textContent") return document.body ? document.body.textContent : "";
@@ -160,20 +179,15 @@ export const HANDLERS = {
       },
     });
     const raw = results?.[0]?.result;
-    if (raw && typeof raw === "object" && raw.__originMismatch) throw err("ORIGIN_DRIFT", "tab navigated away from the authorized origin");
     const text = typeof raw === "string" ? raw : "";
-    return {
-      format,
-      truncated: maxChars > 0 && text.length > maxChars,
-      content: maxChars > 0 ? text.slice(0, maxChars) : text,
-    };
+    return { format, truncated: text.length > maxChars, content: text.slice(0, maxChars) };
   },
 
   async execute_script(args) {
     // CDP evaluates in the top frame only, so a child frame always runs via
     // chrome.scripting: an explicit engine:"cdp" is refused, developer mode's
     // force-CDP quietly doesn't apply (the result's `via` says what ran).
-    if (args.frameId && args.engine === "cdp") throw err("INVALID_ARGS", "engine 'cdp' can't target a child frame — use engine 'auto' or 'scripting' with frameId");
+    if (args.frameId && args.engine === "cdp") throw err("INVALID_ARGS", "engine 'cdp' can't target a child frame - use engine 'auto' or 'scripting' with frameId");
     const t = await injectionTarget(args);
     const tabId = t.tabId;
     // Engine selection (PART 4). _engine/_allowCdp are injected by background's
@@ -181,14 +195,13 @@ export const HANDLERS = {
     // CDP fallback only when CSP blocks AND the user opted in.
     const engine = t.frameId ? "scripting" : args._engine === "cdp" || args._engine === "scripting" ? args._engine : "auto";
     const allowCdp = !!args._allowCdp;
-    const authHost = t.authHost;
     const callArgs = args.args ?? [];
 
-    if (engine === "cdp") return cdpEval(tabId, args.code, callArgs, authHost, { hold: !!args._cdpAlways });
+    if (engine === "cdp") return cdpEval(tabId, args.code, callArgs, args._pin, { hold: !!args._cdpAlways });
 
     const runScripting = async () => {
-      // Runs in the page's MAIN world. Arbitrary-string eval is subject to the
-      // PAGE's CSP; on strict-CSP sites it surfaces cleanly as CSP_BLOCKED. The
+      // Runs in the page's MAIN world, in the pinned document. Arbitrary-string eval is
+      // subject to the PAGE's CSP; on strict-CSP sites it surfaces cleanly as CSP_BLOCKED. The
       // CSP-proof fallback is CDP (cdpEval) when the user opts in; the real
       // roadmap fix is chrome.userScripts. (ISOLATED world was removed: extension
       // MV3 CSP forbids eval there, so it could never succeed.)
@@ -197,12 +210,9 @@ export const HANDLERS = {
         results = await chrome.scripting.executeScript({
           target: t.target,
           world: "MAIN",
-          args: [args.code, callArgs, authHost],
-          func: (code, callArgs, authHost) => {
+          args: [args.code, callArgs],
+          func: (code, callArgs) => {
             try {
-              // TOCTOU re-check IN-PAGE: a shared tab can self-navigate between gate
-              // time and now; refuse to execute in the wrong origin. (MAIN world, inline.)
-              if (authHost) { const h = (location.hostname || "").toLowerCase().replace(/\.$/, ""); if (h !== authHost) return { __originMismatch: true }; }
               const fn = new Function("args", `return (async () => { ${code} })(args)`);
               return Promise.resolve(fn(callArgs)).then(
                 (value) => ({ ok: true, value }),
@@ -218,7 +228,6 @@ export const HANDLERS = {
       }
       const wrapped = results?.[0]?.result;
       if (!wrapped) throw err("SCRIPT_ERROR", "no result frame (target unavailable?)");
-      if (wrapped.__originMismatch) throw err("ORIGIN_DRIFT", "tab navigated away from the authorized origin");
       if (!wrapped.ok) {
         const code = /content security policy|unsafe-eval|EvalError/i.test(wrapped.error) ? "CSP_BLOCKED" : "SCRIPT_ERROR";
         throw err(code, wrapped.error);
@@ -235,12 +244,12 @@ export const HANDLERS = {
     try {
       return await runScripting();
     } catch (e) {
-      if (t.frameId && e?.code === "CSP_BLOCKED") throw err("CSP_BLOCKED", `${e.message} — this frame's CSP blocks eval and CDP can't reach child frames; use get_dom_snapshot / click / type / get_page_content with frameId (CSP-safe)`);
+      if (t.frameId && e?.code === "CSP_BLOCKED") throw err("CSP_BLOCKED", `${e.message} - this frame's CSP blocks eval and CDP can't reach child frames; use get_dom_snapshot / click / type / get_page_content with frameId (CSP-safe)`);
       // "auto": on a CSP block, fall back to CDP if the user opted in; otherwise
       // surface CSP_BLOCKED with a hint pointing at the opt-in.
       if (engine === "auto" && e?.code === "CSP_BLOCKED") {
-        if (allowCdp) return cdpEval(tabId, args.code, callArgs, authHost, { hold: false });
-        throw err("CSP_BLOCKED", `${e.message} — enable 'Allow CDP eval' in the Tabduct popup and retry`);
+        if (allowCdp) return cdpEval(tabId, args.code, callArgs, args._pin, { hold: false });
+        throw err("CSP_BLOCKED", `${e.message} - enable 'Allow CDP eval' in the Tabduct popup and retry`);
       }
       throw e;
     }
@@ -249,12 +258,12 @@ export const HANDLERS = {
   async screenshot(args) {
     const tabId = await resolveTabId(args);
     let tab = await chrome.tabs.get(tabId);
-    const authHost = args._authHost ?? null;
+    const pin = args._pin;
     const format = args?.format === "jpeg" ? "jpeg" : "png";
     const mimeType = format === "jpeg" ? "image/jpeg" : "image/png";
     // captureVisibleTab only sees the window's ACTIVE tab.
     if (!tab.active) {
-      if (!args?.activate) throw err("INVALID_ARGS", `tab ${tabId} is not active; captureVisibleTab only sees the active tab — pass activate:true or activate_tab first`);
+      if (!args?.activate) throw err("INVALID_ARGS", `tab ${tabId} is not active; captureVisibleTab only sees the active tab - pass activate:true or activate_tab first`);
       await chrome.tabs.update(tabId, { active: true });
       await chrome.windows.update(tab.windowId, { focused: true });
       tab = await chrome.tabs.get(tabId);
@@ -262,7 +271,7 @@ export const HANDLERS = {
 
     // Optionally scroll a selector/offset into view first, then capture the viewport.
     if (args.selector || typeof args.scrollTo === "number") {
-      await scrollTab(tabId, authHost, args.selector || null, typeof args.scrollTo === "number" ? args.scrollTo : null);
+      await scrollTab(tabId, pin, args.selector || null, typeof args.scrollTo === "number" ? args.scrollTo : null);
     }
     const opts = { format };
     if (format === "jpeg" && typeof args?.quality === "number") opts.quality = args.quality;
@@ -272,10 +281,11 @@ export const HANDLERS = {
     // authorized tab is the active one immediately before AND after the capture.
     const activeIs = async () => (await chrome.tabs.query({ active: true, windowId: tab.windowId }))[0]?.id;
     if (await activeIs() !== tabId) throw err("INTERNAL", "target tab is not the active tab; retry");
-    // TOCTOU: the shared tab could have self-navigated to a sensitive/unshared origin
-    // between the consent gate and now. captureVisibleTab grabs whatever is currently
-    // rendered, so re-check the authorized origin in-page right before capturing.
-    await assertVisibleOrigin(tabId, authHost);
+    // The capture is of PIXELS: whatever is rendered goes to the agent, including visible
+    // iframes. Re-check the page (it could have self-navigated since the gate) AND refuse
+    // when the page shows a frame of a site the origin filter excludes. A manual capture the
+    // USER triggers from the popup (_manual) is theirs to take.
+    if (!args._manual) await assertCapturable(tabId, pin);
     const dataUrl = await chrome.tabs.captureVisibleTab(tab.windowId, opts);
     if (await activeIs() !== tabId) throw err("INTERNAL", "active tab changed during capture; retry");
     return { mimeType, dataUrl };
@@ -284,9 +294,8 @@ export const HANDLERS = {
   // CSP-safe interaction/wait tools (PART 1) + console capture (PART 2).
   // All run via chrome.scripting.executeScript({target, func, args}) — i.e.
   // INJECTED FUNCTIONS, never string eval — so page CSP (which blocks string
-  // eval) does not stop them. get_page_content already proves this pattern.
-  // Each injected func re-checks the authorized origin (_authHost) in-page to
-  // close the gate→inject TOCTOU window; a mismatch becomes ORIGIN_DRIFT.
+  // eval) does not stop them. Each runs in the document that injectionTarget pinned
+  // (probed, consent-checked, targeted by documentId).
 
   async wait_for(args) {
     // At least one condition is required (no field is individually required in
@@ -296,44 +305,45 @@ export const HANDLERS = {
     const _t = Number(args.timeoutMs); const timeoutMs = Math.min(_t > 0 ? _t : 10000, 25000); // default 10s, cap 25s
     const selector = args.selector || null, urlContains = args.urlContains || null, loadState = args.loadState || null;
     const start = Date.now();
-    // Poll ~every 250ms (bounded by timeoutMs). Each poll is one executeScript.
-    // A child frame is re-pinned every poll: waiting often spans the frame's own
-    // navigation (a submitted form), which replaces its document — and a frame
-    // briefly between documents is not an error, just "not yet".
+    // Poll ~every 250ms (bounded by timeoutMs). Each poll RE-PINS the document: waiting often
+    // spans a redirect or the frame's own navigation (a submitted form), which replaces the
+    // document — a page/frame briefly between documents is not an error, just "not yet" (and the
+    // new document is judged afresh: lock-to-domain on → ORIGIN_DRIFT, off → only the filter).
+    let lastErr = null;
     const check = async () => {
       let t;
-      try { t = await injectionTarget(args); } catch (e) { if (e.frameGone) return null; throw e; }
-      const results = await chrome.scripting.executeScript({
-        target: t.target,
-        args: [selector, urlContains, loadState, t.authHost],
-        func: (sel, urlContains, loadState, authHost) => {
-          if (authHost) { const h = (location.hostname || "").toLowerCase().replace(/\.$/, ""); if (h !== authHost) return { __originMismatch: true }; }
-          if (sel && document.querySelector(sel)) return { matched: true };
-          if (urlContains && location.href.includes(urlContains)) return { matched: true };
-          if (loadState && document.readyState === loadState) return { matched: true };
-          return { matched: false };
-        },
-      }).catch((e) => { if (t.frameId) return null; throw e; }); // pinned document replaced mid-poll
+      try { t = await injectionTarget(args); } catch (e) { if (e.transient) { lastErr = e.message; return null; } throw e; }
+      let results;
+      try {
+        results = await chrome.scripting.executeScript({
+          target: t.target,
+          args: [selector, urlContains, loadState],
+          func: (sel, urlContains, loadState) => {
+            if (sel) { let el; try { el = document.querySelector(sel); } catch (e) { return { __badselector: String((e && e.message) || e) }; } if (el) return { matched: true }; }
+            if (urlContains && location.href.includes(urlContains)) return { matched: true };
+            if (loadState && document.readyState === loadState) return { matched: true };
+            return { matched: false };
+          },
+        });
+      } catch (e) { lastErr = e?.message ?? String(e); return null; } // pinned document replaced mid-poll
       return results?.[0]?.result;
     };
     while (Date.now() - start < timeoutMs) {
       const r = await check();
-      if (r && typeof r === "object" && r.__originMismatch) throw err("ORIGIN_DRIFT", "tab navigated away from the authorized origin");
+      if (r && r.__badselector) throw err("INVALID_ARGS", `invalid CSS selector: ${r.__badselector}`);
       if (r && r.matched) return { matched: true, waitedMs: Date.now() - start };
       await new Promise((res) => setTimeout(res, 250));
     }
-    throw err("TIMEOUT", `wait_for timed out after ${timeoutMs}ms`);
+    throw err("TIMEOUT", `wait_for timed out after ${timeoutMs}ms${lastErr ? ` (last error: ${lastErr})` : ""}`);
   },
 
   async click(args) {
     if (!args.selector) throw err("INVALID_ARGS", "click requires a selector");
     const t = await injectionTarget(args);
-    const results = await chrome.scripting.executeScript({
-      target: t.target,
-      args: [args.selector, t.authHost],
-      func: (sel, authHost) => {
-        if (authHost) { const h = (location.hostname || "").toLowerCase().replace(/\.$/, ""); if (h !== authHost) return { __originMismatch: true }; }
-        const el = document.querySelector(sel);
+    const results = await exec(t.target, {
+      args: [args.selector],
+      func: (sel) => {
+        let el; try { el = document.querySelector(sel); } catch (e) { return { __badselector: String((e && e.message) || e) }; }
         if (!el) return { __notfound: true };
         if (typeof el.click !== "function") return { __notclickable: true };
         el.scrollIntoView({ block: "center" });
@@ -343,7 +353,7 @@ export const HANDLERS = {
     });
     const r = results?.[0]?.result;
     if (!r) throw err("SCRIPT_ERROR", "no result frame (target unavailable?)");
-    if (r.__originMismatch) throw err("ORIGIN_DRIFT", "tab navigated away from the authorized origin");
+    if (r.__badselector) throw err("INVALID_ARGS", `invalid CSS selector: ${r.__badselector}`);
     if (r.__notfound) throw err("SCRIPT_ERROR", `no element matches ${args.selector}`);
     if (r.__notclickable) throw err("SCRIPT_ERROR", `element ${args.selector} is not clickable`);
     return { clicked: true, selector: args.selector };
@@ -354,12 +364,10 @@ export const HANDLERS = {
     if (typeof args.text !== "string") throw err("INVALID_ARGS", "type requires text");
     const clear = !!args.clear;
     const t = await injectionTarget(args);
-    const results = await chrome.scripting.executeScript({
-      target: t.target,
-      args: [args.selector, args.text, clear, t.authHost],
-      func: (sel, text, clear, authHost) => {
-        if (authHost) { const h = (location.hostname || "").toLowerCase().replace(/\.$/, ""); if (h !== authHost) return { __originMismatch: true }; }
-        const el = document.querySelector(sel);
+    const results = await exec(t.target, {
+      args: [args.selector, args.text, clear],
+      func: (sel, text, clear) => {
+        let el; try { el = document.querySelector(sel); } catch (e) { return { __badselector: String((e && e.message) || e) }; }
         if (!el) return { __notfound: true };
         try { el.focus?.(); } catch {}
         try { el.scrollIntoView?.({ block: "center" }); } catch {}
@@ -373,35 +381,55 @@ export const HANDLERS = {
           if (setter) setter.call(el, next); else el.value = next;
           el.dispatchEvent(new Event("input", { bubbles: true }));
           el.dispatchEvent(new Event("change", { bubbles: true }));
+        } else if (tag === "select") {
+          // Choose the option by value or visible text — never rewrite the element's children.
+          const want = text.trim();
+          const opt = [...el.options].find((o) => o.value === text) || [...el.options].find((o) => o.text.trim() === want);
+          if (!opt) return { __nooption: true, options: [...el.options].slice(0, 30).map((o) => o.text.trim()) };
+          el.value = opt.value;
+          el.dispatchEvent(new Event("input", { bubbles: true }));
+          el.dispatchEvent(new Event("change", { bubbles: true }));
+        } else if (el.isContentEditable) {
+          // Editing through the browser's own insertText path fires beforeinput/input like a user would.
+          const sel2 = getSelection();
+          const range = document.createRange();
+          range.selectNodeContents(el);
+          if (!clear) range.collapse(false);
+          sel2.removeAllRanges(); sel2.addRange(range);
+          let done = false;
+          try { done = document.execCommand("insertText", false, text); } catch {}
+          if (!done) {
+            el.textContent = clear ? text : (el.textContent || "") + text;
+            el.dispatchEvent(new InputEvent("input", { bubbles: true, data: text, inputType: "insertText" }));
+          }
         } else {
-          // contenteditable / generic element: set textContent + fire input.
-          el.textContent = clear ? text : (el.textContent || "") + text;
-          el.dispatchEvent(new InputEvent("input", { bubbles: true, data: text, inputType: "insertText" }));
+          return { __noteditable: true, tag };
         }
         return { ok: true };
       },
     });
     const r = results?.[0]?.result;
     if (!r) throw err("SCRIPT_ERROR", "no result frame (target unavailable?)");
-    if (r.__originMismatch) throw err("ORIGIN_DRIFT", "tab navigated away from the authorized origin");
+    if (r.__badselector) throw err("INVALID_ARGS", `invalid CSS selector: ${r.__badselector}`);
     if (r.__notfound) throw err("SCRIPT_ERROR", `no element matches ${args.selector}`);
+    if (r.__nooption) throw err("INVALID_ARGS", `no <option> matches ${JSON.stringify(args.text)}; options: ${r.options.join(" | ")}`);
+    if (r.__noteditable) throw err("INVALID_ARGS", `<${r.tag}> is not editable - type works on input, textarea, select and contenteditable elements`);
     return { typed: true, selector: args.selector };
   },
 
   async get_dom_snapshot(args) {
     const t = await injectionTarget(args);
     const _m = Number(args.maxChars); const maxChars = Math.min(_m > 0 ? _m : 40000, 200000); // default 40000, hard cap 200000
-    const outline = (target, authHost) => chrome.scripting.executeScript({ target, args: [maxChars, authHost], func: outlineDom });
-    const r = (await outline(t.target, t.authHost))?.[0]?.result;
-    if (r && r.__originMismatch) throw err("ORIGIN_DRIFT", "tab navigated away from the authorized origin");
+    const outline = (target) => exec(target, { args: [maxChars], func: outlineDom });
+    const r = (await outline(t.target))?.[0]?.result;
     if (!r) return { snapshot: "", truncated: false };
     if (t.frameId || r.truncated) return r;
     // The top-level page: append each visible child frame's outline under a header
     // naming its frameId, so an embedded (often cross-origin) form shows up in the
     // one call an agent makes to find its targets. Frames are pinned by documentId
     // and consent-filtered by framesOf; one that vanishes meanwhile is just skipped.
-    const kids = (await framesOf(t.tabId, t.authHost)).filter((f) => f.frameId !== 0 && f.width > 0 && f.height > 0);
-    const outs = await Promise.all(kids.map((f) => outline({ tabId: t.tabId, documentIds: [f.documentId] }, null).catch(() => null)));
+    const kids = (await framesOf(t.tabId, args._pin)).filter((f) => f.frameId !== 0 && f.width > 0 && f.height > 0);
+    const outs = await Promise.all(kids.map((f) => outline({ tabId: t.tabId, documentIds: [f.documentId] }).catch(() => null)));
     const sections = [r.snapshot];
     kids.forEach((f, i) => {
       const s = outs[i]?.[0]?.result?.snapshot;
@@ -421,27 +449,24 @@ export const HANDLERS = {
     // injected monkeypatch below when CDP capture is off. The buffer is the top
     // frame's; a child frame always uses the injected hook.
     if (!t.frameId && cdpConsoleTabs.has(tabId)) {
-      // Origin re-check (the CDP buffer keeps filling across a navigation, so a
-      // drifted lock-to-domain tab could otherwise leak new-origin lines).
-      const authHost = args._authHost ?? null;
-      if (authHost) {
-        let h = null; try { h = (new URL((await chrome.tabs.get(tabId)).url).hostname || "").toLowerCase().replace(/\.$/, ""); } catch {}
-        if (h !== authHost) throw err("ORIGIN_DRIFT", "tab navigated away from the authorized origin");
-      }
+      // The CDP buffer keeps filling across a navigation, so re-check where the tab is NOW
+      // (and where it is headed) before handing anything over...
+      await assertNetOrigin(tabId, args._pin);
+      // ...and never hand over lines that came from a document of a filtered-out origin (a
+      // same-site iframe of a blocked host logs into the same buffer).
+      const state = await getConsentState();
       const buf = cdpLogs.get(tabId);
-      const logs = buf ? buf.slice() : [];
-      if (clear) cdpLogs.delete(tabId);
+      const logs = (buf ? buf : []).filter((e) => !e.url || !originBlocked(state, hostOf(e.url))).map(({ url, ...rest }) => rest);
+      if (clear) cdpLogs.set(tabId, []); // keep a (now empty) buffer: dropping it would silently stop the capture
       return { logs, source: "cdp", note: "captured via CDP (console + exceptions + browser log entries)" };
     }
     // MAIN world: we must patch the PAGE's console object (ISOLATED world has its
     // own console and would capture nothing). Re-installs on each call, so a
     // page navigation (which wipes the hook) is recovered automatically.
-    const results = await chrome.scripting.executeScript({
-      target: t.target,
+    const results = await exec(t.target, {
       world: "MAIN",
-      args: [clear, t.authHost],
-      func: (clear, authHost) => {
-        if (authHost) { const h = (location.hostname || "").toLowerCase().replace(/\.$/, ""); if (h !== authHost) return { __originMismatch: true }; }
+      args: [clear],
+      func: (clear) => {
         const MAX = 500;
         const installHook = () => {
           if (window.__tabductLogsInstalled) return;
@@ -461,13 +486,12 @@ export const HANDLERS = {
       },
     });
     const r = results?.[0]?.result;
-    if (r && r.__originMismatch) throw err("ORIGIN_DRIFT", "tab navigated away from the authorized origin");
     return { logs: r?.logs || [], source: "inject", note: "capture starts when first requested; earlier logs may be missing" };
   },
 
   async list_frames(args) {
     const tabId = await resolveTabId(args);
-    const frames = await framesOf(tabId, args._authHost ?? null);
+    const frames = await framesOf(tabId, args._pin);
     return {
       frames: frames.map(({ frameId, url, title, depth, width, height }) => ({ frameId, url, title, depth, width, height })),
       note: "frameId 0 is the page itself; pass another frameId to get_dom_snapshot/get_page_content/click/type/wait_for/execute_script/get_console_logs to act inside that frame",
@@ -482,8 +506,8 @@ export const HANDLERS = {
   // tools are "read" (allowed in read-only). Origin re-checked like get_console_logs.
   async list_network_requests(args) {
     const tabId = await resolveTabId(args);
-    if (!cdpConsoleTabs.has(tabId)) return { requests: [], source: "off", note: "network capture is off — enable 'Capture console, errors & network via CDP' in the Tabduct popup (Advanced)" };
-    await assertNetOrigin(tabId, args._authHost ?? null);
+    if (!cdpConsoleTabs.has(tabId)) return { requests: [], source: "off", note: "network capture is off - enable 'Capture console, errors & network via CDP' in the Tabduct popup (Advanced)" };
+    await assertNetOrigin(tabId, args._pin);
     const m = cdpNet.get(tabId);
     let list = m ? [...m.values()] : [];
     const { urlContains, method, resourceType, statusMin } = args;
@@ -494,9 +518,10 @@ export const HANDLERS = {
     // Denylist over HISTORICAL buffered data (M1): the CDP buffer keeps filling across
     // navigations, so with lockToDomain off a shared tab may have visited a denied
     // origin — never hand that origin's traffic to the agent, even after it navigated
-    // back to an allowed one. (assertNetOrigin only guards the CURRENT url.)
+    // back to an allowed one. (assertNetOrigin only guards the CURRENT url.) A request that
+    // was redirected is judged by EVERY hop, not just where it ended up.
     const cstate = await getConsentState();
-    list = list.filter((r) => !originBlocked(cstate, hostOf(r.url)));
+    list = list.filter((r) => !recordBlocked(cstate, r));
     const total = list.length;
     const limit = Math.min(Math.max(Number(args.limit) || 50, 1), 500);
     const requests = list.slice(-limit).map(netSummary); // newest-last; take the newest `limit`
@@ -507,13 +532,13 @@ export const HANDLERS = {
   async get_network_request(args) {
     const tabId = await resolveTabId(args);
     if (!args.requestId || typeof args.requestId !== "string") throw err("INVALID_ARGS", "get_network_request requires a string requestId");
-    if (!cdpConsoleTabs.has(tabId)) throw err("CDP_NOT_PERMITTED", "network capture is off — enable 'Capture console, errors & network via CDP' in the Tabduct popup (Advanced)");
-    await assertNetOrigin(tabId, args._authHost ?? null);
+    if (!cdpConsoleTabs.has(tabId)) throw err("CDP_NOT_PERMITTED", "network capture is off - enable 'Capture console, errors & network via CDP' in the Tabduct popup (Advanced)");
+    await assertNetOrigin(tabId, args._pin);
     const rec = cdpNet.get(tabId)?.get(args.requestId);
     if (!rec) throw err("SCRIPT_ERROR", `no captured request with id ${args.requestId} (it may have been evicted from the buffer)`);
     // Denylist over historical buffered data (M1) — same reasoning as list_network_requests.
     const cstate = await getConsentState();
-    if (originBlocked(cstate, hostOf(rec.url))) throw err("ORIGIN_DENIED", "destination not allowed by consent policy");
+    if (recordBlocked(cstate, rec)) throw err("ORIGIN_DENIED", "destination not allowed by consent policy");
     let body = null, bodyBase64 = false, bodyTruncated = false, bodyError = null;
     if (args.includeBody !== false) {
       try {
@@ -530,10 +555,8 @@ export const HANDLERS = {
 
 // get_dom_snapshot's injected walker (self-contained: serialized by chrome.scripting).
 // Emits a compact outline of the visible interactive/structural elements — enough
-// to pick click/type selectors on CSP sites without arbitrary JS. authHost is the
-// top frame's in-page origin re-check; null for a pinned child frame.
-function outlineDom(maxChars, authHost) {
-  if (authHost) { const h = (location.hostname || "").toLowerCase().replace(/\.$/, ""); if (h !== authHost) return { __originMismatch: true }; }
+// to pick click/type selectors on CSP sites without arbitrary JS.
+function outlineDom(maxChars) {
   const SEL = "a,button,input,textarea,select,summary,[role],label,h1,h2,h3,h4,h5,h6,nav,form,fieldset,legend,optgroup,option,video,audio,canvas,table,thead,tbody,th,td,li,datalist,output,iframe";
   // Reasonably stable CSS selector: #id when unique, else a short nth-of-type path.
   const selFor = (el) => {
@@ -573,31 +596,47 @@ function outlineDom(maxChars, authHost) {
   return { snapshot: out, truncated };
 }
 
-// Origin re-check for the network tools: the CDP buffer keeps filling across a
-// navigation, so a drifted lock-to-domain tab could otherwise leak another origin's
-// traffic. Checks the committed URL AND a PENDING (not-yet-committed) navigation — during
-// a pending nav `tab.url` still shows the old authorized origin while CDP already buffers
-// requests for the new destination (a data-leak window). Mirrors the get_console_logs check.
-async function assertNetOrigin(tabId, authHost) {
-  if (!authHost) return;
+// Origin re-check for the CDP-buffer tools: the buffer keeps filling across a navigation,
+// so a tab that wandered off its shared origin (lock on) or onto a filtered-out origin
+// could otherwise leak that origin's traffic. Checks the committed URL AND a PENDING
+// (not-yet-committed) navigation — during a pending nav `tab.url` still shows the old
+// authorized origin while CDP already buffers requests for the new destination.
+async function assertNetOrigin(tabId, pin) {
   let tab = null;
   try { tab = await chrome.tabs.get(tabId); } catch {}
+  const state = await getConsentState();
   const cur = hostOf(tab?.url);
   const pending = tab?.pendingUrl ? hostOf(tab.pendingUrl) : null;
-  if (cur !== authHost || (pending && pending !== authHost)) throw err("ORIGIN_DRIFT", "tab navigated away from the authorized origin");
+  if (pin !== undefined && (cur !== pin || (pending && pending !== pin))) throw err("ORIGIN_DRIFT", "tab navigated away from the authorized origin");
+  if (originBlocked(state, cur) || (pending && originBlocked(state, pending))) throw err("ORIGIN_DENIED", "destination not allowed by consent policy");
 }
 
-// Origin re-check IN-PAGE, used right before a screenshot capture. captureVisibleTab is
-// not an injected function, so it can't fold the origin check into the action the way the
-// other tools do — this is the tightest TOCTOU guard available: verify the authorized
-// origin is still what's rendered immediately before grabbing the pixels.
-async function assertVisibleOrigin(tabId, authHost) {
-  if (!authHost) return;
-  const h = (await chrome.scripting.executeScript({
-    target: { tabId },
-    func: () => (location.hostname || "").toLowerCase().replace(/\.$/, ""),
-  }))?.[0]?.result;
-  if (h !== authHost) throw err("ORIGIN_DRIFT", "tab navigated away from the authorized origin");
+// Before a screenshot: the page must still be the authorized one, and no VISIBLE frame may
+// belong to a site the origin filter excludes (its pixels would be in the image).
+async function assertCapturable(tabId, pin) {
+  const results = await exec({ tabId, allFrames: true }, { func: probeFrame });
+  const state = await getConsentState();
+  let sawTop = false;
+  for (const r of results || []) {
+    const f = r?.result;
+    if (!f) continue;
+    if (r.frameId === 0) {
+      sawTop = true;
+      const d = frameVerdict(state, pin, f);
+      if (!d.allow) throw err(d.code, d.message);
+    } else if (f.width > 0 && f.height > 0) {
+      const d = frameVerdict(state, undefined, f);
+      if (!d.allow) throw err("ORIGIN_DENIED", "the page shows a frame of a site excluded by the origin filter; refusing to capture it");
+    }
+  }
+  if (!sawTop) throw err("SCRIPT_ERROR", "can't verify the page before capturing it");
+}
+
+// A buffered network record is blocked when ANY hop of it (final URL or an earlier redirect
+// hop) is on a filtered-out origin.
+function recordBlocked(state, rec) {
+  if (originBlocked(state, hostOf(rec.url))) return true;
+  return (rec.redirects || []).some((h) => originBlocked(state, hostOf(h.url)));
 }
 
 // Compact per-request summary for list_network_requests (drops headers; those live
@@ -613,18 +652,21 @@ function netSummary(r) {
   };
 }
 
-// Scroll a selector/offset into view before a viewport capture.
-async function scrollTab(tabId, authHost, selector, y) {
-  const r = (await chrome.scripting.executeScript({
-    target: { tabId }, args: [selector, y, authHost],
-    func: (sel, y, authHost) => {
-      if (authHost) { const h = (location.hostname || "").toLowerCase().replace(/\.$/, ""); if (h !== authHost) return { __originMismatch: true }; }
-      if (sel) { const el = document.querySelector(sel); if (!el) return { __notfound: true }; el.scrollIntoView({ block: "center", inline: "center" }); }
-      else if (y != null) window.scrollTo(0, y);
+// Scroll a selector/offset into view before a viewport capture (in the pinned top document).
+async function scrollTab(tabId, pin, selector, y) {
+  const documentId = await pinFrame(tabId, 0, pin);
+  const r = (await exec({ tabId, documentIds: [documentId] }, {
+    args: [selector, y],
+    func: (sel, y) => {
+      if (sel) {
+        let el; try { el = document.querySelector(sel); } catch (e) { return { __badselector: String((e && e.message) || e) }; }
+        if (!el) return { __notfound: true };
+        el.scrollIntoView({ block: "center", inline: "center" });
+      } else if (y != null) window.scrollTo(0, y);
       return { ok: true };
     },
   }))?.[0]?.result;
-  if (r?.__originMismatch) throw err("ORIGIN_DRIFT", "tab navigated away from the authorized origin");
+  if (r?.__badselector) throw err("INVALID_ARGS", `invalid CSS selector: ${r.__badselector}`);
   if (r?.__notfound) throw err("SCRIPT_ERROR", `no element matches ${selector}`);
   await new Promise((res) => setTimeout(res, 150)); // let it paint/settle
 }
@@ -650,6 +692,9 @@ const cdpInFlight = new Map(); // tabId -> in-flight cdpEval count (folds into c
 // exported read-only-by-convention so background's reconcileCdpConsole can diff
 // the shared set against the captured set (it never mutates it directly).
 export const cdpConsoleTabs = new Set(); // tabIds we hold attached for console capture
+// Tabs whose "is being debugged" banner the USER dismissed: capture is not re-armed on them
+// until a CDP setting is changed deliberately (background clears this set then).
+export const cdpUserCancelled = new Set();
 const cdpLogs = new Map(); // tabId -> ring buffer array (cap 500 entries)
 // Network capture (PART 7): per-tab Map(requestId -> record), insertion-ordered so
 // listing newest-last is just iteration order. Filled by the Network.* branch of
@@ -658,7 +703,23 @@ const cdpLogs = new Map(); // tabId -> ring buffer array (cap 500 entries)
 const cdpNet = new Map(); // tabId -> Map(requestId -> record)
 const NET_CAP = 300;
 
-export async function cdpEval(tabId, code, callArgs, authHost, { hold } = {}) {
+// The guard that runs INSIDE the page, in the same Runtime.evaluate as the agent's code (so a
+// navigation can't slip in between a separate check and the payload). `pin` is the host the tab
+// is pinned to (lock-to-domain on; null = a blank page), or undefined when the lock is off: then
+// the page must instead pass the origin filter, which is embedded in the expression. Uses the
+// document's ORIGIN (not location.hostname) so a blob: document of a blocked site is judged by
+// its real site. Returns the JS source of the guard (a PURE function - unit-tested).
+export function cdpGuardSource(pin, state) {
+  const pinned = pin !== undefined;
+  const filter = pinned ? null : { mode: state?.originMode === "allow" ? "allow" : "block", rules: state?.denyOrigins || [] };
+  return `const __pinned=${pinned}, __pin=${JSON.stringify(pinned ? pin : null)}, __f=${JSON.stringify(filter)};` +
+    `let __h=""; try { __h=new URL(location.origin).hostname.toLowerCase().replace(/\\.$/,""); } catch(e) {} ` +
+    `if(__pinned && __h!==(__pin===null?"":__pin)) return {__tabduct_drift:true}; ` +
+    `if(__f){ const __hit=__f.rules.some((r)=>r.startsWith("*.")?(__h===r.slice(2)||__h.endsWith("."+r.slice(2))):__h===r); ` +
+    `if(__f.mode==="allow"?(__h===""||!__hit):(__h!==""&&__hit)) return {__tabduct_denied:true}; } `;
+}
+
+export async function cdpEval(tabId, code, callArgs, pin, { hold } = {}) {
   if (!chrome.debugger) throw err("CDP_NOT_PERMITTED", "debugger API unavailable");
   if (!(await chrome.permissions.contains({ permissions: ["debugger"] }))) throw err("CDP_NOT_PERMITTED", "debugger permission not granted");
   // Attach (idempotent): "Another debugger is already attached" (us re-attaching
@@ -675,7 +736,7 @@ export async function cdpEval(tabId, code, callArgs, authHost, { hold } = {}) {
     // allowUnsafeEvalBlockedByCSP lets eval run even under a strict page CSP. The
     // agent's code `return`s its value inside the async IIFE; `args` is by name.
     const r = await chrome.debugger.sendCommand({ tabId }, "Runtime.evaluate", {
-      expression: `(async()=>{ const __ah=${JSON.stringify(authHost)}; if(__ah){ const h=(location.hostname||"").toLowerCase().replace(/\\.$/,""); if(h!==__ah) return {__tabduct_originMismatch:true}; } const args = ${JSON.stringify(callArgs)}; ${code} })()`,
+      expression: `(async()=>{ ${cdpGuardSource(pin, await getConsentState())} const args = ${JSON.stringify(callArgs)}; ${code} })()`,
       awaitPromise: true, returnByValue: true, allowUnsafeEvalBlockedByCSP: true, userGesture: false,
     });
     if (r?.exceptionDetails) {
@@ -683,8 +744,9 @@ export async function cdpEval(tabId, code, callArgs, authHost, { hold } = {}) {
       throw err("SCRIPT_ERROR", msg);
     }
     const value = r?.result?.value;
-    if (value && typeof value === "object" && value.__tabduct_originMismatch) {
+    if (value && typeof value === "object" && (value.__tabduct_drift || value.__tabduct_denied)) {
       cdpAttached.delete(tabId); // drift → drop any force-hold so the finally detaches this tab
+      if (value.__tabduct_denied) throw err("ORIGIN_DENIED", "destination not allowed by consent policy");
       throw err("ORIGIN_DRIFT", "tab navigated away from the authorized origin");
     }
     // Same 8MB cap as the scripting path so a huge return can't drop the reply.
@@ -803,13 +865,13 @@ function ensureCdpListeners() {
     if (method === "Runtime.consoleAPICalled") {
       const t = params.type; // log|warning|error|info|debug|…
       const level = t === "warning" ? "warn" : (t === "error" ? "error" : (t === "info" ? "info" : (t === "debug" ? "debug" : "log")));
-      entry = { level, source: "console", ts: Date.now(), text: ((params.args || []).map(fmtCdpArg).join(" ")).slice(0, 1000) };
+      entry = { level, source: "console", ts: Date.now(), text: ((params.args || []).map(fmtCdpArg).join(" ")).slice(0, 1000), url: params.stackTrace?.callFrames?.[0]?.url };
     } else if (method === "Runtime.exceptionThrown") {
       const d = params.exceptionDetails;
-      entry = { level: "error", source: "exception", ts: Date.now(), text: String(d?.exception?.description || d?.text || "uncaught exception").slice(0, 1000) };
+      entry = { level: "error", source: "exception", ts: Date.now(), text: String(d?.exception?.description || d?.text || "uncaught exception").slice(0, 1000), url: d?.url || d?.stackTrace?.callFrames?.[0]?.url };
     } else if (method === "Log.entryAdded") {
       const e = params.entry || {};
-      entry = { level: e.level === "warning" ? "warn" : (e.level || "info"), source: e.source || "log", ts: Date.now(), text: String(e.text || "").slice(0, 1000) };
+      entry = { level: e.level === "warning" ? "warn" : (e.level || "info"), source: e.source || "log", ts: Date.now(), text: String(e.text || "").slice(0, 1000), url: e.url };
     } else return;
     const buf = cdpLogs.get(tabId);
     if (!buf) return; // not a tab we're capturing for (e.g. a cdpEval-only call)
@@ -827,6 +889,7 @@ ensureCdpListeners(); // register now if the debugger permission is already gran
 export async function startCdpConsole(tabId) {
   try {
     if (!chrome.debugger) return;
+    if (cdpUserCancelled.has(tabId)) return; // the user closed this tab's debugging banner
     if (!(await chrome.permissions.contains({ permissions: ["debugger"] }))) return;
     ensureCdpListeners(); // register the event buffer before enabling domains
     // Attach (idempotent): tolerate "already attached" (us in force/console mode
