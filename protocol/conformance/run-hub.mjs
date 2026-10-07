@@ -26,7 +26,7 @@ const BIG = "QUpE".repeat(600000); // ~2.4 MB base64 → exercises large-reply t
 
 let fails = 0, done = false;
 const procs = [];
-const guard = setTimeout(() => { console.error("HUB CONFORMANCE TIMEOUT (75s)"); finish(1); }, 75_000); guard.unref();
+const guard = setTimeout(() => { console.error("HUB CONFORMANCE TIMEOUT (110s)"); finish(1); }, 110_000); guard.unref();
 const ok = (c, m) => { if (!c) { console.error("  FAIL:", m); fails++; } else console.log("  ok:", m); };
 function finish(code) { if (done) return; done = true; clearTimeout(guard); for (const p of procs) { try { p.kill(); } catch {} } process.exit(code); }
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -44,13 +44,14 @@ function startInstance(instanceId, gen = "", extra = {}) {
     if (t === "list_tabs") ok({ tabs: [{ id: 1, title: `tab-${instanceId}${gen}`, url: "https://example.com", active: true }] });
     else if (t === "_td/revoke_all") { if (instanceId === "B") send({ replyTo: m.id, ok: false, error: { code: "INTERNAL", message: "boom" } }); else ok({ ok: true }); }
     else if (t === "_td/set_tier") ok({ ok: true });
+    else if (t === "_td/disconnect") { if (instanceId === "BAD") send({ replyTo: m.id, ok: false, error: { code: "UNKNOWN_TOOL", message: "old build" } }); else ok({ ok: true }); }
     else if (t === "get_active_tab") ok({ id: 7, title: `active-${instanceId}`, url: "https://example.com", active: true });
     else if (t === "navigate") ok({ id: 9, title: "nav", url: m.payload.args?.url, active: true });
     else if (t === "screenshot") ok({ mimeType: "image/png", dataUrl: `data:image/png;base64,${BIG}` });
     else send({ replyTo: m.id, ok: false, error: { code: "TAB_NOT_FOUND", message: "no" } });
   };
   const hostReq = (type, payload) => new Promise((res) => { const id = randomUUID(); pend.set(id, res); send({ type, id, payload }); });
-  return { proc, instanceId, invokes, kill: () => { try { proc.kill(); } catch {} }, open: () => hostReq("open", { port: 0, token: `tok-${instanceId}-${randomUUID()}`, protocolVersion: 0, instanceId, label: `L-${instanceId}`, ...extra }) };
+  return { proc, instanceId, invokes, req: hostReq, kill: () => { try { proc.kill(); } catch {} }, open: () => hostReq("open", { port: 0, token: `tok-${instanceId}-${randomUUID()}`, protocolVersion: 0, instanceId, label: `L-${instanceId}`, ...extra }) };
 }
 
 function rpc(body, { sessionId, token } = {}) {
@@ -208,10 +209,43 @@ const call = (name, args, sid, token) => rpc({ jsonrpc: "2.0", id: Math.floor(Ma
   const insts2 = toolResult(await call("list_instances", {}, sid, tAgent));
   ok(insts2?.instances?.length === 1 && insts2.instances[0].instanceId === "A", "after poll → 1 instance");
 
+  // Restart: the hub goes down while instances are still connected (idle exit would refuse) and a fresh one,
+  // started by the requesting host, takes over with a new pid.
+  const hubPid = () => { try { return JSON.parse(readFileSync(resolve(DIR, "hub.json"), "utf8")).pid; } catch { return null; } };
+  const pidBefore = hubPid();
+  const rr = await A2.req("hubRestart", {});
+  ok(rr.ok === true && rr.result?.hubUp === true, "hubRestart via the host → ok and a fresh hub is up");
+  const pidAfter = hubPid();
+  ok(pidBefore && pidAfter && pidAfter !== pidBefore, "...with a new process id");
+  let alive = false; try { process.kill(pidAfter, 0); alive = true; } catch {}
+  ok(alive, "...which is running");
+  await sleep(4000); // the new hub's poll reconnects the instances
+  const insts3 = toolResult(await call("list_instances", {}, (await rpc({ jsonrpc: "2.0", id: 91, method: "initialize", params: { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "t", version: "0" } } }, { token: tAgent })).sessionId, tAgent));
+  ok(insts3?.instances?.some((i) => i.instanceId === "A"), "...and it serves the connected instance again (agents re-initialize their session)");
+
   // self-exit when the registry empties
   A2.kill();
   await sleep(6000);
   ok(!existsSync(resolve(DIR, "hub.json")), "hub self-exits + removes hub.json when empty");
+
+  // "Stop for all browsers": the other browsers are told to disconnect, the hub exits only when all confirmed.
+  const D = startInstance("D", "", { hub: true }), E = startInstance("E", "", { hub: true }); // hub:true → the host starts a hub, as a real extension asks
+  ok((await D.open()).ok && (await E.open()).ok, "two instances up again (a fresh hub is started by their hosts)");
+  await sleep(4500); // the new hub's poll connects them
+  const tCtl = JSON.parse(readFileSync(resolve(DIR, "control"), "utf8")).tControl;
+  const stopAll = await control({ op: "disconnectAll", exceptInstanceId: "D" }, tCtl);
+  ok(stopAll.status === 200 && E.invokes.includes("_td/disconnect") && !D.invokes.includes("_td/disconnect"), `disconnectAll: the OTHER browser was told to disconnect, the caller was not (status ${stopAll.status})`);
+  await sleep(1500);
+  ok(!existsSync(resolve(DIR, "hub.json")), "...and the hub went down at once (no 60 s idle wait)");
+  // a browser that cannot confirm keeps the hub alive and is named
+  const F = startInstance("F", "", { hub: true }), BAD = startInstance("BAD", "", { hub: true });
+  ok((await F.open()).ok && (await BAD.open()).ok, "two instances up again, one of them an old build without `_td/disconnect`");
+  await sleep(4500);
+  const tCtl2 = JSON.parse(readFileSync(resolve(DIR, "control"), "utf8")).tControl;
+  const stopBad = await control({ op: "disconnectAll", exceptInstanceId: "F" }, tCtl2);
+  ok(stopBad.status === 502 && /could not stop: L-BAD/.test(JSON.stringify(stopBad.json)), `disconnectAll with a browser that cannot confirm → 502 naming it (got ${stopBad.status} ${JSON.stringify(stopBad.json)})`);
+  await sleep(1200);
+  ok(existsSync(resolve(DIR, "hub.json")), "...and the hub keeps running");
 
   console.log(fails ? `\nHUB CONFORMANCE FAILED (${fails})` : "\nHUB CONFORMANCE PASSED");
   finish(fails ? 1 : 0);

@@ -50,10 +50,34 @@ function renderConn(s) {
   if (show) { $("url").textContent = s.endpoint; $("auth").textContent = `Bearer ${s.token}`; }
 }
 
+// Stopping asks first: leaving ONE browser, restarting the hub for all, or stopping everything.
+function stopDialog(show) {
+  $("stopDialog").hidden = !show;
+  if (show) { $("stopMsg").hidden = true; for (const id of ["stopRestart", "stopHere", "stopAll", "stopCancel"]) $(id).disabled = false; $("stopRestart").focus(); }
+}
+function stopBusy(text) { for (const id of ["stopRestart", "stopHere", "stopAll"]) $(id).disabled = true; $("stopMsg").hidden = false; $("stopMsg").textContent = text; }
+function stopFailed(text) { for (const id of ["stopRestart", "stopHere", "stopAll"]) $(id).disabled = false; $("stopMsg").hidden = false; $("stopMsg").textContent = text; }
+$("stopCancel").addEventListener("click", () => stopDialog(false));
+$("stopDialog").addEventListener("click", (e) => { if (e.target === $("stopDialog")) stopDialog(false); });
+document.addEventListener("keydown", (e) => { if (e.key === "Escape" && !$("stopDialog").hidden) stopDialog(false); });
+$("stopHere").addEventListener("click", async () => { stopDialog(false); renderConn(await send({ cmd: "disconnect" })); });
+$("stopRestart").addEventListener("click", async () => {
+  stopBusy("Restarting the hub…");
+  const r = await send({ cmd: "hub.restart" });
+  if (r?.ok && r.hubUp) { stopDialog(false); renderConn(await send({ cmd: "status" })); }
+  else stopFailed(`The hub did not restart${r?.error ? `: ${r.error}` : ""}. Try "Stop for all browsers", then Start.`);
+});
+$("stopAll").addEventListener("click", async () => {
+  stopBusy("Stopping every browser…");
+  const r = await send({ cmd: "hub.stopEverywhere" });
+  if (r?.ok) { stopDialog(false); renderConn(await send({ cmd: "status" })); }
+  else stopFailed(`Not stopped everywhere${r?.error ? `: ${r.error}` : ""}. Nothing was shut down; the hub is still running.`);
+});
+
 async function toggleConn() {
   const s = await send({ cmd: "status" });
   if (s?.state === "connecting") return;
-  if (s?.state === "connected") { renderConn(await send({ cmd: "disconnect" })); return; }
+  if (s?.state === "connected") { stopDialog(true); return; }
   const n = Number($("port").value);
   if (!Number.isInteger(n) || n < 0 || n > 65535) { renderConn({ state: "error", error: "invalid port" }); return; }
   renderConn(await send({ cmd: "connect", port: n }));

@@ -371,6 +371,13 @@ async function handleControlInvoke(id, tool, args) {
       reply(id, true, { ok: true });
       return;
     }
+    if (tool === "_td/disconnect") {
+      // "Stop for all browsers" from another browser: same as pressing Stop here (sticky until Start).
+      // Answer first: the reply travels over the very port that is about to close.
+      reply(id, true, { ok: true });
+      setTimeout(() => { disconnect().catch(() => {}); }, 150);
+      return;
+    }
     if (tool === "_td/revoke_all") {
       await CONSENT.setTier("none"); await cleanupTabGroups(); // setTier("none") already clears the allow map
       updateContextMenu(); scheduleBadges();
@@ -872,6 +879,17 @@ chrome.runtime.onMessage.addListener((req, _sender, sendResponse) => {
       case "peers.list": sendResponse(await peersList()); break;
       case "peers.unshare": sendResponse(await peersUnshare(req.instanceId, req.tabId)); break;
       case "peers.stopAll": sendResponse(await peersStopAll(req.instanceId)); break;
+      case "hub.restart": {
+        try { const r = await request("hubRestart", {}, 25000); sendResponse({ ok: true, hubUp: r?.hubUp !== false }); }
+        catch (e) { sendResponse({ ok: false, error: e?.message ?? String(e) }); }
+        break;
+      }
+      case "hub.stopEverywhere": {
+        // Every other browser is asked first; this one stops only when all of them confirmed.
+        try { await request("hubStopEverywhere", {}, 25000); await disconnect(); sendResponse({ ok: true }); }
+        catch (e) { sendResponse({ ok: false, error: e?.message ?? String(e) }); }
+        break;
+      }
       default: sendResponse({ state: "disconnected" });
     }
   })();

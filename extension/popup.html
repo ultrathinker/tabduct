@@ -18,6 +18,19 @@
       </div>
     </header>
 
+    <!-- Stop dialog: shown instead of stopping at once while connected. -->
+    <div id="stopDialog" class="overlay" hidden role="dialog" aria-modal="true" aria-labelledby="stopTitle">
+      <div class="dialog">
+        <h2 id="stopTitle">Stop the hub?</h2>
+        <p class="hint">The hub is the one endpoint all your browsers sit behind. Stopping one browser leaves it running for the others.</p>
+        <button id="stopRestart" class="btn" title="Stops the hub and starts a fresh one on the current code. Shared tabs stay shared; every browser reconnects on its own in a few seconds, and an agent call in flight fails once.">↻ Restart the hub for all browsers</button>
+        <button id="stopHere" class="btn ghost">Stop in this browser only</button>
+        <button id="stopAll" class="btn ghost danger" title="Every browser disconnects and stays stopped; press Start in each one to bring it back.">Stop for all browsers</button>
+        <button id="stopCancel" class="linkbtn">Cancel</button>
+        <p id="stopMsg" class="hint" hidden></p>
+      </div>
+    </div>
+
     <!-- Main layer: connection (only while not connected) + sharing, one card -->
     <div id="main">
       <section class="card">

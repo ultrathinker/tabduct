@@ -297,5 +297,20 @@ eq(groupAction({ ...base, tier: "all", inOurGroup: true, shared: false }), null,
   eq([calls.slice(n).some((c) => c.tabIds.includes(2)), TABS[1].groupId], [false, -1], "...and the next repaint doesn't herd it back into a group");
 }
 
+// ---- "Stop for all browsers": the hub's control op stops THIS browser like the Stop button ----------------
+{
+  const before = P2.sent.length;
+  await P2.onMessage.fire({ type: "invoke", id: "ctl-1", payload: { tool: "_td/disconnect", args: {} } });
+  const ack = await until(() => P2.sent.find((m) => m.replyTo === "ctl-1"));
+  eq(ack?.ok, true, "_td/disconnect is acknowledged before the connection closes");
+  const closeReq = await until(() => P2.sent.slice(before).find((m) => m.type === "close"), 1500);
+  eq(!!closeReq, true, "...then this browser asks its host to close, like the Stop button");
+  if (closeReq) await P2.onMessage.fire({ replyTo: closeReq.id, ok: true, result: {} });
+  await sleep(300);
+  const stoppedFlag = (await chrome.storage.session.get("userStopped")).userStopped;
+  const stSt = (await popup({ cmd: "status" })).state;
+  eq([stSt, stoppedFlag], ["disconnected", true], "...and stays stopped (no auto-rejoin) until Start");
+}
+
 console.log(fails ? `\nGATE TESTS FAILED (${fails})` : "\nGATE TESTS PASSED");
 process.exit(fails ? 1 : 0);

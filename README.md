@@ -54,7 +54,7 @@ npm run register        # installs the native-messaging manifest for your OS + b
 `register` writes the manifest to the right place automatically — `~/Library/Application Support/…/NativeMessagingHosts` on macOS, `~/.config/…/NativeMessagingHosts` on Linux, or an `HKCU` registry key on Windows (and makes the launcher executable on POSIX). Then:
 
 1. Open `chrome://extensions` → enable **Developer mode** → **Load unpacked** → select the **`extension/`** folder.
-2. Click the **Tabduct** toolbar icon → **Start** (launches the local server; the header dot turns green). Click the dot again to **Stop** it.
+2. Click the **Tabduct** toolbar icon → **Start** (launches the local server; the header dot turns green). Click the dot again to **Stop**: a dialog asks what you mean, because the hub is shared by every connected browser: **restart the hub for all browsers** (shared tabs stay shared; the way to pick up new code), **stop in this browser only**, or **stop for all browsers** (every browser disconnects and stays stopped until you press Start in it).
 3. Open **Settings (⚙)** → copy the **MCP endpoint** and **Authorization** token.
 4. Paste them into your agent's MCP config (below) and reload the agent.
 5. **Share** what the agent may touch: **Share Current Tab**, or **Share Everything**. That's it.

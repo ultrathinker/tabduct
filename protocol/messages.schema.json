@@ -9,7 +9,7 @@
     "notification": ["type", "payload"]
   },
   "extensionToHost": {
-    "requests": ["open", "close", "ping", "relabel", "peers", "peerUnshare", "peerStopAll", "peerRevokeAll"],
+    "requests": ["open", "close", "ping", "relabel", "peers", "peerUnshare", "peerStopAll", "peerRevokeAll", "hubRestart", "hubStopEverywhere"],
     "notifications": ["event"]
   },
   "hostToExtension": {

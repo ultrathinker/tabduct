@@ -260,6 +260,18 @@ async function handle(msg) {
       try { await hubControl("POST", { op: "revokeAll", exceptInstanceId: currentInstance }); reply(id, true, { ok: true }); }
       catch (e) { reply(id, false, { code: e.code || ERR.INTERNAL, message: e.message }); }
       return;
+    case "hubRestart": // popup "Restart hub": the hub goes down and a fresh one (current code) comes up
+      try {
+        await hubControl("POST", { op: "restart" });
+        for (let i = 0; i < 20 && (await hubReachable()); i++) await new Promise((r) => setTimeout(r, 150)); // wait for the old one to let go of the port
+        const up = await ensureHub(); // don't wait for the watchdog tick; the port bind is the singleton mutex
+        reply(id, true, { ok: true, hubUp: !!(up && hubVerified()) });
+      } catch (e) { reply(id, false, { code: e.code || ERR.INTERNAL, message: e.message }); }
+      return;
+    case "hubStopEverywhere": // popup "Stop for all browsers": every OTHER browser disconnects, then the hub exits
+      try { await hubControl("POST", { op: "disconnectAll", exceptInstanceId: currentInstance }); reply(id, true, { ok: true }); }
+      catch (e) { reply(id, false, { code: e.code || ERR.INTERNAL, message: e.message }); }
+      return;
     case "ping":
       reply(id, true, { pong: true });
       return;

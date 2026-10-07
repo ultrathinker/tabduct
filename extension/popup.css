@@ -50,6 +50,12 @@ input[type="text"] { flex: 1; min-width: 0; }
 .btn:hover { background: var(--accent-hover); }
 .btn:disabled { opacity: .6; cursor: default; }
 .btn.small { padding: 6px 8px; font-size: 12px; }
+.overlay { position: fixed; inset: 0; z-index: 50; display: flex; align-items: center; justify-content: center; padding: 14px; background: color-mix(in srgb, #000 45%, transparent); }
+.overlay[hidden] { display: none; }
+.dialog { width: 100%; background: var(--bg); border: 1px solid var(--border); border-radius: 12px; padding: 14px; box-shadow: 0 8px 28px rgba(0,0,0,.35); }
+.dialog h2 { margin: 0 0 6px; font-size: 15px; }
+.dialog .btn { margin-top: 8px; }
+.dialog .btn.danger { margin-top: 8px; }
 .btn.ghost { background: transparent; color: var(--fg); border: 1px solid var(--border); }
 .btn.ghost:hover { background: var(--border); }
 .btn.danger { background: transparent; color: var(--danger); border: 2px solid var(--danger); margin-top: 8px; font-weight: 700; }

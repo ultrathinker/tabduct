@@ -89,6 +89,8 @@ ignored (forward-compat).
 | `peerUnshare` | `{ instanceId, tabId }` | `{ ok:true }` — host proxies `POST /control {op:"unshare"}`: unshare one tab in another instance. |
 | `peerStopAll` | `{ instanceId }` | `{ ok:true }` — host proxies `POST /control {op:"stopAll"}`: turn off Share-Everything in another instance. |
 | `peerRevokeAll` | — | `{ ok:true }` — host proxies `POST /control {op:"revokeAll", exceptInstanceId}`: clear sharing on every OTHER instance (the caller clears itself locally). Backs the popup's "Revoke all sharing". |
+| `hubRestart` | — | `{ ok:true, hubUp }` — host proxies `POST /control {op:"restart"}`: the hub answers, then exits (removing `hub.json` last); the host waits for the port to be free and starts a fresh hub at once (every other host's watchdog would within about 10 s). Backs the popup's "Restart hub". Stopping ONE browser never restarts the hub — it stays up while any browser is connected — so this is the way to load new hub code. MCP sessions are lost; clients re-initialize. |
+| `hubStopEverywhere` | — | `{ ok:true }` — host proxies `POST /control {op:"disconnectAll", exceptInstanceId}`: the hub tells every OTHER connected browser (control tool `_td/disconnect`) to disconnect and stay stopped, and exits only when all confirmed; otherwise `502` naming the browsers that did not (the hub keeps running). The caller then stops itself. Backs the popup's "Stop for all browsers". Like `peerRevokeAll` it can only reduce access. |
 
 ## 4. Requests: host → extension
 

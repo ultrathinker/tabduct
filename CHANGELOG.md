@@ -4,6 +4,19 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims for
 [Semantic Versioning](https://semver.org/) once it reaches 1.0.
 
+## [1.6.5] — 2026-10-07
+
+### Added
+- **Stopping asks first.** Clicking the green dot (or the Stop button) while connected opens a small
+  dialog instead of stopping at once: **Restart the hub for all browsers**, **Stop in this browser
+  only**, **Stop for all browsers**, Cancel. Stopping one browser never restarted the hub (it stays up
+  while any browser is connected), so a new hub build could not be picked up from the extension; the
+  restart option fixes that without touching what is shared. *Stop for all* tells every other browser
+  (control tool `_td/disconnect`) to disconnect and stay stopped, and shuts the hub down only when
+  all of them confirmed; a browser that cannot (an older build, an unreachable one) is named and nothing
+  is shut down. New wire requests `hubRestart` and `hubStopEverywhere`, new hub control ops `restart`
+  and `disconnectAll` (see PROTOCOL.md).
+
 ## [1.6.4] — 2026-10-07
 
 ### Added

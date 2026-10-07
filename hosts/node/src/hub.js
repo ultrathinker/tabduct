@@ -85,8 +85,8 @@ class Hub {
     this._idle.unref?.();
   }
 
-  async _shutdown() {
-    if (readAll().length > 0) { this._armIdle(); return; } // an instance appeared during the idle window — abort
+  async _shutdown(force = false) {
+    if (!force && readAll().length > 0) { this._armIdle(); return; } // an instance appeared during the idle window — abort (a deliberate restart does not)
     // Failsafe: NEVER let a hung close() (a dead MCP client / stuck server.close) leave us
     // half-dead — still bound to HUB_PORT but past the point of no return. That zombie state
     // (a listener answering HTTP with a stale/removed hub.json) is exactly what wedges the
@@ -292,6 +292,34 @@ class Hub {
     }
     if (method === "POST") {
       const { op, instanceId, tabId, exceptInstanceId } = body || {};
+      // Restart: answer first, then go down (hub.json removed last, as in the idle exit). The hosts
+      // bring a fresh hub up (the caller at once, the others at their next watchdog tick), and the
+      // new process reads the current code and tool catalog. MCP sessions die with it; clients re-initialize.
+      if (op === "restart") {
+        const t = setTimeout(() => this._shutdown(true), 150); t.unref?.();
+        return { status: 200, json: { ok: true } };
+      }
+      // "Stop for all browsers": every OTHER connected browser is told to disconnect and stay stopped
+      // (its Start button brings it back); only when all of them confirmed does the hub go down. The
+      // caller stops itself right after this answer. Like revokeAll, it can only REDUCE access, and it
+      // never claims success for a browser that did not confirm (an old build without `_td/disconnect`
+      // answers with an error): then nothing is shut down and the names come back.
+      if (op === "disconnectAll") {
+        const failed = [];
+        const names = new Map();
+        await this._refresh().catch(() => {});
+        await Promise.all([...this.clients.keys()].filter((id) => id !== exceptInstanceId).map(async (id) => {
+          names.set(id, this.meta.get(id)?.label ?? id);
+          try {
+            const r = await this._withTimeout(this.clients.get(id).callTool({ name: "_td/disconnect", arguments: {} }), CONTROL_TIMEOUT_MS);
+            if (r?.isError) failed.push(id);
+          } catch { failed.push(id); }
+        }));
+        for (const u of this._unconnected()) if (u.instanceId !== exceptInstanceId) { failed.push(u.instanceId); names.set(u.instanceId, u.label ?? u.instanceId); }
+        if (failed.length) return { status: 502, json: { ok: false, error: `could not stop: ${failed.map((id) => names.get(id) ?? id).join(", ")}`, failed } };
+        const t = setTimeout(() => this._shutdown(true), 400); t.unref?.();
+        return { status: 200, json: { ok: true } };
+      }
       // Fan-out op: clear sharing on every instance except the caller (which clears itself locally).
       if (op === "revokeAll") {
         // Report what really happened: claiming success while another browser kept sharing is

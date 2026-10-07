@@ -373,6 +373,33 @@ try {
   await setDeny([]);
 
   // ======================================================================================================
+  console.log("— the Stop dialog of the popup (the background is faked as 'connected'; this checks the page itself)");
+  {
+    const { targetId } = await cdp("Target.createTarget", { url: `chrome-extension://${EXT}/popup.html` });
+    const { sessionId } = await cdp("Target.attachToTarget", { targetId, flatten: true });
+    await cdp("Runtime.enable", {}, sessionId); await sleep(600);
+    const pe = async (expression) => (await cdp("Runtime.evaluate", { expression, awaitPromise: true, returnByValue: true }, sessionId)).result?.value;
+    await pe(`window.__calls = []; chrome.runtime.sendMessage = async (m) => { window.__calls.push(m.cmd); return m.cmd === "status" ? { state: "connected" } : { state: "connected", ok: true, hubUp: true }; }; 1`);
+    const open = async () => { await pe(`document.getElementById("toggle").click()`); await sleep(250); return pe(`!document.getElementById("stopDialog").hidden`); };
+    ok(await open() === true, "clicking Stop while connected opens the dialog instead of stopping at once");
+    ok(JSON.stringify(await pe(`window.__calls`)) === JSON.stringify(["status"]), "...and nothing was sent yet", await pe(`window.__calls`));
+    if (process.env.E2E_SHOT_DIR) { // optional: look at the dialog (set E2E_SHOT_DIR to a folder)
+      await cdp("Emulation.setDeviceMetricsOverride", { width: 340, height: 560, deviceScaleFactor: 2, mobile: false }, sessionId);
+      writeFileSync(join(process.env.E2E_SHOT_DIR, "stop-dialog.png"), Buffer.from((await cdp("Page.captureScreenshot", { format: "png" }, sessionId)).data, "base64"));
+    }
+    ok(await pe(`["stopRestart","stopHere","stopAll","stopCancel"].every((id) => document.getElementById(id))`) === true, "...with restart / this browser / all browsers / cancel");
+    await pe(`document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" })); 1`); await sleep(100);
+    ok(await pe(`document.getElementById("stopDialog").hidden`) === true && (await pe(`window.__calls.length`)) === 1, "Escape cancels, nothing sent");
+    await open(); await pe(`document.getElementById("stopHere").click()`); await sleep(250);
+    ok((await pe(`window.__calls`)).includes("disconnect") && await pe(`document.getElementById("stopDialog").hidden`) === true, "'this browser only' sends disconnect and closes");
+    await pe(`window.__calls.length = 0; 1`); await open(); await pe(`document.getElementById("stopAll").click()`); await sleep(300);
+    ok((await pe(`window.__calls`)).includes("hub.stopEverywhere") && !(await pe(`window.__calls`)).includes("disconnect"), "'all browsers' asks the background to stop everywhere");
+    await pe(`window.__calls.length = 0; 1`); await open(); await pe(`document.getElementById("stopRestart").click()`); await sleep(300);
+    ok((await pe(`window.__calls`)).includes("hub.restart"), "'restart the hub' asks the background to restart it");
+    await cdp("Target.closeTarget", { targetId });
+  }
+
+  // ======================================================================================================
   console.log("— restoring shares after an extension Reload (real storage and real tab ids)");
   // chrome.runtime.reload() can't be driven here: an extension installed through CDP isn't persisted
   // in the profile, so Chrome doesn't bring it back. A real Reload wipes storage.session and fires
