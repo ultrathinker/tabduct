@@ -294,5 +294,3 @@ First public reference implementation.
 - Hub discloses its token only after verifying the listener is genuinely our hub.
 - In-page origin re-check on `get_page_content` / `execute_script` (TOCTOU).
 
-[Unreleased]: https://github.com/ultrathinker/tabduct/compare/v0.1.0...HEAD
-[0.1.0]: https://github.com/ultrathinker/tabduct/releases/tag/v0.1.0

@@ -27,8 +27,9 @@ From the repo root:
 node protocol/conformance/run.mjs -- python hosts/python/tabduct_host/__main__.py
 ```
 
-→ the direct-mode checks of `run.mjs` pass; the hub-era checks (feature gating, numeric bounds)
-do not, because this host predates them (see the note at the top).
+→ the direct-mode checks of `run.mjs` pass; the hub-era checks (feature gating, numeric bounds,
+404 for an unknown session) are skipped for non-Node hosts, because this host predates them (see the
+note at the top).
 
 ## Layout
 

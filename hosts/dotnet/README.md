@@ -28,8 +28,9 @@ From the repo root, after `dotnet build hosts/dotnet`:
 node protocol/conformance/run.mjs -- dotnet hosts/dotnet/bin/Debug/net10.0/Tabduct.Host.dll
 ```
 
-→ the direct-mode checks of `run.mjs` pass; the hub-era checks (feature gating, numeric bounds)
-do not, because this host predates them (see the note at the top). (Run the built dll, not `dotnet run`, which would
+→ the direct-mode checks of `run.mjs` pass; the hub-era checks (feature gating, numeric bounds,
+404 for an unknown session) are skipped for non-Node hosts, because this host predates them (see the
+note at the top). (Run the built dll, not `dotnet run`, which would
 print build output onto stdout and corrupt the frame stream.)
 
 ## Layout

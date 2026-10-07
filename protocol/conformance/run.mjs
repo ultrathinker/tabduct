@@ -21,6 +21,7 @@ const CATALOG = JSON.parse(readFileSync(resolve(REPO, "protocol/tools.schema.jso
 
 export async function runConformance(hostCmd) {
   const cmd = hostCmd && hostCmd.length ? hostCmd : [process.execPath, resolve(REPO, "hosts/node/src/index.js")];
+  const NODE_HOST = /(^|[\\/])node(\.exe)?$/i.test(cmd[0]);
   const INSTANCE = "conf-" + randomUUID();
   const TOKEN = "conf-" + randomUUID();
   let PORT = 0, fails = 0, done = false;
@@ -83,18 +84,23 @@ export async function runConformance(hostCmd) {
     const err = await rpc({ jsonrpc: "2.0", id: 5, method: "tools/call", params: { name: "navigate", arguments: { url: "https://x" } } }, { sessionId: sid });
     ok(err.json?.result?.isError === true, "extension error → MCP isError");
 
-    // Feature gating (B4): this fake extension opened WITHOUT `features`, like a build that predates
-    // frames. The host must refuse calls that need a feature instead of forwarding them.
-    const before = invokes;
-    const fr = await rpc({ jsonrpc: "2.0", id: 20, method: "tools/call", params: { name: "get_page_content", arguments: { frameId: 3 } } }, { sessionId: sid });
-    ok(fr.json?.result?.isError === true && /^EXTENSION_OUTDATED/.test(fr.json.result.content[0].text) && invokes === before, "frameId on an extension without `frames` → EXTENSION_OUTDATED, nothing forwarded");
-    const lf = await rpc({ jsonrpc: "2.0", id: 21, method: "tools/call", params: { name: "list_frames", arguments: {} } }, { sessionId: sid });
-    ok(lf.json?.result?.isError === true && /^EXTENSION_OUTDATED/.test(lf.json.result.content[0].text) && invokes === before, "list_frames on an extension without `frames` → EXTENSION_OUTDATED");
-    await rpc({ jsonrpc: "2.0", id: 22, method: "tools/call", params: { name: "get_page_content", arguments: { frameId: 0 } } }, { sessionId: sid });
-    ok(invokes === before + 1, "frameId 0 (the page itself) works on any build and is forwarded");
-    const bound = await rpc({ jsonrpc: "2.0", id: 23, method: "tools/call", params: { name: "screenshot", arguments: { quality: 1000 } } }, { sessionId: sid });
-    ok(bound.json?.result?.isError === true && /INVALID_ARGS/.test(bound.json.result.content[0].text), "numeric bounds from the schema are enforced (quality <= 100)");
-    ok((await rpc({ jsonrpc: "2.0", id: 24, method: "tools/list" }, { sessionId: "no-such-session" })).status === 404, "unknown session id → 404");
+    // Hub-era contract: version/feature gating, schema bounds and the 404 for an unknown MCP session were added together
+    // with the shared hub. The Python and .NET hosts predate them (direct mode only, see their READMEs), so these
+    // checks are for the Node reference host; the direct-mode checks above and below apply to every host.
+    if (NODE_HOST) {
+      // Feature gating (B4): this fake extension opened WITHOUT `features`, like a build that predates
+      // frames. The host must refuse calls that need a feature instead of forwarding them.
+      const before = invokes;
+      const fr = await rpc({ jsonrpc: "2.0", id: 20, method: "tools/call", params: { name: "get_page_content", arguments: { frameId: 3 } } }, { sessionId: sid });
+      ok(fr.json?.result?.isError === true && /^EXTENSION_OUTDATED/.test(fr.json.result.content[0].text) && invokes === before, "frameId on an extension without `frames` → EXTENSION_OUTDATED, nothing forwarded");
+      const lf = await rpc({ jsonrpc: "2.0", id: 21, method: "tools/call", params: { name: "list_frames", arguments: {} } }, { sessionId: sid });
+      ok(lf.json?.result?.isError === true && /^EXTENSION_OUTDATED/.test(lf.json.result.content[0].text) && invokes === before, "list_frames on an extension without `frames` → EXTENSION_OUTDATED");
+      await rpc({ jsonrpc: "2.0", id: 22, method: "tools/call", params: { name: "get_page_content", arguments: { frameId: 0 } } }, { sessionId: sid });
+      ok(invokes === before + 1, "frameId 0 (the page itself) works on any build and is forwarded");
+      const bound = await rpc({ jsonrpc: "2.0", id: 23, method: "tools/call", params: { name: "screenshot", arguments: { quality: 1000 } } }, { sessionId: sid });
+      ok(bound.json?.result?.isError === true && /INVALID_ARGS/.test(bound.json.result.content[0].text), "numeric bounds from the schema are enforced (quality <= 100)");
+      ok((await rpc({ jsonrpc: "2.0", id: 24, method: "tools/list" }, { sessionId: "no-such-session" })).status === 404, "unknown session id → 404");
+    } else console.log("  skip: hub-era checks (feature gating, schema bounds, 404 for unknown sessions) - not a Node host");
 
     ok((await hostReq("close", {})).ok === true, "close acknowledged");
     ok(!existsSync(discFile), "discovery entry removed on close");
