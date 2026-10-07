@@ -134,6 +134,11 @@ export class McpHttpServer {
         try { body = await readJsonBody(req, MCP_REQUEST_MAX_BYTES); }
         catch (e) { res.writeHead(e.code === "BODY_TOO_LARGE" ? 413 : 400).end(e.code === "BODY_TOO_LARGE" ? "payload too large" : "bad json"); return; }
         if (!transport) {
+          // A request that NAMES a session we don't know (the hub or host restarted, or the
+          // session was reaped) must get 404: the MCP Streamable-HTTP spec says that is the
+          // client's cue to start a new session. A 400 reads as "your request is malformed", and
+          // clients that follow the spec then keep retrying with the dead id.
+          if (sid) { res.writeHead(404, { "content-type": "application/json" }).end(JSON.stringify({ jsonrpc: "2.0", error: { code: -32001, message: "Session not found - send a new initialize request" }, id: null })); return; }
           if (!isInitializeRequest(body)) { res.writeHead(400, { "content-type": "application/json" }).end(JSON.stringify({ jsonrpc: "2.0", error: { code: -32000, message: "No valid session; initialize first" }, id: null })); return; }
           transport = await this._newSession();
           try { await transport.handleRequest(req, res, body); }
@@ -145,7 +150,7 @@ export class McpHttpServer {
       }
 
       if (req.method === "GET" || req.method === "DELETE") {
-        if (!transport) { res.writeHead(400).end("missing or unknown session"); return; }
+        if (!transport) { res.writeHead(sid ? 404 : 400).end(sid ? "session not found" : "missing session"); return; }
         // A GET opens a long-lived SSE stream that won't issue new requests (so it
         // never refreshes `seen`); exempt it from idle-reaping until the stream ends.
         if (req.method === "GET" && entry) { entry.activeStream = true; res.on("close", () => { entry.activeStream = false; }); }

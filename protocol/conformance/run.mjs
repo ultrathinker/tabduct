@@ -37,8 +37,8 @@ export async function runConformance(hostCmd) {
 
   // stdio framing (fake extension)
   const sendToHost = (o) => { const b = Buffer.from(JSON.stringify(o)); const h = Buffer.alloc(4); h.writeUInt32LE(b.length, 0); host.stdin.write(Buffer.concat([h, b])); };
-  let buf = Buffer.alloc(0), need = -1, invokeSeen = null; const pend = new Map();
-  host.stdout.on("data", (c) => { buf = Buffer.concat([buf, c]); for (;;) { if (need === -1) { if (buf.length < 4) return; need = buf.readUInt32LE(0); buf = buf.subarray(4); } if (buf.length < need) return; const m = JSON.parse(buf.subarray(0, need).toString()); buf = buf.subarray(need); need = -1; if (m.replyTo) { const r = pend.get(m.replyTo); if (r) { pend.delete(m.replyTo); r(m); } } else if (m.type === "invoke") { invokeSeen = m; const t = m.payload.tool; if (t === "list_tabs") sendToHost({ replyTo: m.id, ok: true, result: { tabs: [{ id: 1, title: "Fake", url: "https://example.com", active: true }] } }); else if (t === "screenshot") sendToHost({ replyTo: m.id, ok: true, result: { mimeType: "image/png", dataUrl: "data:image/png;base64,QUJD" } }); else sendToHost({ replyTo: m.id, ok: false, error: { code: "TAB_NOT_FOUND", message: "no" } }); } } });
+  let buf = Buffer.alloc(0), need = -1, invokeSeen = null, invokes = 0; const pend = new Map();
+  host.stdout.on("data", (c) => { buf = Buffer.concat([buf, c]); for (;;) { if (need === -1) { if (buf.length < 4) return; need = buf.readUInt32LE(0); buf = buf.subarray(4); } if (buf.length < need) return; const m = JSON.parse(buf.subarray(0, need).toString()); buf = buf.subarray(need); need = -1; if (m.replyTo) { const r = pend.get(m.replyTo); if (r) { pend.delete(m.replyTo); r(m); } } else if (m.type === "invoke") { invokeSeen = m; invokes++; const t = m.payload.tool; if (t === "list_tabs") sendToHost({ replyTo: m.id, ok: true, result: { tabs: [{ id: 1, title: "Fake", url: "https://example.com", active: true }] } }); else if (t === "screenshot") sendToHost({ replyTo: m.id, ok: true, result: { mimeType: "image/png", dataUrl: "data:image/png;base64,QUJD" } }); else sendToHost({ replyTo: m.id, ok: false, error: { code: "TAB_NOT_FOUND", message: "no" } }); } } });
   const hostReq = (type, payload) => new Promise((res) => { const id = randomUUID(); pend.set(id, res); sendToHost({ type, id, payload }); });
 
   const rpc = (body, { sessionId, token = TOKEN, origin, hostHeader } = {}) => new Promise((resolve) => {
@@ -82,6 +82,19 @@ export async function runConformance(hostCmd) {
     ok(shot.json?.result?.content?.[0]?.type === "image", "screenshot → MCP image");
     const err = await rpc({ jsonrpc: "2.0", id: 5, method: "tools/call", params: { name: "navigate", arguments: { url: "https://x" } } }, { sessionId: sid });
     ok(err.json?.result?.isError === true, "extension error → MCP isError");
+
+    // Feature gating (B4): this fake extension opened WITHOUT `features`, like a build that predates
+    // frames. The host must refuse calls that need a feature instead of forwarding them.
+    const before = invokes;
+    const fr = await rpc({ jsonrpc: "2.0", id: 20, method: "tools/call", params: { name: "get_page_content", arguments: { frameId: 3 } } }, { sessionId: sid });
+    ok(fr.json?.result?.isError === true && /^EXTENSION_OUTDATED/.test(fr.json.result.content[0].text) && invokes === before, "frameId on an extension without `frames` → EXTENSION_OUTDATED, nothing forwarded");
+    const lf = await rpc({ jsonrpc: "2.0", id: 21, method: "tools/call", params: { name: "list_frames", arguments: {} } }, { sessionId: sid });
+    ok(lf.json?.result?.isError === true && /^EXTENSION_OUTDATED/.test(lf.json.result.content[0].text) && invokes === before, "list_frames on an extension without `frames` → EXTENSION_OUTDATED");
+    await rpc({ jsonrpc: "2.0", id: 22, method: "tools/call", params: { name: "get_page_content", arguments: { frameId: 0 } } }, { sessionId: sid });
+    ok(invokes === before + 1, "frameId 0 (the page itself) works on any build and is forwarded");
+    const bound = await rpc({ jsonrpc: "2.0", id: 23, method: "tools/call", params: { name: "screenshot", arguments: { quality: 1000 } } }, { sessionId: sid });
+    ok(bound.json?.result?.isError === true && /INVALID_ARGS/.test(bound.json.result.content[0].text), "numeric bounds from the schema are enforced (quality <= 100)");
+    ok((await rpc({ jsonrpc: "2.0", id: 24, method: "tools/list" }, { sessionId: "no-such-session" })).status === 404, "unknown session id → 404");
 
     ok((await hostReq("close", {})).ok === true, "close acknowledged");
     ok(!existsSync(discFile), "discovery entry removed on close");

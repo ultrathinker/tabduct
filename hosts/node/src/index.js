@@ -8,7 +8,7 @@
 import { NativeMessaging } from "./native-messaging.js";
 import { Bridge } from "./bridge.js";
 import { McpHttpServer } from "./mcp-server.js";
-import { registerTools } from "./tools.js";
+import { registerTools, cmpVersion } from "./tools.js";
 import { writeEntry, removeEntry } from "./discovery.js";
 import { ensureSecrets, baseDir } from "./secrets.js";
 import { PROTOCOL_VERSION, DEFAULT_PORT, HUB_PORT, STOP_GRACE_MS, ERR } from "./constants.js";
@@ -20,8 +20,12 @@ import http from "node:http";
 
 const nm = new NativeMessaging();
 const bridge = new Bridge(nm);
-const server = new McpHttpServer((s) => registerTools(s, bridge));
+// What the loaded extension build reported in `open`: its version and the optional features it
+// has. A call that needs a feature this build lacks is refused (tools.js), not forwarded.
+let extInfo = { version: null, features: new Set() };
+const server = new McpHttpServer((s) => registerTools(s, bridge, () => extInfo));
 let currentInstance = null;
+let currentEntry = null; // what we published to the discovery dir (re-published on relabel)
 
 // Liveness by actually probing the port (pid alone lies on pid-reuse).
 function hubReachable() {
@@ -87,6 +91,39 @@ async function ensureHub() {
   return false;
 }
 
+// Hub watchdog. ensureHub only runs at `open`, so a hub that dies later (killed, crashed, an
+// antivirus) stayed dead until the user pressed Stop/Start: agents got "connection refused"
+// with the browser still looking Running. While this host is open in hub mode, check every
+// 10 s and bring a verified hub back (the port bind is the singleton mutex, so several hosts
+// doing this at once is safe).
+let hubWatch = null, hubEnsuring = false;
+function startHubWatch() {
+  if (hubWatch) return;
+  hubWatch = setInterval(async () => {
+    if (hubEnsuring) return;
+    hubEnsuring = true;
+    try { if (!((await hubReachable()) && hubVerified())) await ensureHub(); } catch {} finally { hubEnsuring = false; }
+  }, 10_000);
+  hubWatch.unref?.();
+}
+function stopHubWatch() { if (hubWatch) { clearInterval(hubWatch); hubWatch = null; } }
+
+// The extension is loaded from this same repository, so its manifest on disk is what a
+// freshly reloaded build would be. A running build that is older (or doesn't report a
+// version at all) is the classic "I pulled but didn't reload the extension" - say so,
+// instead of letting calls behave differently from what the host advertises.
+function diskExtensionVersion() {
+  try { return JSON.parse(readFileSync(resolve(dirname(fileURLToPath(import.meta.url)), "../../../extension/manifest.json"), "utf8")).version ?? null; }
+  catch { return null; }
+}
+function warnIfExtensionOutdated() {
+  const disk = diskExtensionVersion();
+  if (!disk) return; // not running from the repo checkout - nothing to compare with
+  if (extInfo.version && cmpVersion(extInfo.version, disk) >= 0) return;
+  const have = extInfo.version ? `v${extInfo.version}` : "an old build (it doesn't report its version)";
+  try { nm.send({ type: "notice", payload: { level: "warn", message: `This browser runs Tabduct ${have} but the code on disk is v${disk}: reload the extension at chrome://extensions so new features (and fixes) apply.` } }); } catch {}
+}
+
 // Call the hub's non-MCP /control endpoint (tControl-authed) on the extension's
 // behalf — so the popup never talks to the hub directly (Origin stays fully rejected).
 function hubControl(method, body) {
@@ -144,7 +181,12 @@ async function handle(msg) {
       try {
         const bound = await server.start(port, token);
         currentInstance = (typeof payload?.instanceId === "string" && payload.instanceId) || "default";
-        try { writeEntry({ instanceId: currentInstance, label: payload?.label || "Chrome", port: bound, token, pid: process.pid, updatedAt: Date.now() }); } catch {}
+        extInfo = {
+          version: typeof payload?.extensionVersion === "string" ? payload.extensionVersion : null,
+          features: new Set(Array.isArray(payload?.features) ? payload.features.filter((f) => typeof f === "string") : []),
+        };
+        currentEntry = { instanceId: currentInstance, label: payload?.label || "Chrome", port: bound, token, pid: process.pid, updatedAt: Date.now(), extensionVersion: extInfo.version, features: [...extInfo.features] };
+        try { writeEntry(currentEntry); } catch {}
         // Hub mode: the host still binds direct (so the hub can proxy it) + also
         // ensures a hub is running. Only disclose the stable endpoint+token once we
         // CONFIRM the port is OUR hub (hub.json pid alive + mcpPort matches) — never
@@ -156,16 +198,25 @@ async function handle(msg) {
             const up = await ensureHub();
             if (up && hubVerified()) extra = { hub: true, endpoint: `http://127.0.0.1:${HUB_PORT}/mcp`, token: tAgent, hubReady: true };
             else extra = { hub: true, hubReady: false }; // reachable but not verifiably ours → no token disclosure
+            startHubWatch();
           } catch {}
         }
         reply(id, true, { port: bound, protocolVersion: PROTOCOL_VERSION, ...extra });
+        warnIfExtensionOutdated();
       } catch (e) {
         reply(id, false, { code: ERR.INTERNAL, message: `open failed: ${e.message}` });
       }
       return;
     }
+    case "relabel": // popup renamed this browser: republish the discovery entry so the hub (and agents) see the new label
+      if (currentEntry && typeof payload?.label === "string" && payload.label.trim()) {
+        currentEntry = { ...currentEntry, label: payload.label.trim().slice(0, 40), updatedAt: Date.now() };
+        try { writeEntry(currentEntry); } catch {}
+        reply(id, true, {});
+      } else reply(id, false, { code: ERR.INVALID_ARGS, message: "nothing to relabel" });
+      return;
     case "close":
-      try { await server.stop(); if (currentInstance) { removeEntry(currentInstance); currentInstance = null; } reply(id, true, {}); }
+      try { stopHubWatch(); await server.stop(); if (currentInstance) { removeEntry(currentInstance); currentInstance = null; currentEntry = null; } reply(id, true, {}); }
       catch (e) { reply(id, false, { code: ERR.INTERNAL, message: `close failed: ${e.message}` }); }
       return;
     case "peers": // popup: list all instances + what each shares (via hub /control)
@@ -201,6 +252,7 @@ nm.onMessage((msg) => {
 });
 
 nm.onEnd(async () => {
+  stopHubWatch();
   bridge.rejectAll("extension disconnected");
   if (currentInstance) { removeEntry(currentInstance); currentInstance = null; }
   const t = setTimeout(() => process.exit(0), STOP_GRACE_MS); t.unref?.();

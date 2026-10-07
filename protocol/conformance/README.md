@@ -8,29 +8,38 @@ message vocabulary** (`open`/`close`/`ping`/`invoke`, request→reply with
 
 ## Approach
 
-A **fake extension** harness drives the host over stdio (§1 framing) and asserts:
+A **fake extension** harness drives the host over stdio (§1 framing) and asserts.
+**Automated today** (`run.mjs`, in CI via `npm test`):
 
-1. **Framing** — send `ping` (request with `id`), expect a length-prefixed reply
-   with matching `replyTo` and `result.pong === true`. Then send a malformed
-   length header → assert the host logs and **exits non-zero** (a length-prefixed
-   stream is not resyncable; clean death is the contract, not fake recovery).
-2. **Handshake / lifecycle** — `open { port, token, protocolVersion }` →
-   reply `{ ok:true, result:{ port, protocolVersion } }`, host bound on
-   `127.0.0.1:port`. Wrong `protocolVersion` → `{ ok:false, error.code:"VERSION_MISMATCH" }`.
-   Second `open` while running → error, no crash. Busy port → `open` reply
-   `{ ok:false, error }`, not a hang. `close` → `{ ok:true }`, port freed.
-3. **Auth** — MCP request without `Authorization: Bearer <token>` → 401; with a
-   bad token → 401; with the right token → 200. A request carrying an `Origin`
-   header → rejected. A request whose `Host` header ≠ `127.0.0.1:<port>` → rejected.
-4. **Tool round-trip** — with the server up (and token), `tools/list` matches
-   `../tools.schema.json`; `tools/call list_tabs` → host emits an `invoke` on
-   stdio → fake extension replies `{ replyTo, ok:true, result }` → host returns
-   it as the MCP result.
-5. **Timeout** — host `invoke`s, fake extension stays silent → host returns an
-   MCP error (`TIMEOUT`) within the configured window.
-6. **Outbound cap** — an `invoke` whose serialized frame would exceed 1 MB →
-   host fails the call with `FRAME_TOO_LARGE` instead of writing to stdout.
-7. **Shutdown** — close the host's stdin → host stops the server and exits 0.
+1. **Handshake / lifecycle** — `open { port, token, protocolVersion }` → reply
+   `{ ok:true, result:{ port, protocolVersion } }` with an ephemeral port bound on
+   `127.0.0.1`; the discovery entry is written (in an isolated state dir) and removed on
+   `close`; a second `open` is rejected; a wrong `protocolVersion` → `VERSION_MISMATCH`;
+   after `close` the port is closed.
+2. **Auth** — wrong token → 401; a request carrying an `Origin` → 403; a bad `Host` → 403.
+3. **Tool round-trip** — `tools/list` equals `../tools.schema.json`; `tools/call list_tabs`
+   makes the host emit an `invoke`, the fake extension's reply comes back as the MCP result;
+   a `screenshot` becomes an MCP image; an extension error becomes an MCP `isError`.
+4. **Schema bounds** — numeric bounds from the catalog are enforced by the host
+   (`screenshot{quality:1000}` → `INVALID_ARGS`).
+5. **Feature gating** — against an extension that opened without `features`, a call using
+   `frameId` (≠ 0) or `list_frames` is answered `EXTENSION_OUTDATED` and **not forwarded**;
+   `frameId: 0` is forwarded.
+6. **Sessions** — an unknown `Mcp-Session-Id` → HTTP 404.
+
+**Not automated yet** (specified in PROTOCOL.md; a host must still implement them):
+`ping`, a malformed length header being fatal (exit non-zero), a busy port failing `open`,
+the invoke `TIMEOUT` window, the 1 MB outbound cap (`FRAME_TOO_LARGE`), shutdown on stdin
+EOF, and the `peers*` / `relabel` requests. `scripts/test-host.mjs` covers the Node host's
+`relabel`, version notice, feature recording and hub watchdog.
+
+`run-hub.mjs` covers the hub: aggregation, composite ids, ambiguity, result rewriting,
+failover, a restarted instance under the same id, partial `list_tabs` (`unavailable`),
+honest `revokeAll`, the 404 on unknown sessions, a 2.4 MB reply through the hub, and
+self-exit.
+
+Both runners always use an isolated state dir (`TABDUCT_DIR`, else a fresh temp dir) and
+refuse to touch the real `~/.tabduct` or the live hub port.
 
 ## Layout
 
@@ -42,8 +51,10 @@ conformance/
 └── README.md
 ```
 
-`run.mjs` takes a host launch command as argv, so the same suite validates the
-Node, Python, and .NET hosts identically:
+`run.mjs` takes a host launch command as argv. It is written against the Node host; the
+Python and .NET hosts predate the hub, feature gating and `relabel` (they work only in
+direct mode, which the current extension no longer uses — see their READMEs) and will fail
+checks 4–6:
 
 ```bash
 node run.mjs -- node ../../hosts/node/src/index.js

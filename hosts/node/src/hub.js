@@ -17,13 +17,15 @@ import { McpHttpServer } from "./mcp-server.js";
 import { readAll } from "./discovery.js";
 import { ensureSecrets, baseDir } from "./secrets.js";
 import { loadCatalog } from "./tools.js";
-import { HUB_PORT, ERR, INVOKE_TIMEOUT_MS } from "./constants.js";
+import { HUB_PORT, ERR, INVOKE_TIMEOUT_MS, invokeTimeoutMs } from "./constants.js";
 
 const CATALOG = loadCatalog();
 const IDLE_EXIT_MS = Number(process.env.TABDUCT_HUB_IDLE_MS) || 60_000;
 const SHUTDOWN_GRACE_MS = 3_000; // hard cap on idle shutdown: exit even if a close() hangs, so we never linger as a port-holding zombie
 const POLL_MS = 3_000;
-const CALL_TIMEOUT_MS = INVOKE_TIMEOUT_MS + 3_000; // slightly above the instance's own invoke timeout
+const CALL_TIMEOUT_MS = INVOKE_TIMEOUT_MS + 3_000; // slightly above the instance's own invoke timeout (per call: callBudget)
+const callBudget = (tool, args) => invokeTimeoutMs(tool, args) + 3_000;
+const CONNECT_TIMEOUT_MS = 5_000; // a host that doesn't answer its MCP handshake this fast is retried on the next poll
 const CONTROL_TIMEOUT_MS = 5_000; // popup control calls (snapshot/unshare) are quick + the popup polls every 2.5s; don't hold zombie fan-outs for 23s
 // Read-only tools are safe to re-issue after a lost transport; everything else may
 // have already taken effect, so we don't retry it (avoids double open/close/navigate).
@@ -38,9 +40,12 @@ const codeErr = (code, msg) => Object.assign(new Error(msg), { code });
 const parseText = (res) => { try { return JSON.parse(res?.content?.[0]?.text); } catch { return null; } };
 
 // Agent-facing catalog: composite tabId + optional instanceId + list_instances.
-function deriveCatalog() {
+// `defs` = the tools the connected hosts actually serve (a hub can outlive many `git pull`s, and
+// its own copy of the catalog is read once at start-up); falls back to the local catalog while
+// no instance is connected.
+function deriveCatalog(defs) {
   const tabRef = { oneOf: [{ type: "integer" }, { type: "string", pattern: "^.+:\\d+$" }], description: 'tabId, or composite "<instanceId>:<tabId>" (from list_tabs)' };
-  const tools = CATALOG.tools.map((t) => {
+  const tools = (defs && defs.length ? defs : CATALOG.tools).map((t) => {
     const s = JSON.parse(JSON.stringify(t.inputSchema || { type: "object", properties: {} }));
     s.properties = s.properties || {};
     if ("tabId" in s.properties) s.properties.tabId = tabRef;
@@ -54,7 +59,9 @@ function deriveCatalog() {
 class Hub {
   constructor() {
     this.clients = new Map(); // instanceId -> MCP Client
-    this.meta = new Map();    // instanceId -> { label }
+    this.meta = new Map();    // instanceId -> { label, fp, extensionVersion, features }
+    this.toolDefs = new Map(); // instanceId -> the tools that host serves (tools/list)
+    this._refreshing = false;
     this.server = new McpHttpServer((srv) => this._register(srv), (method, body) => this._control(method, body));
     this._idle = null; this._poll = null; this.tAgent = null; this.tControl = null;
   }
@@ -98,26 +105,47 @@ class Hub {
     process.exit(0);
   }
 
-  async _dropClient(id) { const c = this.clients.get(id); this.clients.delete(id); this.meta.delete(id); if (c) { try { await c.close(); } catch {} } }
+  async _dropClient(id) { const c = this.clients.get(id); this.clients.delete(id); this.meta.delete(id); this.toolDefs.delete(id); if (c) { try { await c.close(); } catch {} } }
 
-  // Open (and validate) an MCP client to one instance.
+  // What identifies one incarnation of an instance. A host that restarts keeps its instanceId but
+  // gets a new port/token/pid: a client built for the old incarnation is dead, and without this
+  // check the hub kept it forever (list_tabs silently empty, calls failing as INSTANCE_GONE).
+  static fingerprint(e) { return `${e.port}|${e.pid}|${e.token}`; }
+
+  // Open (and validate) an MCP client to one instance. Bounded: a wedged host must not hold a
+  // poll cycle (or pile up connections) for the SDK's default 60 s.
   async _connect(e) {
     const transport = new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${e.port}/mcp`), { requestInit: { headers: { Authorization: `Bearer ${e.token}` } } });
     const client = new Client({ name: "tabduct-hub", version: "0.0.1" }, { capabilities: {} });
-    await client.connect(transport);
-    const { tools } = await client.listTools(); // shape check — drop impostor discovery entries
-    if (!tools?.some((t) => t.name === "execute_script")) { try { await client.close(); } catch {} throw new Error("not a Tabduct instance"); }
-    this.clients.set(e.instanceId, client); this.meta.set(e.instanceId, { label: e.label });
+    try {
+      await client.connect(transport, { timeout: CONNECT_TIMEOUT_MS });
+      const { tools } = await client.listTools(undefined, { timeout: CONNECT_TIMEOUT_MS }); // shape check — drop impostor discovery entries
+      if (!tools?.some((t) => t.name === "execute_script")) throw new Error("not a Tabduct instance");
+      this.clients.set(e.instanceId, client);
+      this.meta.set(e.instanceId, { label: e.label, fp: Hub.fingerprint(e), extensionVersion: e.extensionVersion ?? null, features: Array.isArray(e.features) ? e.features : [] });
+      this.toolDefs.set(e.instanceId, tools);
+    } catch (err) { try { await client.close(); } catch {} throw err; }
     return client;
   }
 
-  // Reconcile MCP clients with the live discovery registry.
+  // Reconcile MCP clients with the live discovery registry. Never overlaps itself: a slow
+  // connect used to let the next 3 s tick start a second connect to the same instance, leaking
+  // the loser's client.
   async _refresh() {
-    const live = readAll();
-    const ids = new Set(live.map((e) => e.instanceId));
-    for (const [id] of [...this.clients]) if (!ids.has(id)) await this._dropClient(id);
-    for (const e of live) if (!this.clients.has(e.instanceId)) { try { await this._connect(e); } catch { /* not ready/impostor; retried next poll */ } }
-    if (this.clients.size > 0) this._armIdle();
+    if (this._refreshing) return;
+    this._refreshing = true;
+    try {
+      const live = readAll();
+      const ids = new Set(live.map((e) => e.instanceId));
+      for (const [id] of [...this.clients]) if (!ids.has(id)) await this._dropClient(id);
+      for (const e of live) {
+        const m = this.meta.get(e.instanceId);
+        if (this.clients.has(e.instanceId) && m && m.fp !== Hub.fingerprint(e)) await this._dropClient(e.instanceId); // host restarted under the same id
+        if (!this.clients.has(e.instanceId)) { try { await this._connect(e); } catch { /* not ready/impostor; retried next poll */ } }
+        else if (m) { m.label = e.label; m.extensionVersion = e.extensionVersion ?? null; m.features = Array.isArray(e.features) ? e.features : m.features; } // a rename / reload shows up without reconnecting
+      }
+      if (this.clients.size > 0) this._armIdle();
+    } finally { this._refreshing = false; }
   }
 
   _withTimeout(p, ms = CALL_TIMEOUT_MS) {
@@ -127,8 +155,9 @@ class Hub {
 
   async _callInstance(instanceId, name, args) {
     if (!this.clients.has(instanceId)) return errResult(ERR.INSTANCE_GONE, `instance ${instanceId} not connected`);
+    const budget = callBudget(name, args);
     try {
-      return this._rewrite(instanceId, await this._withTimeout(this.clients.get(instanceId).callTool({ name, arguments: args })));
+      return this._rewrite(instanceId, await this._withTimeout(this.clients.get(instanceId).callTool({ name, arguments: args }), budget));
     } catch (e) {
       if (e.code === ERR.TIMEOUT) return errResult(ERR.TIMEOUT, e.message);
       // session lost / instance wedged / TCP reset → drop the client.
@@ -138,13 +167,13 @@ class Hub {
       // close_tab / navigate / activate_tab / execute_script would double the effect.
       if (!IDEMPOTENT_TOOLS.has(name)) return errResult(ERR.INSTANCE_GONE, `instance ${instanceId} connection lost mid-call; "${name}" not retried (non-idempotent)`);
       const entry = readAll().find((x) => x.instanceId === instanceId);
-      if (entry) { try { const c = await this._connect(entry); return this._rewrite(instanceId, await this._withTimeout(c.callTool({ name, arguments: args }))); } catch {} }
+      if (entry) { try { const c = await this._connect(entry); return this._rewrite(instanceId, await this._withTimeout(c.callTool({ name, arguments: args }), budget)); } catch {} }
       return errResult(ERR.INSTANCE_GONE, `instance ${instanceId} is gone`);
     }
   }
 
   _register(srv) {
-    srv.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: deriveCatalog() }));
+    srv.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: deriveCatalog([...new Map([...this.toolDefs.values()].flat().map((t) => [t.name, t])).values()]) }));
     srv.setRequestHandler(CallToolRequestSchema, async (req) => this._route(req.params.name, req.params.arguments || {}));
   }
 
@@ -154,7 +183,7 @@ class Hub {
       // /control channel — never the agent-facing MCP path. Refuse them here so an
       // agent holding tAgent can't snapshot or unshare across browsers.
       if (typeof name === "string" && name.startsWith("_td/")) return errResult(ERR.UNKNOWN_TOOL, `Unknown tool: ${name}`);
-      if (name === "list_instances") return textResult({ instances: [...this.meta].map(([instanceId, m]) => ({ instanceId, label: m.label })) });
+      if (name === "list_instances") return textResult({ instances: [...this.meta].map(([instanceId, m]) => ({ instanceId, label: m.label, extensionVersion: m.extensionVersion ?? null, features: m.features ?? [] })) });
       if (name === "list_tabs") return await this._listTabsFanout(args);
       const { instanceId, forward } = this._resolveTarget(args);
       return await this._callInstance(instanceId, name, forward);
@@ -187,15 +216,18 @@ class Hub {
     const { instanceId, ...rest } = args; // never forward instanceId to an instance
     const targets = instanceId ? (this.clients.has(instanceId) ? [instanceId] : []) : [...this.clients.keys()];
     if (instanceId && targets.length === 0) return errResult(ERR.INSTANCE_GONE, `instance ${instanceId} not connected`);
-    const out = [];
+    const out = [], unavailable = [];
     await Promise.all(targets.map(async (id) => {
-      try {
-        const o = parseText(await this._withTimeout(this.clients.get(id).callTool({ name: "list_tabs", arguments: rest })));
-        const label = this.meta.get(id)?.label;
-        if (o?.tabs) for (const t of o.tabs) { t.id = `${id}:${t.id}`; t.instanceId = id; t.instanceLabel = label; out.push(t); }
-      } catch { /* one instance failing shouldn't sink the fan-out */ }
+      const label = this.meta.get(id)?.label;
+      // _callInstance drops a dead client and (list_tabs is idempotent) reconnects once. One
+      // instance failing must not sink the fan-out, but it must not vanish silently either: an
+      // empty answer reads as "nothing shared", which is a different (and wrong) statement.
+      const res = await this._callInstance(id, "list_tabs", rest);
+      const o = res?.isError ? null : parseText(res);
+      if (o?.tabs) out.push(...o.tabs);
+      else unavailable.push({ instanceId: id, label, error: String(res?.content?.[0]?.text ?? "no reply").slice(0, 200) });
     }));
-    return textResult({ tabs: out });
+    return textResult(unavailable.length ? { tabs: out, unavailable, note: "some browsers did not answer; their tabs are missing from this list (they are not necessarily unshared)" } : { tabs: out });
   }
 
   // /control handler (popup-driven, tControl-authed, NOT the agent path).
@@ -223,8 +255,16 @@ class Hub {
       const { op, instanceId, tabId, exceptInstanceId } = body || {};
       // Fan-out op: clear sharing on every instance except the caller (which clears itself locally).
       if (op === "revokeAll") {
-        await Promise.all([...this.clients.keys()].filter((id) => id !== exceptInstanceId).map((id) =>
-          this._withTimeout(this.clients.get(id).callTool({ name: "_td/revoke_all", arguments: {} }), CONTROL_TIMEOUT_MS).catch(() => {})));
+        // Report what really happened: claiming success while another browser kept sharing is
+        // the one outcome this button must never produce.
+        const failed = [];
+        await Promise.all([...this.clients.keys()].filter((id) => id !== exceptInstanceId).map(async (id) => {
+          try {
+            const r = await this._withTimeout(this.clients.get(id).callTool({ name: "_td/revoke_all", arguments: {} }), CONTROL_TIMEOUT_MS);
+            if (r?.isError) failed.push(id);
+          } catch { failed.push(id); }
+        }));
+        if (failed.length) return { status: 502, json: { ok: false, error: `could not confirm in: ${failed.map((id) => this.meta.get(id)?.label ?? id).join(", ")}`, failed } };
         return { status: 200, json: { ok: true } };
       }
       if (!instanceId || !this.clients.has(instanceId)) return { status: 404, json: { error: "instance not connected" } };

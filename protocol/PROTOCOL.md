@@ -81,7 +81,8 @@ ignored (forward-compat).
 
 | `type` | payload | reply `result` |
 |--------|---------|----------------|
-| `open` | `{ port, token, protocolVersion, instanceId?, label? }` | `{ port, protocolVersion }` — bind MCP server on `127.0.0.1:port` (**`port: 0` = ephemeral**; the reply echoes the actually-bound port). Require `token` for auth (§5). Mismatched `protocolVersion` → `VERSION_MISMATCH`. `instanceId`/`label` register the instance for discovery (§7). |
+| `open` | `{ port, token, protocolVersion, instanceId?, label?, hub?, extensionVersion?, features? }` | `{ port, protocolVersion }` (plus `{ hub, endpoint, token, hubReady }` when `hub:true`, see §11) — bind MCP server on `127.0.0.1:port` (**`port: 0` = ephemeral**; the reply echoes the actually-bound port). Require `token` for auth (§5). Mismatched `protocolVersion` → `VERSION_MISMATCH`. `instanceId`/`label` register the instance for discovery (§7). `extensionVersion` (the loaded build's manifest version) and `features` (string list of optional capabilities the build has, e.g. `"frames"`, `"cdp-input"`) are recorded for the instance and published in its discovery entry; see "Feature gating" below. |
+| `relabel` | `{ label }` | `{}` — the user renamed this browser: republish the discovery entry (§7) so the hub and agents see the new label. |
 | `close` | — | `{}` — stop the MCP server (process keeps running). |
 | `ping` | — | `{ pong: true }` — liveness. |
 | `peers` | — | `{ instances: [{ instanceId, label, tier, sharedCount, tabs, activeTabId }] }` — host proxies the hub's `GET /control` (§11a) so the popup can show every browser + what each shares. |
@@ -108,8 +109,17 @@ what is shared.
 
 | `type` | direction | payload | meaning |
 |--------|-----------|---------|---------|
-| `notice` | host → ext | `{ level, message }` | unsolicited host log/status. |
-| `event`  | ext → host | `{ kind, ... }` | out-of-band browser event (e.g. `kind:"tab_removed"`, `"permission_revoked"`). Hosts MAY ignore. |
+| `notice` | host → ext | `{ level, message }` | unsolicited host log/status. `level: "warn"`/`"error"` should be shown to the user (the Node host sends a `warn` when the running extension build is older than the extension code next to it on disk: "reload it"). |
+| `event`  | ext → host | `{ kind, ... }` | out-of-band browser event (e.g. `kind:"tab_removed"`, `"permission_revoked"` (an expired share), `"permission_paused"` (a tab left its shared origin; the grant is kept)). Hosts MAY ignore. |
+
+**Feature gating.** A tool or argument that an older extension build would silently
+mis-handle (a `frameId` ignored by a build that predates frames: the script then runs
+in the top page while the agent believes it ran in the frame) is marked
+`"x-requires": "<feature>"` in `tools.schema.json` (on the tool, or on the property).
+A host MUST NOT forward a call that uses such a tool/argument (a truthy value; `frameId: 0`
+and `false` mean the default behaviour) unless the `features` the extension reported in
+`open` include the feature. It answers `EXTENSION_OUTDATED` instead — nothing is run. A build
+that reports no `features` has none.
 
 **Core loop:** MCP tool call arrives → host sends
 `{ type:"invoke", id, payload:{ tool, args } }` → extension runs it and replies
@@ -135,8 +145,11 @@ process and OS user shares localhost. So:
 
 **Error codes** (reply `error.code`): `UNKNOWN_TOOL`, `TAB_NOT_FOUND`,
 `TIMEOUT`, `CSP_BLOCKED`, `SCRIPT_ERROR`, `FRAME_TOO_LARGE`, `VERSION_MISMATCH`,
-`INVALID_ARGS`, `INTERNAL`, the consent codes (§6a) `NOT_SHARED`, `ORIGIN_DRIFT`,
-`ORIGIN_DENIED`, `CAP_NOT_GRANTED`, and the CDP code (§6b) `CDP_NOT_PERMITTED`.
+`INVALID_ARGS`, `INTERNAL`, `EXTENSION_OUTDATED` (the loaded extension build lacks a
+feature the call needs — see "Feature gating"), the consent codes (§6a) `NOT_SHARED`,
+`ORIGIN_DRIFT`, `ORIGIN_DENIED`, `CAP_NOT_GRANTED`, and the CDP code (§6b)
+`CDP_NOT_PERMITTED`. `FRAME_TOO_LARGE` is also what the extension answers when a result
+is too big for the wire (30 MiB), so the call fails by name instead of timing out.
 
 ## 6a. Consent semantics (Feature B)
 
@@ -155,25 +168,51 @@ Per-tool behaviour a conforming extension MUST implement:
 - **Tab-targeting** (`navigate`, `get_page_content`, `execute_script`,
   `screenshot`, `activate_tab`, `close_tab`): the target tab's **current** origin
   is checked fresh at invoke time. Not shared → `NOT_SHARED`; on the denylist →
-  `ORIGIN_DENIED`; a `stickyOrigin` grant whose tab has navigated away →
-  `ORIGIN_DRIFT` (grant auto-revoked).
+  `ORIGIN_DENIED`; with **lock-to-domain** on (a live, global setting, default on), a
+  shared tab whose page is no longer on the host it was shared on → `ORIGIN_DRIFT`.
+  Drift **pauses** the grant: the call is refused and the tab is hidden from the
+  enumerate tools, but the grant is **kept**, so access resumes when the tab is back on
+  that host (or when the user turns the lock off, which also frees tabs shared while it
+  was on; turning it on again re-pins every grant to the host its tab is on at that
+  moment). With the lock on, `navigate` to another host is refused up front
+  (`ORIGIN_DENIED`) instead of cutting the agent's own access. The auto-expire TTL is
+  likewise live: counted from the later of when a tab was shared and when the setting
+  last changed. Explicit unsharing (popup, hotkey, `_td/*`) and TTL expiry still revoke.
 - **Create** (`open_tab`): denied under `none`; under `tabs` the created tab is
   **not** auto-shared by default — the user opts in via the "Don't auto-share
   tabs the agent opens" setting (default on = no auto-share). When the user opts
   out of that guard, an opened tab is auto-added to the allowlist (stickyOrigin);
   the denylist still applies in either case.
+- **Documents are pinned.** Every page tool acts on one document that the extension
+  first **probes**, judges, and then targets by its **documentId** — the page itself
+  (frame 0) exactly like a child frame. A document never changes origin and dies with
+  its page, so if the page navigates between the check and the action the action fails;
+  it can never land on a different (possibly filtered-out) origin. The judgement: with
+  lock-to-domain on, the page must still be on the host the tab was authorized on
+  (else `ORIGIN_DRIFT`); either way its origin must pass the origin filter (else
+  `ORIGIN_DENIED`). `blob:`/`filesystem:` documents and `about:blank` pages that inherit
+  a site's origin count as that site.
 - **Frames** (`frameId` on the page tools, `list_frames`): a frame is reachable
-  only inside a tab that passed the checks above. The extension then judges the
-  frame from what it reports itself: its tab's top-level page must still be the
-  authorized origin (else `ORIGIN_DRIFT`), and the **frame's own** origin must pass
-  the origin filter (else `ORIGIN_DENIED`; filtered frames are omitted from
-  `list_frames` and from `get_dom_snapshot`'s frame sections). Lock-to-domain
-  governs the tab, not its frames — an embedded form is part of the shared page.
-  The approved frame is targeted by its **documentId**, so a frame that navigates
-  in between is never acted on. An unknown `frameId` → `INVALID_ARGS`.
+  only inside a tab that passed the checks above. The frame is judged by its own
+  origin, by the host of its URL, and by every ancestor between it and the page (so a
+  sandboxed frame, or one nested inside a filtered-out frame, stays unreachable);
+  filtered frames are omitted from `list_frames` and from `get_dom_snapshot`'s frame
+  sections. Lock-to-domain governs the tab, not its frames — an embedded form is part
+  of the shared page. An unknown `frameId` → `INVALID_ARGS`.
+- **Pixels and buffers.** `screenshot` is refused (`ORIGIN_DENIED`) while the page
+  shows a visible frame of a filtered-out site. CDP-captured network records are hidden
+  when ANY hop of a redirect chain is on a filtered-out origin, and CDP console lines
+  are filtered by the origin of their source URL.
 
 The extension MAY send `event` notifications (ext→host, no reply) for
-`permission_revoked` and `tab_removed`; hosts MAY ignore them.
+`permission_revoked`, `permission_paused` and `tab_removed`; hosts MAY ignore them.
+
+**Sharing survives an extension Reload, not a browser restart.** Grants live in
+`storage.session` and are mirrored to `storage.local` with a heartbeat. On
+`runtime.onInstalled` with `reason: "update"` (which is also an unpacked Reload) the
+extension restores a **fresh** mirror (heartbeat < 5 min old) for tabs that still exist
+**on the host they were shared on** (tab ids are reused across browser sessions) and still
+pass the filter and TTL. A browser start (`onStartup`) clears the mirror.
 
 ## 6b. execute_script engine & CDP eval (PART 4)
 
@@ -195,8 +234,9 @@ default `auto`):
   opted in; otherwise re-throw `CSP_BLOCKED` with a hint to enable CDP.
 
 A global "Always use CDP" developer setting overrides every `engine` to `cdp`
-(only honored when CDP is permitted). The in-page origin re-check (`_authHost`)
-and the 8 MB result cap apply identically on the CDP path. The debugger is
+(only honored when CDP is permitted). The in-expression origin guard (the pinned host with lock-to-domain on, else the
+embedded origin filter, judged by the document's origin) and the 8 MB result cap apply
+identically on the CDP path. The debugger is
 detached after each call unless "Always use CDP" holds it attached, and is always
 released on disconnect / tab close / consent revoke.
 
@@ -215,8 +255,9 @@ surfaces `CSP_BLOCKED` with a pointer to the CSP-safe tools.
 
 Because port↔browser is 1:1 (§1), the extension requests an **ephemeral port
 (`port: 0`)** by default so N browsers need zero manual port config; the host
-binds a free port and echoes it in the `open` reply. Each host records
-`{ instanceId, label, port, token, pid }` in `~/.tabduct/instances/<id>.json`
+binds a free port and echoes it in the `open` reply. The extension always asks for
+`0`: agents only ever see the hub, so a remembered port could only go stale. Each host records
+`{ instanceId, label, port, token, pid, extensionVersion, features }` in `~/.tabduct/instances/<id>.json`
 (§9a); an agent gets a ready `--mcp-config` for every live instance via
 `tabduct instances`. The popup MAY pin a fixed port instead; `12310` is the
 documented default/fallback. A busy pinned port fails the `open` reply with
@@ -246,7 +287,9 @@ The extension's background is an MV3 service worker; it can be evicted. Contract
   restores an in-session evicted worker — NOT a full browser restart (on which
   the host process also died and removed its discovery entry). True
   cross-restart recovery is a hub-era feature. The popup reads state from
-  storage, not from worker globals.
+  storage, not from worker globals. Evicting the worker does not lose sharing
+  (`storage.session` survives it); an extension **Reload/update** does wipe
+  `storage.session`, which is what the restore in §6a is for.
 
 ---
 
@@ -296,7 +339,15 @@ browser instances. Reverse-proxy design (see docs/HUB-PLAN.md):
 - On-demand: a host whose extension sent `open{hub:true}` spawns the hub if
   `~/.tabduct/hub.json` is absent/dead, and its `open` reply returns
   `{ hub:true, endpoint, token }` (the stable hub URL+token, shown in the popup).
-  The host still binds its own port + discovery so the hub can proxy it.
+  The host still binds its own port + discovery so the hub can proxy it. While open in
+  hub mode the host re-checks the hub every ~10 s and brings a dead one back (the bind
+  on `HUB_PORT` is the singleton mutex, so several hosts doing so is safe).
+- **Reconnection.** The hub keys its clients by `instanceId` but remembers the entry's
+  fingerprint (`port|pid|token`): a host that restarted under the same id (Stop → Start)
+  gets a fresh client at once instead of keeping a dead one. Every poll also refreshes the
+  label and extension version/features from the discovery entry. A request that names a
+  session the hub (or a restarted hub) doesn't know gets HTTP **404** — the MCP
+  Streamable-HTTP cue for the client to open a new session — not 400.
 - **Composite tab handles** `"<instanceId>:<tabId>"` are created/parsed at the hub;
   the extension and base tool catalog are unchanged. The hub serves a *derived*
   catalog (composite `tabId`, optional `instanceId`, extra `list_instances` tool);
@@ -304,6 +355,13 @@ browser instances. Reverse-proxy design (see docs/HUB-PLAN.md):
   explicit `instanceId`; else single instance; else `AMBIGUOUS_INSTANCE`. Calls to
   a vanished instance → `INSTANCE_GONE`. Results (`list_tabs`/`get_active_tab`/
   `open_tab`/`navigate`) have their ids re-composited; screenshots pass through.
+  `list_instances` reports `{ instanceId, label, extensionVersion, features }` per
+  browser, so an agent can see which profile runs an older extension build. The derived
+  catalog is built from the tools the connected hosts actually serve (it falls back to the
+  hub's own copy only while no instance is connected), so a hub that outlives a `git pull`
+  doesn't advertise a stale tool list. `list_tabs` fans out to every instance; one that
+  doesn't answer is named in `unavailable: [{ instanceId, label, error }]` instead of
+  silently vanishing (an empty list must not read as "nothing shared").
 - Consent is still enforced by each extension; the hub makes no authorization
   decision. The hub self-exits ~60s after its registry is empty.
 
@@ -311,8 +369,8 @@ browser instances. Reverse-proxy design (see docs/HUB-PLAN.md):
 
 A second, **non-MCP** HTTP endpoint on the hub, for the *popup* (never the agent) to
 see and manage sharing across all browsers. Same anti-DNS-rebinding guards as `/mcp`
-(no `Origin`, pinned `Host`) but authed with a **separate** bearer `tControl` (also in
-`~/.tabduct/token`, alongside `tAgent`). Crucially, `tControl` is **never disclosed to
+(no `Origin`, pinned `Host`) but authed with a **separate** bearer `tControl` (in its own file,
+`~/.tabduct/control`; `tAgent` lives in `~/.tabduct/token`). Crucially, `tControl` is **never disclosed to
 the agent** — only `tAgent` is shown in the popup — and the agent-facing `/mcp` router
 **refuses** any `_td/*` name, so an agent holding `tAgent` can neither snapshot nor
 unshare across browsers. It stays a user-only action.
@@ -320,7 +378,7 @@ unshare across browsers. It stays a user-only action.
 - `GET /control` → `{ instances: [{ instanceId, label, tier, sharedCount, tabs, activeTabId }] }` (fans out `_td/snapshot`; per-instance tab ids stay numeric — no composite rewrite).
 - `POST /control {op:"unshare", instanceId, tabId}` → routes `_td/unshare` to that instance.
 - `POST /control {op:"stopAll", instanceId}` → routes `_td/set_tier {tier:"none"}`.
-- `POST /control {op:"revokeAll", exceptInstanceId?}` → fans `_td/revoke_all` to every instance except `exceptInstanceId` (the caller, which clears itself locally).
+- `POST /control {op:"revokeAll", exceptInstanceId?}` → fans `_td/revoke_all` to every instance except `exceptInstanceId` (the caller, which clears itself locally). It reports what really happened: `200 {ok:true}` only when every other instance confirmed, else `502 {ok:false, error, failed:[instanceId…]}` — "Revoke all" must never claim success while another browser still shares.
 
 The popup never calls `/control` directly (it's a browser context → would carry an
 `Origin`); instead its extension asks its **own host** via the `peers`/`peerUnshare`/

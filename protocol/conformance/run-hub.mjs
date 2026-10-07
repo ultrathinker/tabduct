@@ -32,14 +32,15 @@ function finish(code) { if (done) return; done = true; clearTimeout(guard); for 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 // A fake instance = real host + a fake extension answering invokes over stdio.
-function startInstance(instanceId) {
+function startInstance(instanceId, gen = "") {
   const proc = spawn(process.execPath, [HOST], { stdio: ["pipe", "pipe", "inherit"], env: ENV }); procs.push(proc);
   const send = (o) => { const b = Buffer.from(JSON.stringify(o)); const h = Buffer.alloc(4); h.writeUInt32LE(b.length, 0); proc.stdin.write(Buffer.concat([h, b])); };
   let buf = Buffer.alloc(0), need = -1; const pend = new Map();
   proc.stdout.on("data", (c) => { buf = Buffer.concat([buf, c]); for (;;) { if (need === -1) { if (buf.length < 4) return; need = buf.readUInt32LE(0); buf = buf.subarray(4); } if (buf.length < need) return; const m = JSON.parse(buf.subarray(0, need).toString()); buf = buf.subarray(need); need = -1; if (m.replyTo) { const r = pend.get(m.replyTo); if (r) { pend.delete(m.replyTo); r(m); } } else if (m.type === "invoke") answer(m); } });
   const answer = (m) => {
     const t = m.payload.tool, ok = (result) => send({ replyTo: m.id, ok: true, result });
-    if (t === "list_tabs") ok({ tabs: [{ id: 1, title: `tab-${instanceId}`, url: "https://example.com", active: true }] });
+    if (t === "list_tabs") ok({ tabs: [{ id: 1, title: `tab-${instanceId}${gen}`, url: "https://example.com", active: true }] });
+    else if (t === "_td/revoke_all") { if (instanceId === "B") send({ replyTo: m.id, ok: false, error: { code: "INTERNAL", message: "boom" } }); else ok({ ok: true }); }
     else if (t === "get_active_tab") ok({ id: 7, title: `active-${instanceId}`, url: "https://example.com", active: true });
     else if (t === "navigate") ok({ id: 9, title: "nav", url: m.payload.args?.url, active: true });
     else if (t === "screenshot") ok({ mimeType: "image/png", dataUrl: `data:image/png;base64,${BIG}` });
@@ -57,6 +58,15 @@ function rpc(body, { sessionId, token } = {}) {
     if (sessionId) headers["mcp-session-id"] = sessionId;
     const req = http.request({ host: "127.0.0.1", port: HUB_PORT, path: "/mcp", method: "POST", headers }, (r) => {
       let d = ""; r.on("data", (x) => (d += x)); r.on("end", () => { let j; if ((r.headers["content-type"] || "").includes("text/event-stream")) { const l = d.split("\n").filter((x) => x.startsWith("data:")).pop(); j = l ? JSON.parse(l.slice(5).trim()) : undefined; } else if (d) { try { j = JSON.parse(d); } catch {} } resolve({ status: r.statusCode, sessionId: r.headers["mcp-session-id"], json: j }); });
+    });
+    req.on("error", () => resolve({ status: "REFUSED" })); req.end(p);
+  });
+}
+function control(body, tControl) {
+  return new Promise((resolve) => {
+    const p = Buffer.from(JSON.stringify(body));
+    const req = http.request({ host: "127.0.0.1", port: HUB_PORT, path: "/control", method: "POST", headers: { "content-type": "application/json", "content-length": p.length, authorization: `Bearer ${tControl}` } }, (r) => {
+      let d = ""; r.on("data", (x) => (d += x)); r.on("end", () => { let j; try { j = JSON.parse(d); } catch {} resolve({ status: r.statusCode, json: j }); });
     });
     req.on("error", () => resolve({ status: "REFUSED" })); req.end(p);
   });
@@ -109,9 +119,36 @@ const call = (name, args, sid, token) => rpc({ jsonrpc: "2.0", id: Math.floor(Ma
   const mal = await call("get_page_content", { tabId: "A:" }, sid, tAgent);
   ok(mal.json?.result?.isError && /INVALID_ARGS/.test(mal.json.result.content[0].text), "malformed composite tabId → INVALID_ARGS");
 
-  // mid-flight failover: kill B, call immediately → INSTANCE_GONE (reconnect fails; not a 20s timeout)
+  // the hub tells the agent which extension build each browser runs
+  ok(insts.instances.every((i) => "extensionVersion" in i && Array.isArray(i.features)), "list_instances reports each browser's extension version + features");
+
+  // an unknown session id gets 404 (the MCP spec's cue to re-initialize), not 400
+  ok((await rpc({ jsonrpc: "2.0", id: 3, method: "tools/list" }, { sessionId: "no-such-session", token: tAgent })).status === 404, "unknown session id → 404 (client re-initializes)");
+
+  // OPUS-7: a host that restarts under the SAME instanceId (Stop → Start) gets a new port/token; the hub
+  // must drop the dead client and reconnect instead of serving an empty list_tabs forever
+  A.kill();
+  const A2 = startInstance("A", "2"); ok((await A2.open()).ok, "instance A restarted under the same id");
+  const lt2 = toolResult(await call("list_tabs", {}, sid, tAgent));
+  ok((lt2?.tabs || []).some((t) => t.id === "A:1" && t.title === "tab-A2"), `restarted instance is served at once (got ${JSON.stringify((lt2?.tabs || []).map((t) => t.title))})`);
+  await sleep(3500); // and the periodic reconcile keeps it connected
+  const lt3 = toolResult(await call("list_tabs", {}, sid, tAgent));
+  ok((lt3?.tabs || []).some((t) => t.title === "tab-A2"), "still served after the next poll");
+
+  // CDX-1: revokeAll reports a browser that failed to clear (B's fake extension errors on _td/revoke_all)
+  const tControl = JSON.parse(readFileSync(resolve(DIR, "control"), "utf8")).tControl;
+  const rv = await control({ op: "revokeAll", exceptInstanceId: "nobody" }, tControl);
+  ok(rv.status === 502 && rv.json?.ok === false && JSON.stringify(rv.json?.failed) === JSON.stringify(["B"]), `revokeAll with a browser that fails → 502 naming it (got ${rv.status} ${JSON.stringify(rv.json)})`);
+  const rv2 = await control({ op: "revokeAll", exceptInstanceId: "B" }, tControl);
+  ok(rv2.status === 200 && rv2.json?.ok === true, "revokeAll succeeds when every other browser cleared");
+
+  // CDX-8: a browser that dies mid-poll is reported in list_tabs (not silently missing); the rest still answer
   B.kill();
   await sleep(500);
+  const ltPartial = toolResult(await call("list_tabs", {}, sid, tAgent));
+  ok(Array.isArray(ltPartial?.unavailable) && ltPartial.unavailable.some((u) => u.instanceId === "B") && (ltPartial.tabs || []).some((t) => t.id === "A:1"), `list_tabs names the browser that didn't answer and still lists the rest (got ${JSON.stringify(ltPartial)})`);
+
+  // mid-flight failover: call to the dead instance → INSTANCE_GONE (reconnect fails; not a 20s timeout)
   const gone = await call("get_active_tab", { instanceId: "B" }, sid, tAgent);
   ok(gone.json?.result?.isError && /INSTANCE_GONE/.test(gone.json.result.content[0].text), "call to a just-killed instance → INSTANCE_GONE");
 
@@ -120,7 +157,7 @@ const call = (name, args, sid, token) => rpc({ jsonrpc: "2.0", id: Math.floor(Ma
   ok(insts2?.instances?.length === 1 && insts2.instances[0].instanceId === "A", "after poll → 1 instance");
 
   // self-exit when the registry empties
-  A.kill();
+  A2.kill();
   await sleep(6000);
   ok(!existsSync(resolve(DIR, "hub.json")), "hub self-exits + removes hub.json when empty");
 

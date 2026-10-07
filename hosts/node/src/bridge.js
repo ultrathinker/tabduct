@@ -4,7 +4,7 @@
 // resolves when the extension replies (correlated by `id`). Heart of the host.
 
 import { randomUUID } from "node:crypto";
-import { INVOKE_TIMEOUT_MS, ERR } from "./constants.js";
+import { invokeTimeoutMs, ERR } from "./constants.js";
 
 function wireError(code, message) {
   const e = new Error(message);
@@ -35,10 +35,11 @@ export class Bridge {
   invoke(tool, args = {}) {
     return new Promise((resolve, reject) => {
       const id = randomUUID();
+      const budget = invokeTimeoutMs(tool, args);
       const timer = setTimeout(() => {
         this._pending.delete(id);
-        reject(wireError(ERR.TIMEOUT, `Tool "${tool}" timed out after ${INVOKE_TIMEOUT_MS}ms`));
-      }, INVOKE_TIMEOUT_MS);
+        reject(wireError(ERR.TIMEOUT, `Tool "${tool}" timed out after ${budget}ms`));
+      }, budget);
       this._pending.set(id, { resolve, reject, timer });
       try {
         this._nm.send({ type: "invoke", id, payload: { tool, args } });

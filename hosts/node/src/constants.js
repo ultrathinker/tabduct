@@ -21,6 +21,13 @@ export const MAX_FRAME_BYTES = 32 * 1024 * 1024;   // inbound frame cap (screens
 export const OUT_FRAME_MAX_BYTES = 1024 * 1024;    // Chrome hard cap host->extension (1 MB)
 export const MCP_REQUEST_MAX_BYTES = 8 * 1024 * 1024; // max HTTP request body we buffer
 export const INVOKE_TIMEOUT_MS = 20_000;           // per tool_call round-trip
+// Per-call budget: a tool that legitimately waits (wait_for up to 25 s) must not be cut off by
+// the generic 20 s while the extension is still polling; the extension's own answer arrives
+// within the wait plus a little overhead.
+export function invokeTimeoutMs(tool, args) {
+  if (tool === "wait_for") { const t = Number(args?.timeoutMs); return Math.min(t > 0 ? t : 10_000, 25_000) + 5_000; }
+  return INVOKE_TIMEOUT_MS;
+}
 export const STOP_GRACE_MS = 2_000;                // force-close hung connections after this
 
 // Loopback hosts accepted by the DNS-rebinding Host check (all pin to loopback).
@@ -46,6 +53,9 @@ export const ERR = {
   CAP_NOT_GRANTED: "CAP_NOT_GRANTED",
   // CDP eval (PART 4) — opt-in arbitrary-JS engine on strict-CSP sites.
   CDP_NOT_PERMITTED: "CDP_NOT_PERMITTED",
+  // The loaded extension build lacks a feature the call needs (host refuses instead of
+  // forwarding a call the extension would silently run differently).
+  EXTENSION_OUTDATED: "EXTENSION_OUTDATED",
   // Hub (Feature A, Phase 3)
   AMBIGUOUS_INSTANCE: "AMBIGUOUS_INSTANCE",
   INSTANCE_GONE: "INSTANCE_GONE",
