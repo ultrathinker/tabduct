@@ -1020,7 +1020,7 @@ async function trustedType(args) {
     if (args.text === "") { if (clear) await pressKeyCdp(send, keyDescriptor("Delete")); }
     else await send("Input.insertText", { text: args.text });
   });
-  return { typed: true, trusted: true, selector: args.selector ?? null, ...(r.hasFocus ? {} : { warning: "the page did not report focus (is its tab/window in the background?); the input may have been ignored" }) };
+  return { typed: true, trusted: true, selector: args.selector ?? null, ...(r.hasFocus ? {} : { warning: "the page did not report focus: its tab or window is in the background or minimized, so the input was sent but the page may not have handled it or redrawn yet. Show the tab (or turn on 'Wake the browser' in the Tabduct popup) and read the result again" }) };
 }
 
 async function trustedClick(args) {

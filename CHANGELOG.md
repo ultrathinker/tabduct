@@ -4,6 +4,27 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims for
 [Semantic Versioning](https://semver.org/) once it reaches 1.0.
 
+## [1.6.1] — 2026-10-07
+
+### Added
+- **Wake the browser** (Settings, default on). A minimized window, a window covered by others or a
+  tab in the background does not draw, reports no focus and cannot be screenshotted, so an agent
+  saw its input "ignored" and pages that never repainted (a scheduled check of a terminal, a
+  dropdown). Now `screenshot`, `type`, `click`, `press_key`, `get_page_content` and
+  `get_dom_snapshot` bring such a window forward for the call: a minimized window is restored, used,
+  and minimized again a few seconds after the last call (Windows hands the focus back to the app you
+  were in; a maximized window comes back maximized); a covered window is raised and its tab shown,
+  the previously active tab put back. A window you are working in is never touched, and with the
+  setting off nothing is. Verified in a real Chrome (`npm run test:e2e-wake`, opt-in, opens a window
+  for a few seconds).
+- Shared tabs are marked `autoDiscardable: false` while shared (given back on unshare), so Chrome's
+  Memory Saver does not unload them (a discarded tab reloads with a new tab id and loses its state).
+  A tab that is discarded anyway is not woken: the agent gets a clear error instead of a silent reload.
+
+### Changed
+- The `type` warning "the page did not report focus" now says what it means: the tab or window is in
+  the background, the input was sent but may not have been handled or drawn yet.
+
 ## [1.6.0] — 2026-10-07
 
 ### Added

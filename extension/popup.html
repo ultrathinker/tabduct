@@ -136,6 +136,11 @@
               Unshare a tab when I take it out of the group
               <span class="help" title="Off by default. When on, dragging a shared tab out of the '⚡' group (or into another group) stops sharing it. Left off, moving tabs around never ends a share; use the ✕, the shortcut or the context menu to unshare.">?</span>
             </label>
+            <label class="tg">
+              <input type="checkbox" id="wakeBrowser" checked />
+              Wake the browser when a shared tab is asleep
+              <span class="help" title="On by default. A minimized window, a window covered by others or a background tab does not draw, shows no focus and cannot be screenshotted, so screenshots, typing, clicks, key presses and page reads come back stale or ignored. With this on, the extension brings that window forward for the call (a minimized one is restored, then minimized again a few seconds after the last call, and Windows gives the focus back to the app you were in). A window you are working in is never touched. Turn off if you do not want the browser to pop up; the agent is then told the tab is in the background. A tab Chrome unloaded to save memory is never woken (that would reload the page).">?</span>
+            </label>
           </section>
 
           <section class="setcard">

@@ -21,6 +21,9 @@ let TABS = [];
 let PAGE = {}; // tabId -> probe origin
 let FRAMES = {}; // tabId -> extra frames [{frameId, documentId, result}] reported by the allFrames probe
 let SHOT = "data:image/png;base64,QUJD";
+let WINLOG = []; // chrome.windows.update calls
+let TABLOG = []; // [tabId, autoDiscardable] set through chrome.tabs.update
+let WINSTATE = "normal";
 let ports = [];
 const mkPort = () => { const p = { sent: [], onMessage: ev(), onDisconnect: ev(), postMessage(m) { p.sent.push(m); }, disconnect() { p.closed = true; } }; ports.push(p); return p; };
 const evs = { onInstalled: ev(), onStartup: ev(), onMessage: ev(), tabsRemoved: ev(), tabsReplaced: ev(), tabsUpdated: ev(), tabsCreated: ev(), alarm: ev() };
@@ -35,7 +38,7 @@ globalThis.chrome = {
   tabs: {
     async get(id) { const t = TABS.find((x) => x.id === id); if (!t) throw new Error(`No tab with id: ${id}`); return t; },
     async query(q = {}) { return q.active ? TABS.filter((t) => t.active) : TABS.map((t) => ({ ...t })); },
-    async update(id, p) { const t = TABS.find((x) => x.id === id); if (p?.url) { t.url = p.url; t.navigated = true; } return t; },
+    async update(id, p) { const t = TABS.find((x) => x.id === id); if (p?.url) { t.url = p.url; t.navigated = true; } if (p && "autoDiscardable" in p) TABLOG.push([id, p.autoDiscardable]); return t; },
     captureVisibleTab: async () => SHOT,
     onRemoved: evs.tabsRemoved, onReplaced: evs.tabsReplaced, onUpdated: evs.tabsUpdated, onCreated: evs.tabsCreated,
   },
@@ -50,12 +53,14 @@ globalThis.chrome = {
   },
   action: { setBadgeText() {}, setBadgeBackgroundColor() {}, setBadgeTextColor() {}, setIcon: async () => {} },
   alarms: { get: async () => ({}), create() {}, onAlarm: evs.alarm },
-  windows: { update: async () => {} },
+  windows: { update: async (id, p) => { WINLOG.push(p); }, get: async (id) => ({ id, state: WINSTATE, focused: false }) },
   permissions: { contains: async () => false, onAdded: ev() },
 };
 globalThis.fetch = async () => { throw new Error("no network in tests"); }; // hubReachable() → false
 
 await import("../extension/background.js");
+const WAKE = await import("../extension/wake.js");
+Object.assign(WAKE.timing, { idleMs: 30, pollMs: 5, maxWaitMs: 50, settleMs: 5 });
 const C = await import("../extension/consent.js");
 const { GroupMask, groupAction } = await import("../extension/groupsync.js");
 const popup = (msg) => new Promise((res) => { evs.onMessage.ls[0](msg, {}, res); });
@@ -99,6 +104,27 @@ eq([status.tabs.length, status.paused.map((t) => t.id), status.paused[0]?.shared
 TABS[0].url = "https://console.aws.amazon.com/back";
 eq(code(await call(P1, "get_page_content", { tabId: 1 })), "ok", "back on the shared host: access resumes by itself");
 eq((await call(P1, "list_tabs")).result.tabs.length, 1, "...and it is listed again");
+
+// ---- wake the browser (wake.js) through the gate -----------------------------------------------
+eq([status.wakeBrowser, TABLOG.some(([id, v]) => id === 1 && v === false)], [true, true], "wake is ON by default; sharing a tab asks Chrome not to discard it");
+WINSTATE = "minimized"; WINLOG = [];
+eq(code(await call(P1, "get_page_content", { tabId: 1 })), "ok", "wake: a page read in a minimized window works");
+eq(WINLOG, [{ focused: true }], "wake: the minimized window was brought forward for the call");
+await sleep(80);
+eq(WINLOG.at(-1), { state: "minimized" }, "wake: and minimized again after the idle period");
+WINLOG = [];
+await call(P1, "navigate", { tabId: 1, url: "https://console.aws.amazon.com/x", waitUntilComplete: false });
+eq(WINLOG, [], "wake: navigate does not need a rendered page, the window stays as it is");
+await C.setShareOptions({ wakeBrowser: false });
+eq((await popup({ cmd: "sharing.status" })).wakeBrowser, false, "wake: switched off from the popup");
+await call(P1, "get_page_content", { tabId: 1 });
+await sleep(50);
+eq(WINLOG, [], "wake OFF: the window is never touched");
+await C.setShareOptions({ wakeBrowser: true });
+WINSTATE = "normal";
+TABLOG = []; await C.unshareTab(1);
+eq(TABLOG, [[1, true]], "unshare gives the tab back to Chrome's memory management");
+await C.shareTab(1);
 
 // navigate pre-check: the agent can't cut its own access
 TABS[0].navigated = false;

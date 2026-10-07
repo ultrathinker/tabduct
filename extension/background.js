@@ -7,6 +7,7 @@
 import { HANDLERS, detachCdpTab, detachAllCdp, startCdpConsole, stopCdpConsole, stopAllCdpConsole, reconcileCdpForce, cdpConsoleTabs, cdpUserCancelled } from "./handlers/index.js";
 import * as CONSENT from "./consent.js";
 import { GroupMask, groupAction } from "./groupsync.js";
+import { WAKE_TOOLS, wake as wakeTab, release as releaseTab } from "./wake.js";
 
 const HOST_NAME = "com.tabduct.host";
 const DEFAULT_PORT = 0; // 0 = ephemeral: the host picks a free port (no manual port config)
@@ -253,7 +254,7 @@ async function gate(tool, args) {
   // lock-to-domain is on and this is a per-tab share (null = a blank page). Undefined = not
   // pinned (lock off, or the "Everything" tier): the page tools then only apply the origin filter.
   const pin = state.lockToDomain && state.tier === "tabs" ? host : undefined;
-  const out = { ...d, tabId, host, pin };
+  const out = { ...d, tabId, host, pin, wake: state.wakeBrowser !== false };
   if (tool === "execute_script" && d.allow) {
     const cd = CONSENT.cdpDecision(state, { engine: args?.engine });
     if (!cd.permitted) return { allow: false, code: cd.code, message: "CDP eval is not enabled (enable 'Allow CDP eval' in the popup, or switch engine to auto/scripting)" };
@@ -325,7 +326,11 @@ async function handleInvoke(msg) {
       if (decision._allowCdp != null) callArgs._allowCdp = decision._allowCdp;
       if (decision._cdpAlways != null) callArgs._cdpAlways = decision._cdpAlways;
     }
-    const result = await handler(callArgs);
+    // A hidden window/tab (minimized, covered, background) is brought forward for the call when the
+    // user left "Wake the browser" on; wake.js puts it back afterwards. Only after the gate said yes.
+    const woken = decision.wake && WAKE_TOOLS.has(tool) && decision.tabId != null ? await wakeTab(decision.tabId) : null;
+    let result;
+    try { result = await handler(callArgs); } finally { releaseTab(woken); }
     // open_tab auto-share is OPT-IN (off by default): only re-share the new tab
     // when the user explicitly disabled the "don't auto-share opened tabs" guard.
     if (tool === "open_tab" && result?.id != null) {
@@ -613,7 +618,7 @@ async function sharingStatus() {
   const { useTabGroup, noAutoShareOpened, unshareOnGroupLeave } = await chrome.storage.local.get(["useTabGroup", "noAutoShareOpened", "unshareOnGroupLeave"]);
   const { label } = await getIdentity(); // ensures + returns the auto default label
   const allShared = st.tier === "all" ? all.filter((t) => !CONSENT.originBlocked(st, CONSENT.hostOf(t.url))).length : shared.length;
-  return { tier: st.tier, denyOrigins: st.denyOrigins, originMode: st.originMode, sharedCount: allShared, tabs: shared, paused, activeTabId: active?.id, label, useTabGroup: useTabGroup !== false, unshareOnGroupLeave: unshareOnGroupLeave === true, readOnly: st.readOnly, ttlMs: st.ttlMs, lockToDomain: st.lockToDomain, noAutoShareOpened: noAutoShareOpened !== false, allowCdp: st.allowCdp, cdpAlways: st.cdpAlways, cdpConsole: st.cdpConsole, extensionVersion: EXT_VERSION };
+  return { tier: st.tier, denyOrigins: st.denyOrigins, originMode: st.originMode, sharedCount: allShared, tabs: shared, paused, activeTabId: active?.id, label, useTabGroup: useTabGroup !== false, unshareOnGroupLeave: unshareOnGroupLeave === true, readOnly: st.readOnly, ttlMs: st.ttlMs, lockToDomain: st.lockToDomain, noAutoShareOpened: noAutoShareOpened !== false, allowCdp: st.allowCdp, cdpAlways: st.cdpAlways, cdpConsole: st.cdpConsole, wakeBrowser: st.wakeBrowser, extensionVersion: EXT_VERSION };
 }
 
 // Cross-instance view for the popup: ask our host to fetch the hub's /control
@@ -809,7 +814,7 @@ chrome.runtime.onMessage.addListener((req, _sender, sendResponse) => {
       case "sharing.unshare": await CONSENT.unshareTab(req.tabId); scheduleBadges(); sendResponse(await sharingStatus()); break;
       case "sharing.tier": await CONSENT.setTier(req.tier); if (req.tier !== "tabs") await cleanupTabGroups(); updateContextMenu(); scheduleBadges(); sendResponse(await sharingStatus()); break;
       case "sharing.setOptions": {
-        await CONSENT.setShareOptions({ readOnly: req.readOnly, ttlMs: req.ttlMs, lockToDomain: req.lockToDomain, noAutoShareOpened: req.noAutoShareOpened, allowCdp: req.allowCdp, cdpAlways: req.cdpAlways, cdpConsole: req.cdpConsole, unshareOnGroupLeave: req.unshareOnGroupLeave });
+        await CONSENT.setShareOptions({ readOnly: req.readOnly, ttlMs: req.ttlMs, lockToDomain: req.lockToDomain, noAutoShareOpened: req.noAutoShareOpened, allowCdp: req.allowCdp, cdpAlways: req.cdpAlways, cdpConsole: req.cdpConsole, unshareOnGroupLeave: req.unshareOnGroupLeave, wakeBrowser: req.wakeBrowser });
         if (req.allowCdp !== undefined || req.cdpConsole !== undefined) cdpUserCancelled.clear(); // a deliberate settings change re-arms capture on tabs whose banner the user dismissed
         // allowCdp OFF = CDP fully off → release every held session immediately.
         // Other CDP-flag changes (cdpAlways/cdpConsole on OR off) are reconciled by

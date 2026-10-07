@@ -327,7 +327,7 @@ export async function getState() {
   // Read both stores in one shot so a concurrent mutator can't yield a mixed snapshot.
   const [sess, loc] = await Promise.all([
     chrome.storage.session.get("consent"),
-    chrome.storage.local.get(["denyOrigins", "shareReadOnly", "shareTtlMs", "shareTtlSetAt", "originMode", "lockToDomain", "allowCdp", "cdpAlways", "cdpConsole"]),
+    chrome.storage.local.get(["denyOrigins", "shareReadOnly", "shareTtlMs", "shareTtlSetAt", "originMode", "lockToDomain", "allowCdp", "cdpAlways", "cdpConsole", "wakeBrowser"]),
   ]);
   const s = sess.consent ?? { tier: "none", allow: {} };
   const { shareReadOnly = false, shareTtlMs = 0 } = loc;
@@ -341,6 +341,7 @@ export async function getState() {
     // CDP settings (PART 4) — all DEFAULT FALSE (storage.local, opt-in from the popup).
     // cdpConsole is only effective when allowCdp is true (ignored otherwise, same as cdpAlways).
     allowCdp: !!loc.allowCdp, cdpAlways: !!loc.cdpAlways, cdpConsole: !!loc.cdpConsole,
+    wakeBrowser: loc.wakeBrowser !== false, // default ON: bring a minimized/covered window forward for the call (wake.js)
   };
 }
 // Persist the WHOLE consent record. Mutators always pass the full state they read (never a
@@ -361,6 +362,13 @@ function grant(tab) {
   };
 }
 
+// A shared tab must not be unloaded by Chrome's Memory Saver (a discarded tab comes back as a reloaded
+// page with a NEW tab id, and loses its state - a terminal session, a half-filled form). Ask Chrome not to
+// discard it while it is shared; the flag goes back to the default on unshare. Best effort.
+function keepAlive(tabId, keep) {
+  try { Promise.resolve(chrome.tabs.update?.(Number(tabId), { autoDiscardable: !keep })).catch(() => {}); } catch {}
+}
+
 export function setTier(tier) {
   if (tier === "none") return revokeAll();
   return serial(async () => {
@@ -375,12 +383,13 @@ export function shareTab(tabId) {
     const st = await getState();
     st.allow[String(tabId)] = grant(tab);
     await saveConsent({ ...st, tier: st.tier === "all" ? "all" : "tabs" });
+    keepAlive(tabId, true);
     return getState();
   });
 }
 // Global share defaults (apply to every tab, live — not per-tab). Persisted in storage.local.
 // Also carries the CDP opt-ins (allowCdp / cdpAlways / cdpConsole) — all DEFAULT FALSE.
-export function setShareOptions({ readOnly, ttlMs, lockToDomain, noAutoShareOpened, allowCdp, cdpAlways, cdpConsole, unshareOnGroupLeave } = {}) {
+export function setShareOptions({ readOnly, ttlMs, lockToDomain, noAutoShareOpened, allowCdp, cdpAlways, cdpConsole, unshareOnGroupLeave, wakeBrowser } = {}) {
   return serial(async () => {
     const prev = await getState();
     const patch = {};
@@ -396,6 +405,7 @@ export function setShareOptions({ readOnly, ttlMs, lockToDomain, noAutoShareOpen
     if (cdpAlways !== undefined) patch.cdpAlways = !!cdpAlways;
     if (cdpConsole !== undefined) patch.cdpConsole = !!cdpConsole;
     if (unshareOnGroupLeave !== undefined) patch.unshareOnGroupLeave = !!unshareOnGroupLeave;
+    if (wakeBrowser !== undefined) patch.wakeBrowser = !!wakeBrowser;
     // Lock switched OFF: free the tabs paused on a related site, release those the user moved elsewhere.
     if (lockToDomain === false && prev.lockToDomain !== false && prev.tier === "tabs" && Object.keys(prev.allow).length) {
       const allow = releasePausedGrants(prev, await chrome.tabs.query({}), Date.now());
@@ -411,10 +421,10 @@ export function setShareOptions({ readOnly, ttlMs, lockToDomain, noAutoShareOpen
   });
 }
 export function unshareTab(tabId) {
-  return serial(async () => { const st = await getState(); delete st.allow[String(tabId)]; await saveConsent(st); return getState(); });
+  return serial(async () => { const st = await getState(); delete st.allow[String(tabId)]; await saveConsent(st); keepAlive(tabId, false); return getState(); });
 }
 export function revokeAll() {
-  return serial(async () => { await saveConsent({ tier: "none", allow: {}, tierSetAt: null }); return getState(); });
+  return serial(async () => { const was = Object.keys((await getState()).allow); await saveConsent({ tier: "none", allow: {}, tierSetAt: null }); for (const id of was) keepAlive(id, false); return getState(); });
 }
 export function autoShareCreated(tab) {
   return serial(async () => {
@@ -422,6 +432,7 @@ export function autoShareCreated(tab) {
     if (st.tier !== "tabs") return;
     st.allow[String(tab.id)] = grant(tab);
     await saveConsent(st);
+    keepAlive(tab.id, true);
   });
 }
 export function setDenyOrigins(list) {

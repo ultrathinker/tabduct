@@ -81,6 +81,7 @@ function renderSharing(s) {
   $("tabGroup").checked = !!s.useTabGroup;
   $("unshareOnGroupLeave").checked = !!s.unshareOnGroupLeave;
   $("unshareOnGroupLeave").disabled = !s.useTabGroup;
+  $("wakeBrowser").checked = s.wakeBrowser !== false;
   $("readOnly").checked = !!s.readOnly;
   $("ttl").value = String(s.ttlMs || 0);
   $("lockToDomain").checked = s.lockToDomain !== false;
@@ -293,6 +294,7 @@ $("revokeAllGlobal").addEventListener("click", async () => {
 });
 $("tabGroup").addEventListener("change", async () => renderSharing(await send({ cmd: "sharing.setTabGroup", on: $("tabGroup").checked })));
 $("unshareOnGroupLeave").addEventListener("change", async () => renderSharing(await send({ cmd: "sharing.setOptions", unshareOnGroupLeave: $("unshareOnGroupLeave").checked })));
+$("wakeBrowser").addEventListener("change", async () => renderSharing(await send({ cmd: "sharing.setOptions", wakeBrowser: $("wakeBrowser").checked })));
 $("label").addEventListener("change", async () => renderSharing(await send({ cmd: "sharing.setLabel", label: $("label").value })));
 $("denyAdd").addEventListener("click", async () => {
   const v = $("denyInput").value.trim(); if (!v) return;
