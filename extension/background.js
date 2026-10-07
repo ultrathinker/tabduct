@@ -808,7 +808,16 @@ chrome.runtime.onMessage.addListener((req, _sender, sendResponse) => {
         break;
       }
       case "sharing.setDeny": await CONSENT.setDenyOrigins(req.list ?? []); scheduleBadges(); sendResponse(await sharingStatus()); break;
-      case "sharing.setLabel": { const v = String(req.label || "").trim().slice(0, 40); await chrome.storage.local.set({ instanceLabel: v || `Chrome-${labelSuffix()}` }); sendResponse(await sharingStatus()); break; }
+      case "sharing.setLabel": {
+        const v = String(req.label || "").trim().slice(0, 40);
+        const label = v || `Chrome-${labelSuffix()}`;
+        await chrome.storage.local.set({ instanceLabel: label });
+        // The hub reads labels from the discovery entry, which was written at `open`: tell the host,
+        // or the agent keeps seeing the old name until the next Start.
+        if (hostPort) request("relabel", { label }, 3000).catch(() => {});
+        sendResponse(await sharingStatus());
+        break;
+      }
       case "sharing.setTabGroup": await chrome.storage.local.set({ useTabGroup: !!req.on }); if (!req.on) await cleanupTabGroups(); scheduleBadges(); sendResponse(await sharingStatus()); break;
       case "sharing.activate": try { await chrome.tabs.update(req.tabId, { active: true }); const t = await chrome.tabs.get(req.tabId); await chrome.windows.update(t.windowId, { focused: true }); } catch {} sendResponse(await sharingStatus()); break;
       case "screenshot.capture": sendResponse(await captureToViewer()); break;

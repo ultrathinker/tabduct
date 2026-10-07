@@ -57,17 +57,19 @@
   `Authorization: Bearer <token>` on every MCP request, rejects any request that
   carries an `Origin` header, and verifies the `Host` header
   (DNS-rebinding defense). CORS is belt-and-braces only. See PROTOCOL.md §6.
-- The host makes **no external network calls** — enforced by contract and
-  checked in conformance.
+- The host makes **no external network calls** — a design rule of the host
+  (it only listens on loopback and talks to the hub and the extension); the
+  conformance suite does not verify it.
 - **Inherent risk:** whatever agent you connect gets a handle on your logged-in
   browser. That's the feature. Keep the server *on-demand* (Start + per-session
   agent launcher) so it isn't ambient.
 - **Prompt-injection risk (must state honestly):** content returned by
   `get_page_content` / `execute_script` is attacker-authored input to the agent,
   and that same agent holds `execute_script` over your logged-in sessions. A
-  hostile page can try to steer the agent. Mitigations: keep it on-demand, flash
-  the toolbar icon on every `invoke` (activity signal), and treat page text as
-  untrusted in agent prompts.
+  hostile page can try to steer the agent. Mitigations: keep it on-demand, the
+  origin filter / read-only / lock-to-domain limit the blast radius, the toolbar
+  badge flashes a red ✕ when a call is denied (there is no signal for successful
+  calls), and treat page text as untrusted in agent prompts.
 
 ## MV3 service-worker lifetime
 

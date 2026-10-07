@@ -37,11 +37,15 @@ Pre-1.0: only the latest `main` is supported. Pin a commit if you need stability
   (say, a payment widget in a shop) stays out of reach even though the page around
   it is shared.
 - **Lock shared tabs to their domain** (default on) — a shared tab that navigates
-  away loses access. It locks the *tab*: iframes on the shared page (embedded
-  forms, often from another domain) stay reachable, subject to the origin filter.
+  to another site is paused: calls are refused and the tab is hidden from the agent
+  (the share is kept and resumes when the tab returns). It is applied live, to tabs
+  that are already shared too. It locks the *tab*: iframes on the shared page
+  (embedded forms, often from another domain) stay reachable, subject to the origin filter.
 - **Read-only** — the agent may read/screenshot but not click, type, navigate, run
   scripts, or open/close tabs.
-- **Auto-expire** — un-shares everything after a chosen time.
+- **Auto-expire** — un-shares tabs after a chosen time (live, like the lock).
+- **Full access preset** — a convenience over the flags above (lock off, read-only
+  off, no expiry, CDP eval on). It never changes the origin list, its mode or the frame rule.
 - **Don't auto-share tabs the agent opens** (default on).
 
 ## Known limitations (by design)
@@ -67,9 +71,20 @@ Pre-1.0: only the latest `main` is supported. Pin a commit if you need stability
   `~/.tabduct`; a process running as you could register a fake "browser" (prompt
   injection vector) — and the token is only withheld from a port squatter because
   the host verifies the hub's `hub.json` pid+port before disclosing it.
-- **TOCTOU window.** A shared page that self-navigates in the sub-second between
-  authorization and script execution is caught by an in-page origin re-check; for
-  free-navigation (`anyOrigin`) grants this can rarely fail safe as `ORIGIN_DRIFT`.
+- **TOCTOU.** Every page tool probes the document, judges it, and acts on that
+  exact document by its `documentId`; a page that self-navigates in between makes the
+  action fail instead of landing on another origin. The CDP eval path embeds the same
+  check in the evaluated expression. Residual risk: with lock-to-domain *off* the
+  embedded origin filter (your block/allow list) is part of that expression, so a page
+  that tampers with built-in JS prototypes could in principle observe the list — only
+  when you opted into CDP eval and switched the lock off.
+- **Trusted input** (`type`/`click` with `trusted`, `press_key`) is browser-level: it
+  goes to whatever has focus, or to the element under the pointer. It is refused while
+  the page shows a frame of a site excluded by the origin filter, but a hostile page
+  that moves focus in the milliseconds between the check and the keystroke is not
+  something this can fully exclude. It needs *Allow CDP eval* and is refused in read-only.
+- **Screenshots capture pixels.** A screenshot is refused while the page shows a visible
+  frame of a filtered-out site; a hidden (0×0) frame cannot be seen in it.
 - **Not on the Chrome Web Store.** Manifest V3 forbids runtime arbitrary code, so
   `execute_script` can't ship as-is to the store; the required `debugger` permission
   adds further review friction. Install unpacked / from source.

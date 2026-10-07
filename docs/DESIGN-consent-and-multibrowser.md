@@ -29,14 +29,18 @@ Tiers: `none` (default) · `tabs` (explicit allowlist) · `all` (current+future)
 "Share all currently-open" is a popup button that snapshots `chrome.tabs.query`
 into the `tabs` allowlist (not a separate tier).
 
-Per shared tab: `{ origin (captured at share), mode: stickyOrigin|anyOrigin,
-caps: [read|execute], expiresAt }`.
+Per shared tab: `{ host (captured at share), caps: [read|execute], sharedAt }`.
+Lock-to-domain and the auto-expire TTL are LIVE global settings (1.6.0), not sealed into
+the grant: `stickyOrigin`/`anyOrigin` and a per-grant `expiresAt` no longer exist.
 
 ### Origin safety (the "never my email/bank tab" guarantee — two layers)
-1. **`stickyOrigin` (default):** the next invoke after a shared tab navigates to
-   a different origin → `ORIGIN_DRIFT`, auto-revoke that tab, emit
-   `permission_revoked`. (The navigation itself succeeds; access is downgraded.)
-   `anyOrigin` is an opt-in per-tab relaxation for navigation-heavy agent work.
+1. **Lock-to-domain (default on):** the next invoke after a shared tab navigates to
+   a different origin → `ORIGIN_DRIFT`: the call is refused and the tab hidden, emit
+   `permission_paused`. The grant is KEPT — access resumes when the tab returns, or when
+   the user turns the lock off (a navigation that would leave the origin is refused
+   up front while the lock is on). Turning the lock on again re-pins every grant to
+   the host its tab is on at that moment. (Until 1.5 drift auto-revoked the tab; that
+   made an ordinary redirect permanently cut the agent off.)
 2. **Origin denylist** (persisted, `chrome.storage.local`): hard block that
    overrides even `all`. Add `mail.google.com` once → no tier can ever touch it.
 Both checked **fresh at invoke time** (TOCTOU-safe), against the tab's *current*
@@ -69,8 +73,10 @@ exposed) — you can be connected and sharing nothing (safe idle).
 - **Primary: per-tab toolbar badge** `chrome.action.setBadgeText({tabId})` in a
   distinct color — extension's own icon, CSP-immune, survives navigation.
 - **Secondary (default-on, toggle): native Tab Group** "⚡ agent" via
-  `chrome.tabGroups` — marks tabs in the strip; drag a tab OUT = revoke; dragging
-  IN does NOT grant (eject + require popup/hotkey). Needs `tabGroups` permission.
+  `chrome.tabGroups` — marks tabs in the strip; dragging a tab IN shares it (1.6.0:
+  except a tab Chrome itself put there); dragging OUT unshares only if the user opted
+  in (off by default — Chrome also emits group changes for window moves and closed groups).
+  Needs `tabGroups` permission.
 - Per-invoke activity flash stays; turns **red** on a denied invoke.
 
 ### Protocol additions (PROTOCOL.md §6 + constants ERR)

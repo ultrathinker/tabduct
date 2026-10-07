@@ -23,7 +23,7 @@ consent, on your machine only.**
    CLI agent (Claude Code / Kilo / OpenCode / …)
         │  MCP  (streamable HTTP, 127.0.0.1)         ← standard, language-neutral
         ▼
-   Tabduct host   (Node · Python · .NET — pick one)  ← implements /protocol
+   Tabduct host   (Node — the reference host)         ← implements /protocol
         │  Chrome Native Messaging (stdio)           ← Tabduct wire protocol
         ▼
    Tabduct extension  (MV3 background service worker) ← the one shared impl
@@ -36,7 +36,7 @@ consent, on your machine only.**
 
 - **Your real session.** The agent works with your logged-in tabs — no re-login, no captchas, no throwaway profile.
 - **Local-only & private.** Binds `127.0.0.1`, guarded by a per-session bearer token. Nothing ever leaves your machine — no server, no telemetry, no external calls.
-- **You're always in control.** Default-deny consent: share one tab or everything, block- *or* allow-list origins, read-only mode, auto-expiry, and a visible "⚡" group of shared tabs you can drag in and out.
+- **You're always in control.** Default-deny consent: share one tab or everything, block- *or* allow-list origins, read-only mode, auto-expiry, and a visible "⚡" group of shared tabs (drag a tab in to share it).
 - **Agent- and language-agnostic.** MCP to the north, a tiny documented wire protocol to the south. One extension is the fixed point; every host is a thin adapter.
 - **Minimal & auditable.** Reference host ~1–1.5k lines, zero native dependencies.
 
@@ -95,11 +95,13 @@ point your agent at `127.0.0.1:12311`, never at a per-browser port.
 | `list_tabs` / `get_active_tab` | Enumerate / get the focused tab — **filtered to shared tabs only** |
 | `get_page_content` / `get_dom_snapshot` | Read a shared tab's text/HTML, or a compact outline of its interactive elements |
 | `screenshot` | Capture the visible tab (returned as an MCP image) |
-| `click` / `type` | Click an element / type into a field, by CSS selector |
+| `click` / `type` | Click an element / type into a field (or pick a `<select>` option), by CSS selector. `trusted: true` sends real browser-level input |
+| `press_key` | Press a key (Enter, Tab, Ctrl+C…) as real keyboard input — terminals, custom widgets |
 | `wait_for` | Wait for a selector, URL fragment, or load state (bounded) |
 | `navigate` | Point a shared tab at a URL |
 | `open_tab` / `activate_tab` / `close_tab` | Tab management |
 | `get_console_logs` | Read the tab's console output (plus uncaught errors, in CDP mode) |
+| `list_network_requests` / `get_network_request` | Inspect captured network traffic (CDP developer mode) |
 | `execute_script` | Run arbitrary JS in a shared tab — read *and* modify the page |
 | `list_frames` | List the iframes inside a shared tab — target one with `frameId` |
 
@@ -109,6 +111,13 @@ point your agent at `127.0.0.1:12311`, never at a per-browser port.
 header, and the page tools (`get_page_content`, `get_dom_snapshot`, `click`,
 `type`, `wait_for`, `execute_script`, `get_console_logs`) take a `frameId` to work
 inside it. The origin filter applies to each frame's own site.
+
+**Trusted input.** Terminals (xterm.js — AWS CloudShell), Cloudscape/Material dropdowns and
+canvas editors only react to events the browser itself generated. `type` / `click` with
+`trusted: true`, and `press_key`, send exactly that through the DevTools Protocol. It needs the
+same opt-in as CDP eval (**Allow CDP eval**, read-only off) and works inside cross-origin
+frames for typing and keys. A terminal: `click` it (or `type` into its helper textarea,
+`.xterm-helper-textarea`) with `trusted: true`, then `press_key Enter`.
 
 Most tools — including `click` / `type` / `wait_for` / `get_dom_snapshot` — run as
 **injected functions**, so they work even on strict-CSP sites (GitHub, banks, SaaS).
@@ -127,12 +136,13 @@ Consent is **default-deny** and enforced inside the extension (the sole path to
 the browser). All of these are in the popup:
 
 - **Origin filter** — *Block* mode (listed sites are never shared) or *Allow* mode (only listed sites can ever be shared). Overrides every sharing mode.
-- **Lock shared tabs to their domain** (default on) — a shared tab that navigates away loses access, so a shared shopping tab can't follow you into your bank.
+- **Lock shared tabs to their domain** (default on) — a shared tab that navigates to another site is *paused*: the agent is refused and the tab disappears from its list, so a shared shopping tab can't follow you into your bank; the share is kept and resumes when the tab is back. It is a live setting — switching it off frees tabs you already shared.
 - **Read-only** — the agent may look but never click, type, navigate, run scripts, or open/close tabs.
-- **Auto-expire** — un-shares everything after a chosen time (5 min … 10 h).
+- **Auto-expire** — un-shares tabs after a chosen time (5 min … 10 h), counted from when each was shared or from when you changed the setting.
+- **Full access / Safe defaults** — one click over the flags above for "let the agent work freely on what I shared" (lock off, read-only off, no expiry, CDP eval on), or back to the factory defaults. The origin list is never touched.
 - **Don't auto-share tabs the agent opens** (default on).
 - **CDP mode** (Advanced, opt-in, default off) — lets `execute_script` bypass a page's CSP via the DevTools Protocol, with an optional "developer mode" that routes all eval through it and full console/error capture. Chrome forbids requesting `debugger` at runtime, so it's a **required** permission granted at install — but **nothing attaches until you flip this toggle on**, and use is still gated by consent (never in read-only). Chrome shows a "being debugged" banner whenever it's actually in use.
-- Sharing lives in session storage → it resets when the browser restarts.
+- Sharing resets when the browser restarts (so nothing stays shared by accident), but survives reloading the extension — handy after a `git pull`.
 
 The full trust model and honest limitations are in [`SECURITY.md`](SECURITY.md) —
 which is also where to report a vulnerability (please don't open a public issue).
@@ -165,8 +175,8 @@ Tabduct is defined by **contracts**, not implementations:
 | Host | Status | Notes |
 |------|--------|-------|
 | [`hosts/node`](hosts/node) | ✅ reference impl | zero native deps, Node ≥ 18, MCP SDK wired, conformance-passing |
-| [`hosts/python`](hosts/python) | ✅ passes conformance | official `mcp` SDK + `register` (macOS/Linux/Windows) |
-| [`hosts/dotnet`](hosts/dotnet) | ✅ passes conformance | `ModelContextProtocol` SDK, `net10.0` + `register` |
+| [`hosts/python`](hosts/python) | ⚠ direct mode only | official `mcp` SDK + `register`; predates the shared hub, so the current extension (which requires it) can't use it |
+| [`hosts/dotnet`](hosts/dotnet) | ⚠ direct mode only | `ModelContextProtocol` SDK, `net10.0` + `register`; same limitation |
 
 New languages need no permission — implement [`protocol/PROTOCOL.md`](protocol/PROTOCOL.md) and pass [`protocol/conformance/`](protocol/conformance/).
 

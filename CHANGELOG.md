@@ -4,6 +4,84 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims for
 [Semantic Versioning](https://semver.org/) once it reaches 1.0.
 
+## [1.6.0] — 2026-10-07
+
+### Added
+- **Trusted input.** `type` and `click` take `trusted: true`, and there is a new tool
+  `press_key` (Enter, Tab, Escape, arrows, F-keys, Ctrl+C…). They send real, browser-level
+  input (`Input.insertText` / mouse / key events through the DevTools Protocol), which is what
+  terminals (xterm.js — e.g. AWS CloudShell), Cloudscape/Material dropdowns and canvas or
+  rich-text editors require: they ignore scripted `el.click()` and synthetic `input` events.
+  Same opt-in as CDP eval (*Allow CDP eval* on, read-only off); refused while the page shows
+  a frame of a site the origin filter excludes; typing and keys also work inside cross-origin
+  frames. `type` with `trusted` takes an optional `selector` (omit it to type into whatever has focus).
+- **Full access / Safe defaults presets** in Settings: one click over the ordinary flags
+  (lock-to-domain off, read-only off, no auto-expire, CDP eval on — never the origin list or the
+  frame rule), with a confirmation and a header chip while active.
+- **Version/feature handshake.** `open` carries `extensionVersion` and `features`. A call that
+  needs a feature the loaded extension build lacks (`list_frames`, a `frameId`, trusted input)
+  is refused with `EXTENSION_OUTDATED` instead of being silently run somewhere else — an older
+  extension used to ignore `frameId` and execute the script in the top page. The host also warns
+  (visible in the popup) when the running extension is older than the code on disk, and
+  `list_instances` shows each browser's extension version and features.
+- Sharing **survives an extension Reload** (after every `git pull`): grants are mirrored to
+  `storage.local` and restored on `onInstalled(update)` for tabs that still exist on the host they
+  were shared on. A browser restart still clears sharing.
+- `tabs.onReplaced` is handled (Chrome swapping a tab id no longer drops the share).
+- Popup: paused shares are listed greyed with a stop button; a host warning is visible while connected.
+- Tests: `scripts/test-store.mjs`, `test-handlers.mjs`, `test-gate.mjs`, `test-host.mjs` (mock
+  chrome / fake host) and an opt-in real-Chrome end-to-end run, `npm run test:e2e`.
+
+### Changed
+- **Lock-to-domain and auto-expire are live settings.** They used to be sealed into each share at the
+  moment it was made, so switching the lock off later left already-shared tabs locked (and a tab
+  that changed subdomain "vanished"). Now turning the lock off frees tabs shared while it was on,
+  turning it on pins every share to the host its tab is on at that moment, and the TTL is counted
+  from the later of the share time and the moment the setting changed.
+- **Origin drift pauses, it no longer revokes.** A shared tab that leaves its host (lock on) is
+  refused with `ORIGIN_DRIFT` and hidden from `list_tabs`, but the share is kept: access resumes when
+  the tab is back (or the lock is turned off). With the lock on, `navigate` off the shared host is
+  refused up front instead of silently cutting the agent's own access. CDP capture is detached while paused.
+- **Every page tool acts on one probed document** — the page itself exactly like a frame — targeted by
+  its `documentId`. This replaces the per-tool in-page `location.host` check, which gave false
+  `ORIGIN_DRIFT` on every cross-host redirect even with the lock off (`wait_for`, calls racing a
+  navigation), and was switched off for host-less pages.
+- The "⚡" group: taking a tab out of the group no longer unshares it unless you opt in (new setting,
+  off by default — Chrome also reports group changes for window moves and closed groups); a tab Chrome
+  itself puts into the group (a link opened from a grouped tab) is not auto-shared; overlapping group
+  moves are masked correctly and run one at a time.
+- `navigate` reports `completed: false` after its 15 s deadline instead of looking successful;
+  `get_page_content {maxChars: 0}` is capped at 8,000,000 characters; a reply over 30 MiB is answered
+  with `FRAME_TOO_LARGE` instead of timing out; `wait_for` may wait its full 25 s.
+- The extension always asks for an ephemeral port (no stale remembered port) and waits long enough
+  for the hub to start; a late disconnect of a replaced native port no longer tears down the new connection.
+- Python and .NET hosts: they predate the hub, feature gating and `relabel` and only work in direct
+  mode, which the current extension no longer uses — documented as such (not ported).
+
+### Fixed
+- `type` on a `<select>` wiped the element's options; non-editable elements were overwritten; both now
+  behave (option picked by value/text; clear `INVALID_ARGS`). An invalid CSS selector is `INVALID_ARGS`
+  instead of a misleading "no result frame" or a `wait_for` timeout.
+- `get_console_logs {clear: true}` silently stopped the CDP capture.
+- The "Everything" share's auto-expire was erased by unsharing any single tab.
+- After a quick Stop → Start of a browser the hub kept a dead client, so `list_tabs` came back empty
+  with no error; the hub now reconnects by the entry's fingerprint, names browsers that did not answer
+  (`unavailable`), and `Revoke all` reports a browser that failed to clear instead of claiming success.
+- A request naming an unknown MCP session now gets HTTP 404 (the spec's cue to re-initialize), not 400.
+- A dead hub is brought back by the host (checked every 10 s) instead of staying dead until Stop/Start.
+- The `tabduct-ttl` alarm was re-created on every service-worker start; the denied-badge flash shared
+  one timer across tabs; a dismissed "being debugged" banner was re-armed on the next refresh.
+- `npm test` could register a fake instance in the real `~/.tabduct` (a live hub picked it up); the
+  conformance runners now always use an isolated state dir and refuse the live hub port.
+
+### Security
+- Origin filter: a `blob:` / `filesystem:` document, or `about:blank` page, of a blocked site no longer
+  slips through as "host-less"; a sandboxed frame or one nested inside a blocked frame is judged by its
+  URL and ancestors; `screenshot` is refused while the page shows a visible frame of a blocked site; a
+  redirected request is hidden from the network log when *any* hop is on a blocked origin; CDP console
+  lines are filtered by their source URL.
+- The auto-expire setting now applies to tabs that are already shared (it used to be sealed at share time).
+
 ## [1.5.0] — 2026-09-25
 
 ### Added

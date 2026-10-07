@@ -1,8 +1,14 @@
 # Tabduct host — Python
 
-✅ **First-class Python reference host** (official [`mcp`](https://pypi.org/project/mcp/)
-SDK). Passes the full conformance suite. The shared extension + wire protocol are
-reused unchanged.
+⚠ **Direct mode only — not usable with the current extension.** This host speaks the wire
+protocol and passed the conformance suite when it was written, but it predates the shared
+hub (`open{hub:true}`, `peers*`), feature gating (`EXTENSION_OUTDATED`), `relabel` and the
+per-call timeout budgets. The extension now requires the hub, so Start fails with "Couldn't
+start the shared hub" against this host. Use the Node host (`hosts/node`). It is kept as a
+protocol reference; bringing it up to date is a port of `hub.js` and the `open` handling.
+
+Built on the official [`mcp`](https://pypi.org/project/mcp/) SDK; the wire protocol is
+the same as the Node host's.
 
 ## Run
 
@@ -21,7 +27,8 @@ From the repo root:
 node protocol/conformance/run.mjs -- python hosts/python/tabduct_host/__main__.py
 ```
 
-→ `CONFORMANCE PASSED` (14 tools).
+→ the direct-mode checks of `run.mjs` pass; the hub-era checks (feature gating, numeric bounds)
+do not, because this host predates them (see the note at the top).
 
 ## Layout
 

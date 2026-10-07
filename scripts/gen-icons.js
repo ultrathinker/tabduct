@@ -9,6 +9,12 @@ import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
 
 const OUT = resolve(dirname(fileURLToPath(import.meta.url)), "../extension/icons");
+// The checked-in extension/icons are the real, designed icons; this script overwrites them with
+// flat placeholder squares. Don't let an accidental run do that.
+if (!process.argv.includes("--force")) {
+  console.error("gen-icons.js writes PLACEHOLDER squares over extension/icons (the real icons). Re-run with --force if you really mean it.");
+  process.exit(1);
+}
 mkdirSync(OUT, { recursive: true });
 
 const RGBA = [0x4f, 0x46, 0xe5, 0xff]; // #4f46e5 indigo
