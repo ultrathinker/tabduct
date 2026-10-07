@@ -138,7 +138,9 @@ export class McpHttpServer {
           // session was reaped) must get 404: the MCP Streamable-HTTP spec says that is the
           // client's cue to start a new session. A 400 reads as "your request is malformed", and
           // clients that follow the spec then keep retrying with the dead id.
-          if (sid) { res.writeHead(404, { "content-type": "application/json" }).end(JSON.stringify({ jsonrpc: "2.0", error: { code: -32001, message: "Session not found - send a new initialize request" }, id: null })); return; }
+          // (An `initialize` is the exception: it opens a session whatever header a client keeps
+          // sending, so a client that re-initializes with its stale id is not stuck on 404.)
+          if (sid && !isInitializeRequest(body)) { res.writeHead(404, { "content-type": "application/json" }).end(JSON.stringify({ jsonrpc: "2.0", error: { code: -32001, message: "Session not found - send a new initialize request" }, id: null })); return; }
           if (!isInitializeRequest(body)) { res.writeHead(400, { "content-type": "application/json" }).end(JSON.stringify({ jsonrpc: "2.0", error: { code: -32000, message: "No valid session; initialize first" }, id: null })); return; }
           transport = await this._newSession();
           try { await transport.handleRequest(req, res, body); }

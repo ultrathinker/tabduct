@@ -16,7 +16,7 @@ import { ListToolsRequestSchema, CallToolRequestSchema } from "@modelcontextprot
 import { McpHttpServer } from "./mcp-server.js";
 import { readAll } from "./discovery.js";
 import { ensureSecrets, baseDir } from "./secrets.js";
-import { loadCatalog } from "./tools.js";
+import { loadCatalog, requiredFeatures } from "./tools.js";
 import { HUB_PORT, ERR, INVOKE_TIMEOUT_MS, invokeTimeoutMs } from "./constants.js";
 
 const CATALOG = loadCatalog();
@@ -62,6 +62,7 @@ class Hub {
     this.meta = new Map();    // instanceId -> { label, fp, extensionVersion, features }
     this.toolDefs = new Map(); // instanceId -> the tools that host serves (tools/list)
     this._refreshing = false;
+    this._connecting = new Map(); // instanceId -> in-flight connect promise
     this.server = new McpHttpServer((srv) => this._register(srv), (method, body) => this._control(method, body));
     this._idle = null; this._poll = null; this.tAgent = null; this.tControl = null;
   }
@@ -105,7 +106,14 @@ class Hub {
     process.exit(0);
   }
 
-  async _dropClient(id) { const c = this.clients.get(id); this.clients.delete(id); this.meta.delete(id); this.toolDefs.delete(id); if (c) { try { await c.close(); } catch {} } }
+  // `only`: drop the client only if it is still THE client of that instance (a call that failed on
+  // an old client must not tear down the fresh one a concurrent reconnect has installed meanwhile).
+  async _dropClient(id, only) {
+    const c = this.clients.get(id);
+    if (only && c !== only) { try { await only.close(); } catch {} return; }
+    this.clients.delete(id); this.meta.delete(id); this.toolDefs.delete(id);
+    if (c) { try { await c.close(); } catch {} }
+  }
 
   // What identifies one incarnation of an instance. A host that restarts keeps its instanceId but
   // gets a new port/token/pid: a client built for the old incarnation is dead, and without this
@@ -114,7 +122,14 @@ class Hub {
 
   // Open (and validate) an MCP client to one instance. Bounded: a wedged host must not hold a
   // poll cycle (or pile up connections) for the SDK's default 60 s.
-  async _connect(e) {
+  // One connect per instance at a time (the poll and a call that lost its client both reconnect):
+  // a second concurrent connect would overwrite the first client and leave it open for ever.
+  _connect(e) {
+    let p = this._connecting.get(e.instanceId);
+    if (!p) { p = this._connectNew(e).finally(() => this._connecting.delete(e.instanceId)); this._connecting.set(e.instanceId, p); }
+    return p;
+  }
+  async _connectNew(e) {
     const transport = new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${e.port}/mcp`), { requestInit: { headers: { Authorization: `Bearer ${e.token}` } } });
     const client = new Client({ name: "tabduct-hub", version: "0.0.1" }, { capabilities: {} });
     try {
@@ -156,12 +171,13 @@ class Hub {
   async _callInstance(instanceId, name, args) {
     if (!this.clients.has(instanceId)) return errResult(ERR.INSTANCE_GONE, `instance ${instanceId} not connected`);
     const budget = callBudget(name, args);
+    const client = this.clients.get(instanceId);
     try {
-      return this._rewrite(instanceId, await this._withTimeout(this.clients.get(instanceId).callTool({ name, arguments: args }), budget));
+      return this._rewrite(instanceId, await this._withTimeout(client.callTool({ name, arguments: args }), budget));
     } catch (e) {
       if (e.code === ERR.TIMEOUT) return errResult(ERR.TIMEOUT, e.message);
       // session lost / instance wedged / TCP reset → drop the client.
-      await this._dropClient(instanceId);
+      await this._dropClient(instanceId, client);
       // Only retry READ-ONLY tools: a lost transport after a mutating call may mean
       // the call already ran (only the reply was lost), so re-issuing open_tab /
       // close_tab / navigate / activate_tab / execute_script would double the effect.
@@ -186,6 +202,16 @@ class Hub {
       if (name === "list_instances") return textResult({ instances: [...this.meta].map(([instanceId, m]) => ({ instanceId, label: m.label, extensionVersion: m.extensionVersion ?? null, features: m.features ?? [] })) });
       if (name === "list_tabs") return await this._listTabsFanout(args);
       const { instanceId, forward } = this._resolveTarget(args);
+      // The host in front of an instance may be an older build (it outlives a `git pull` just like
+      // the hub does): such a host doesn't gate, and its extension would run a call that needs a
+      // newer feature somewhere else (a frameId ignored -> the top page). The discovery entry says
+      // which features that instance has, so refuse here as well.
+      const m = this.meta.get(instanceId);
+      if (m) {
+        const have = new Set(m.features ?? []);
+        const missing = [...requiredFeatures(name, forward)].filter((f) => !have.has(f));
+        if (missing.length) return errResult(ERR.EXTENSION_OUTDATED, `the Tabduct host or extension behind instance ${instanceId} (${m.extensionVersion ? `extension v${m.extensionVersion}` : "a build that predates version reporting"}) doesn't support: ${missing.join(", ")}. Nothing was run. Ask the user to restart the Tabduct host and reload the extension at chrome://extensions (Tabduct -> reload).`);
+      }
       return await this._callInstance(instanceId, name, forward);
     } catch (e) {
       return errResult(e.code || ERR.INTERNAL, e.message);
@@ -212,11 +238,20 @@ class Hub {
     return { instanceId, forward };
   }
 
+  // Live discovery entries the hub holds no client for (a connect that failed, a client just
+  // dropped): they exist and may well hold grants, so they must show up as "unavailable", never
+  // vanish from an answer or from a "revoke all".
+  _unconnected() {
+    let live; try { live = readAll(); } catch { return []; }
+    return live.filter((e) => !this.clients.has(e.instanceId)).map((e) => ({ instanceId: e.instanceId, label: e.label }));
+  }
+
   async _listTabsFanout(args) {
     const { instanceId, ...rest } = args; // never forward instanceId to an instance
     const targets = instanceId ? (this.clients.has(instanceId) ? [instanceId] : []) : [...this.clients.keys()];
     if (instanceId && targets.length === 0) return errResult(ERR.INSTANCE_GONE, `instance ${instanceId} not connected`);
     const out = [], unavailable = [];
+    if (!instanceId) for (const u of this._unconnected()) unavailable.push({ instanceId: u.instanceId, label: u.label, error: "not connected to the hub (retrying)" });
     await Promise.all(targets.map(async (id) => {
       const label = this.meta.get(id)?.label;
       // _callInstance drops a dead client and (list_tabs is idempotent) reconnects once. One
@@ -238,6 +273,7 @@ class Hub {
   async _control(method, body) {
     if (method === "GET") {
       const instances = [];
+      for (const u of this._unconnected()) instances.push({ instanceId: u.instanceId, label: u.label ?? null, tier: "unknown", sharedCount: 0, tabs: [], unavailable: true });
       await Promise.all([...this.clients.keys()].map(async (id) => {
         const label = this.meta.get(id)?.label ?? null;
         try {
@@ -258,23 +294,31 @@ class Hub {
         // Report what really happened: claiming success while another browser kept sharing is
         // the one outcome this button must never produce.
         const failed = [];
+        const names = new Map();
+        await this._refresh().catch(() => {}); // pick up an instance that appeared (or failed to connect) since the last poll
         await Promise.all([...this.clients.keys()].filter((id) => id !== exceptInstanceId).map(async (id) => {
+          names.set(id, this.meta.get(id)?.label ?? id);
           try {
             const r = await this._withTimeout(this.clients.get(id).callTool({ name: "_td/revoke_all", arguments: {} }), CONTROL_TIMEOUT_MS);
             if (r?.isError) failed.push(id);
           } catch { failed.push(id); }
         }));
-        if (failed.length) return { status: 502, json: { ok: false, error: `could not confirm in: ${failed.map((id) => this.meta.get(id)?.label ?? id).join(", ")}`, failed } };
+        // A live browser the hub could not reach still holds its grants: that is not a success.
+        for (const u of this._unconnected()) if (u.instanceId !== exceptInstanceId) { failed.push(u.instanceId); names.set(u.instanceId, u.label ?? u.instanceId); }
+        if (failed.length) return { status: 502, json: { ok: false, error: `could not confirm in: ${failed.map((id) => names.get(id) ?? id).join(", ")}`, failed } };
         return { status: 200, json: { ok: true } };
       }
       if (!instanceId || !this.clients.has(instanceId)) return { status: 404, json: { error: "instance not connected" } };
       try {
+        let r;
         if (op === "unshare") {
           if (!Number.isInteger(tabId)) return { status: 400, json: { error: "tabId must be an integer" } };
-          await this._withTimeout(this.clients.get(instanceId).callTool({ name: "_td/unshare", arguments: { tabId } }), CONTROL_TIMEOUT_MS);
+          r = await this._withTimeout(this.clients.get(instanceId).callTool({ name: "_td/unshare", arguments: { tabId } }), CONTROL_TIMEOUT_MS);
         } else if (op === "stopAll") {
-          await this._withTimeout(this.clients.get(instanceId).callTool({ name: "_td/set_tier", arguments: { tier: "none" } }), CONTROL_TIMEOUT_MS);
+          r = await this._withTimeout(this.clients.get(instanceId).callTool({ name: "_td/set_tier", arguments: { tier: "none" } }), CONTROL_TIMEOUT_MS);
         } else return { status: 400, json: { error: "unknown op" } };
+        // The extension answers a failed op with isError, not by throwing: don't tell the popup it worked.
+        if (r?.isError) return { status: 502, json: { error: String(r?.content?.[0]?.text ?? "the browser refused the request").slice(0, 200) } };
         return { status: 200, json: { ok: true } };
       } catch (e) { return { status: 502, json: { error: e?.message || "control call failed" } }; }
     }

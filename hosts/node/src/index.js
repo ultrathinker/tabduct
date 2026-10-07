@@ -13,7 +13,7 @@ import { writeEntry, removeEntry } from "./discovery.js";
 import { ensureSecrets, baseDir } from "./secrets.js";
 import { PROTOCOL_VERSION, DEFAULT_PORT, HUB_PORT, STOP_GRACE_MS, ERR } from "./constants.js";
 import { spawn } from "node:child_process";
-import { openSync, readFileSync, appendFileSync } from "node:fs";
+import { openSync, closeSync, readFileSync, appendFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import http from "node:http";
@@ -75,6 +75,7 @@ async function ensureHub() {
         const child = spawn(process.execPath, [hubPath], { detached: true, windowsHide: true, stdio: ["ignore", logFd, logFd] });
         child.on("error", (e) => { try { appendFileSync(logPath, `[host] hub spawn error: ${e.message}\n`); } catch {} });
         child.unref?.();
+        if (typeof logFd === "number") { try { closeSync(logFd); } catch {} } // the child has its own copy; don't leak ours on every respawn
         spawned = true;
       } catch (e) {
         try { appendFileSync(logPath, `[host] ensureHub failed: ${e.message}\n`); } catch {}
@@ -96,13 +97,18 @@ async function ensureHub() {
 // with the browser still looking Running. While this host is open in hub mode, check every
 // 10 s and bring a verified hub back (the port bind is the singleton mutex, so several hosts
 // doing this at once is safe).
-let hubWatch = null, hubEnsuring = false;
+let hubWatch = null, hubEnsuring = false, hubBackoff = 0, hubSkip = 0;
 function startHubWatch() {
   if (hubWatch) return;
   hubWatch = setInterval(async () => {
     if (hubEnsuring) return;
+    if (hubSkip > 0) { hubSkip--; return; } // a hub that keeps failing to start is retried less and less often
     hubEnsuring = true;
-    try { if (!((await hubReachable()) && hubVerified())) await ensureHub(); } catch {} finally { hubEnsuring = false; }
+    try {
+      if ((await hubReachable()) && hubVerified()) hubBackoff = 0;
+      else if (await ensureHub()) hubBackoff = 0;
+      else { hubBackoff = Math.min(hubBackoff ? hubBackoff * 2 : 1, 30); hubSkip = hubBackoff; } // skip 1, 2, 4 ... 30 ticks (5 min)
+    } catch {} finally { hubEnsuring = false; }
   }, 10_000);
   hubWatch.unref?.();
 }

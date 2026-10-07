@@ -6,7 +6,7 @@
 
 import { spawn } from "node:child_process";
 import http from "node:http";
-import { mkdtempSync, readFileSync, existsSync } from "node:fs";
+import { mkdtempSync, readFileSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir, homedir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve, join } from "node:path";
@@ -26,28 +26,31 @@ const BIG = "QUpE".repeat(600000); // ~2.4 MB base64 → exercises large-reply t
 
 let fails = 0, done = false;
 const procs = [];
-const guard = setTimeout(() => { console.error("HUB CONFORMANCE TIMEOUT (40s)"); finish(1); }, 40_000); guard.unref();
+const guard = setTimeout(() => { console.error("HUB CONFORMANCE TIMEOUT (75s)"); finish(1); }, 75_000); guard.unref();
 const ok = (c, m) => { if (!c) { console.error("  FAIL:", m); fails++; } else console.log("  ok:", m); };
 function finish(code) { if (done) return; done = true; clearTimeout(guard); for (const p of procs) { try { p.kill(); } catch {} } process.exit(code); }
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 // A fake instance = real host + a fake extension answering invokes over stdio.
-function startInstance(instanceId, gen = "") {
+function startInstance(instanceId, gen = "", extra = {}) {
+  const invokes = [];
   const proc = spawn(process.execPath, [HOST], { stdio: ["pipe", "pipe", "inherit"], env: ENV }); procs.push(proc);
   const send = (o) => { const b = Buffer.from(JSON.stringify(o)); const h = Buffer.alloc(4); h.writeUInt32LE(b.length, 0); proc.stdin.write(Buffer.concat([h, b])); };
   let buf = Buffer.alloc(0), need = -1; const pend = new Map();
   proc.stdout.on("data", (c) => { buf = Buffer.concat([buf, c]); for (;;) { if (need === -1) { if (buf.length < 4) return; need = buf.readUInt32LE(0); buf = buf.subarray(4); } if (buf.length < need) return; const m = JSON.parse(buf.subarray(0, need).toString()); buf = buf.subarray(need); need = -1; if (m.replyTo) { const r = pend.get(m.replyTo); if (r) { pend.delete(m.replyTo); r(m); } } else if (m.type === "invoke") answer(m); } });
   const answer = (m) => {
     const t = m.payload.tool, ok = (result) => send({ replyTo: m.id, ok: true, result });
+    invokes.push(t);
     if (t === "list_tabs") ok({ tabs: [{ id: 1, title: `tab-${instanceId}${gen}`, url: "https://example.com", active: true }] });
     else if (t === "_td/revoke_all") { if (instanceId === "B") send({ replyTo: m.id, ok: false, error: { code: "INTERNAL", message: "boom" } }); else ok({ ok: true }); }
+    else if (t === "_td/set_tier") ok({ ok: true });
     else if (t === "get_active_tab") ok({ id: 7, title: `active-${instanceId}`, url: "https://example.com", active: true });
     else if (t === "navigate") ok({ id: 9, title: "nav", url: m.payload.args?.url, active: true });
     else if (t === "screenshot") ok({ mimeType: "image/png", dataUrl: `data:image/png;base64,${BIG}` });
     else send({ replyTo: m.id, ok: false, error: { code: "TAB_NOT_FOUND", message: "no" } });
   };
   const hostReq = (type, payload) => new Promise((res) => { const id = randomUUID(); pend.set(id, res); send({ type, id, payload }); });
-  return { proc, instanceId, kill: () => { try { proc.kill(); } catch {} }, open: () => hostReq("open", { port: 0, token: `tok-${instanceId}-${randomUUID()}`, protocolVersion: 0, instanceId, label: `L-${instanceId}` }) };
+  return { proc, instanceId, invokes, kill: () => { try { proc.kill(); } catch {} }, open: () => hostReq("open", { port: 0, token: `tok-${instanceId}-${randomUUID()}`, protocolVersion: 0, instanceId, label: `L-${instanceId}`, ...extra }) };
 }
 
 function rpc(body, { sessionId, token } = {}) {
@@ -62,10 +65,10 @@ function rpc(body, { sessionId, token } = {}) {
     req.on("error", () => resolve({ status: "REFUSED" })); req.end(p);
   });
 }
-function control(body, tControl) {
+function control(body, tControl, method = "POST") {
   return new Promise((resolve) => {
-    const p = Buffer.from(JSON.stringify(body));
-    const req = http.request({ host: "127.0.0.1", port: HUB_PORT, path: "/control", method: "POST", headers: { "content-type": "application/json", "content-length": p.length, authorization: `Bearer ${tControl}` } }, (r) => {
+    const p = Buffer.from(method === "GET" ? "" : JSON.stringify(body));
+    const req = http.request({ host: "127.0.0.1", port: HUB_PORT, path: "/control", method, headers: { "content-type": "application/json", "content-length": p.length, authorization: `Bearer ${tControl}` } }, (r) => {
       let d = ""; r.on("data", (x) => (d += x)); r.on("end", () => { let j; try { j = JSON.parse(d); } catch {} resolve({ status: r.statusCode, json: j }); });
     });
     req.on("error", () => resolve({ status: "REFUSED" })); req.end(p);
@@ -125,6 +128,11 @@ const call = (name, args, sid, token) => rpc({ jsonrpc: "2.0", id: Math.floor(Ma
   // an unknown session id gets 404 (the MCP spec's cue to re-initialize), not 400
   ok((await rpc({ jsonrpc: "2.0", id: 3, method: "tools/list" }, { sessionId: "no-such-session", token: tAgent })).status === 404, "unknown session id → 404 (client re-initializes)");
 
+  // ...but an `initialize` that still carries a stale session id opens a new session (a client that
+  // re-initializes without resetting its header must not be stuck on 404)
+  const reinit = await rpc({ jsonrpc: "2.0", id: 4, method: "initialize", params: { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "t", version: "0" } } }, { sessionId: "no-such-session", token: tAgent });
+  ok(reinit.status === 200 && !!reinit.sessionId && reinit.sessionId !== "no-such-session", `initialize with a stale session id → a new session (got ${reinit.status})`);
+
   // OPUS-7: a host that restarts under the SAME instanceId (Stop → Start) gets a new port/token; the hub
   // must drop the dead client and reconnect instead of serving an empty list_tabs forever
   A.kill();
@@ -135,12 +143,53 @@ const call = (name, args, sid, token) => rpc({ jsonrpc: "2.0", id: Math.floor(Ma
   const lt3 = toolResult(await call("list_tabs", {}, sid, tAgent));
   ok((lt3?.tabs || []).some((t) => t.title === "tab-A2"), "still served after the next poll");
 
+  // VCDX-04: the hub refuses a call that needs a feature the TARGET instance's build lacks, instead of
+  // forwarding it to a host/extension that would run it somewhere else (frameId ignored -> top page).
+  // A's fake extension reported no features (an old build); C's reports them.
+  const C = startInstance("C", "", { extensionVersion: "1.6.0", features: ["frames", "pinned-docs", "cdp-input"] });
+  ok((await C.open()).ok, "a third instance reporting its extension features is up");
+  await sleep(3600); // the hub's poll connects it
+  const outdated = await call("list_frames", { instanceId: "A" }, sid, tAgent);
+  ok(outdated.json?.result?.isError && /EXTENSION_OUTDATED/.test(outdated.json.result.content[0].text) && !A2.invokes.includes("list_frames"), "an instance without the 'frames' feature: list_frames → EXTENSION_OUTDATED and nothing reached its extension");
+  const outdated2 = await call("get_page_content", { instanceId: "A", tabId: 1, frameId: 3 }, sid, tAgent);
+  ok(outdated2.json?.result?.isError && /EXTENSION_OUTDATED/.test(outdated2.json.result.content[0].text) && !A2.invokes.includes("get_page_content"), "...and so is a frameId on an ordinary tool");
+  const plain = await call("get_page_content", { instanceId: "A", tabId: 1, frameId: 0 }, sid, tAgent);
+  ok(plain.json?.result?.isError && !/EXTENSION_OUTDATED/.test(plain.json.result.content[0].text) && A2.invokes.includes("get_page_content"), "frameId 0 (the page itself) needs no feature: it is forwarded");
+  const fine = await call("list_frames", { instanceId: "C" }, sid, tAgent);
+  ok(!/EXTENSION_OUTDATED/.test(fine.json?.result?.content?.[0]?.text || "") && C.invokes.includes("list_frames"), "an instance that reports the feature gets the call");
+  const instsC = toolResult(await call("list_instances", {}, sid, tAgent));
+  ok(instsC.instances.find((i) => i.instanceId === "C")?.extensionVersion === "1.6.0", "list_instances shows the reported extension version");
+
+  // VCDX-09: /control answers 502 when the browser refuses (it used to say ok)
+  const tControl0 = JSON.parse(readFileSync(resolve(DIR, "control"), "utf8")).tControl;
+  const uns = await control({ op: "unshare", instanceId: "A", tabId: 1 }, tControl0);
+  ok(uns.status === 502, `/control unshare that the browser refuses → 502 (got ${uns.status})`);
+  const stop = await control({ op: "stopAll", instanceId: "A" }, tControl0);
+  ok(stop.status === 200 && stop.json?.ok === true, "/control stopAll that succeeds → 200");
+  C.kill();
+  await sleep(300);
+
   // CDX-1: revokeAll reports a browser that failed to clear (B's fake extension errors on _td/revoke_all)
   const tControl = JSON.parse(readFileSync(resolve(DIR, "control"), "utf8")).tControl;
   const rv = await control({ op: "revokeAll", exceptInstanceId: "nobody" }, tControl);
   ok(rv.status === 502 && rv.json?.ok === false && JSON.stringify(rv.json?.failed) === JSON.stringify(["B"]), `revokeAll with a browser that fails → 502 naming it (got ${rv.status} ${JSON.stringify(rv.json)})`);
   const rv2 = await control({ op: "revokeAll", exceptInstanceId: "B" }, tControl);
   ok(rv2.status === 200 && rv2.json?.ok === true, "revokeAll succeeds when every other browser cleared");
+
+  // VCDX-05: a browser that is alive (discovery entry, live pid) but that the hub cannot reach must be
+  // named as unavailable, and "revoke all" must not claim success for it
+  const holder = spawn(process.execPath, ["-e", "setTimeout(()=>{},120000)"], { stdio: "ignore" }); procs.push(holder);
+  mkdirSync(resolve(DIR, "instances"), { recursive: true });
+  writeFileSync(resolve(DIR, "instances", "Z.json"), JSON.stringify({ instanceId: "Z", label: "L-Z", port: 1, token: "x", pid: holder.pid, updatedAt: Date.now() }));
+  const ltZ = toolResult(await call("list_tabs", {}, sid, tAgent));
+  ok((ltZ?.unavailable || []).some((u) => u.instanceId === "Z") && (ltZ.tabs || []).some((t) => t.id === "A:1"), `list_tabs names the live-but-unreachable browser and still lists the rest (got ${JSON.stringify(ltZ?.unavailable)})`);
+  const snap = await control({}, tControl, "GET");
+  ok((snap.json?.instances || []).some((i) => i.instanceId === "Z" && i.tier === "unknown" && i.unavailable === true), "the popup snapshot lists it as unavailable");
+  const rvZ = await control({ op: "revokeAll", exceptInstanceId: "B" }, tControl);
+  ok(rvZ.status === 502 && JSON.stringify(rvZ.json?.failed) === JSON.stringify(["Z"]), `revokeAll does not report success while it could not reach a live browser (got ${rvZ.status} ${JSON.stringify(rvZ.json)})`);
+  holder.kill(); await sleep(400); // the pid is gone: the entry is dead and no longer counts
+  const rvZ2 = await control({ op: "revokeAll", exceptInstanceId: "B" }, tControl);
+  ok(rvZ2.status === 200 && rvZ2.json?.ok === true, "...and once that browser's process is gone, revokeAll succeeds again");
 
   // CDX-8: a browser that dies mid-poll is reported in list_tabs (not silently missing); the rest still answer
   B.kill();
