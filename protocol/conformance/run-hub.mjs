@@ -234,7 +234,8 @@ const call = (name, args, sid, token) => rpc({ jsonrpc: "2.0", id: Math.floor(Ma
     const hub0 = spawn(process.execPath, [HUB], { stdio: ["ignore", "ignore", "inherit"], env: { ...ENV, TABDUCT_DIR: DIR2, TABDUCT_HUB_PORT: String(PORT2), TABDUCT_HUB_IDLE_MS: "6000" } }); procs.push(hub0);
     let t0 = null;
     for (let i = 0; i < 40 && !t0; i++) { await sleep(200); try { t0 = JSON.parse(readFileSync(resolve(DIR2, "token"), "utf8")).tAgent; } catch {} }
-    const i0 = await rpc({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "t", version: "0" } } }, { token: t0, port: PORT2 });
+    let i0 = null; // the token file appears before the port listens: ask until the hub answers
+    for (let i = 0; i < 40; i++) { i0 = await rpc({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "t", version: "0" } } }, { token: t0, port: PORT2 }); if (i0.status === 200) break; await sleep(200); }
     await rpc({ jsonrpc: "2.0", method: "notifications/initialized" }, { sessionId: i0.sessionId, token: t0, port: PORT2 });
     const none = await rpc({ jsonrpc: "2.0", id: 2, method: "tools/call", params: { name: "get_active_tab", arguments: {} } }, { sessionId: i0.sessionId, token: t0, port: PORT2 });
     const txt = none.json?.result?.content?.[0]?.text || "";
