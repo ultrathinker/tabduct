@@ -4,6 +4,13 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims for
 [Semantic Versioning](https://semver.org/) once it reaches 1.0.
 
+## [1.6.2] — 2026-10-07
+
+### Fixed
+- `type` (trusted) no longer says "the page did not report focus" when the focus simply showed up a
+  moment after `focus()` (a frame in another process such as CloudShell, or a window that was just
+  brought forward): it looks again after 150 ms and warns only if the page still reports none.
+
 ## [1.6.1] — 2026-10-07
 
 ### Added

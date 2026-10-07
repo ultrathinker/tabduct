@@ -961,6 +961,9 @@ function focusElement(sel, clear) {
   return { ok: true, focused, hasFocus: document.hasFocus(), tag: (el.tagName || "").toLowerCase() };
 }
 
+// Injected: does this document hold the keyboard focus right now?
+function pageHasFocus() { return document.hasFocus(); }
+
 // Injected: where is the element's centre, in the MAIN frame's viewport (what CDP wants)?
 // Checks that nothing covers it, and walks same-process parent frames; a cross-origin frame
 // can't be located from inside.
@@ -1020,7 +1023,14 @@ async function trustedType(args) {
     if (args.text === "") { if (clear) await pressKeyCdp(send, keyDescriptor("Delete")); }
     else await send("Input.insertText", { text: args.text });
   });
-  return { typed: true, trusted: true, selector: args.selector ?? null, ...(r.hasFocus ? {} : { warning: "the page did not report focus: its tab or window is in the background or minimized, so the input was sent but the page may not have handled it or redrawn yet. Show the tab (or turn on 'Wake the browser' in the Tabduct popup) and read the result again" }) };
+  // `hasFocus` was read right after focus(): a frame in another process (CloudShell) or a window that
+  // was only just brought forward reports it a moment later. Look again before telling the agent the page is asleep.
+  let hasFocus = r.hasFocus;
+  if (!hasFocus) {
+    await new Promise((res) => setTimeout(res, 150));
+    hasFocus = (await exec(t.target, { func: pageHasFocus }).catch(() => null))?.[0]?.result === true;
+  }
+  return { typed: true, trusted: true, selector: args.selector ?? null, ...(hasFocus ? {} : { warning: "the page did not report focus: its tab or window is in the background or minimized, so the input was sent but the page may not have handled it or redrawn yet. Show the tab (or turn on 'Wake the browser' in the Tabduct popup) and read the result again" }) };
 }
 
 async function trustedClick(args) {

@@ -260,6 +260,7 @@ const trustedMock = async (d) => {
     return [{ frameId: fid, documentId: `doc${fid}`, result: r }];
   }
   if (fn === "focusElement") return [{ result: injected.focus ?? FOCUS_OK }];
+  if (fn === "pageHasFocus") return [{ result: injected.hasFocusLater ?? false }];
   if (fn === "locateElement") return [{ result: injected.locate ?? { ok: true, x: 100.4, y: 50.6, tag: "div" } }];
   return [{ result: "x" }];
 };
@@ -355,6 +356,13 @@ eq([(await run(() => HANDLERS.type({ tabId: 1, frameId: 3, text: "x", trusted: t
 eq((await run(() => HANDLERS.press_key({ tabId: 1, frameId: 3, selector: "#e", key: "Enter", _trusted: true }))).ok?.pressed, true, "...with a selector the element is focused first, so it works");
 injected = {};
 eq((await run(() => HANDLERS.press_key({ tabId: 1, frameId: 3, key: "Enter", _trusted: true }))).ok?.pressed, true, "...and when the named frame does hold the focus, a selector isn't needed");
+
+// the focus report right after focus() can lag (another process, window just brought forward): look again before warning
+injected = { focus: { ok: true, focused: true, hasFocus: false, tag: "textarea" }, hasFocusLater: true };
+eq((await run(() => HANDLERS.type({ tabId: 1, frameId: 3, selector: "#e", text: "x", trusted: true, _trusted: true }))).ok?.warning, undefined, "type: no 'page asleep' warning when the focus shows up a moment later");
+injected = { focus: { ok: true, focused: true, hasFocus: false, tag: "textarea" }, hasFocusLater: false };
+eq(/background or minimized/.test((await run(() => HANDLERS.type({ tabId: 1, frameId: 3, selector: "#e", text: "x", trusted: true, _trusted: true }))).ok?.warning ?? ""), true, "type: the warning stays when the page never reports focus");
+injected = {};
 
 console.log(fails ? `\nHANDLER TESTS FAILED (${fails})` : "\nHANDLER TESTS PASSED");
 process.exit(fails ? 1 : 0);
