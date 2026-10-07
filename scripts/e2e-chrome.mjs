@@ -9,12 +9,15 @@
 // Chrome 137+ removed --load-extension from branded builds, so the extension is installed through
 // CDP's Extensions.loadUnpacked (needs --enable-unsafe-extension-debugging, set below). It drives the extension's
 // service worker directly (HANDLERS.* and the consent store), because the native host is not
-// involved at this layer. It never touches your real browser profile, ~/.tabduct or the live hub.
+// involved at this layer. It never touches your real browser profile, ~/.tabduct or the live hub:
+// the extension is loaded from a COPY whose manifest has no `key`, so it gets a different id than
+// the one your registered native host allows (the browser then cannot launch the real host or join
+// the live hub), and the profile is throwaway.
 // Set CHROME_PATH to use a different binary; the test skips if none is found.
 
 import { spawn } from "node:child_process";
 import http from "node:http";
-import { existsSync, mkdtempSync, readFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, writeFileSync, cpSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -45,6 +48,19 @@ b.addEventListener('click',e=>EVENTS.push(['click',e.isTrusted]));
 dd.addEventListener('mousedown',e=>{EVENTS.push(['dd-mousedown',e.isTrusted]); if(e.isTrusted) menu.hidden=false;});
 country.addEventListener('change',e=>EVENTS.push(['change',e.isTrusted,country.value]));
 name.addEventListener('input',e=>EVENTS.push(['input',e.isTrusted]));</script>`));
+    if (u.pathname === "/nested" || u.pathname === "/nested-ov") return send(200, page(`<title>Nested</title>
+<iframe id="fr" src="/inner" style="position:absolute;left:10px;top:10px;width:300px;height:100px;border:0"></iframe>
+${u.pathname === "/nested-ov" ? `<div id="ov" style="position:absolute;left:0;top:0;width:400px;height:200px;background:rgba(255,0,0,.2)"></div>` : ""}
+<script>window.EVENTS=[]; var o=document.getElementById('ov'); if(o) o.addEventListener('click',e=>EVENTS.push(['overlay-click',e.isTrusted]));</script>`));
+    if (u.pathname === "/inner") return send(200, page(`<title>Inner</title><button id="ib" style="width:80px;height:30px">in</button>
+<script>window.EVENTS=[]; ib.addEventListener('click',e=>EVENTS.push(['inner-click',e.isTrusted]));</script>`));
+    // *.corp.test are mapped to loopback (host-resolver-rules) and are SAME-SITE, so the hr frame shares the
+    // page's process and its console / network events arrive in the tab's CDP session - the case the
+    // buffers' filter exists for. The hr frame's script comes from a NEUTRAL host: only the context's origin says "hr".
+    if (u.pathname === "/consolepage") return send(200, page(`<title>Cons</title><iframe src="http://hr.corp.test:${PA}/hrframe"></iframe><script>console.log('top-line'); fetch('http://cdn.corp.test:${PA}/toplevel',{mode:'no-cors'});</script>`));
+    if (u.pathname === "/hrframe") return send(200, page(`<title>HR</title><script src="http://cdn.corp.test:${PA}/lib.js"></script><script>fetch('http://cdn.corp.test:${PA}/hrdata',{mode:'no-cors'});</script>`));
+    if (u.pathname === "/lib.js") return send(200, "console.log('hr-secret');", "application/javascript");
+    if (u.pathname === "/toplevel" || u.pathname === "/hrdata") return send(200, "ok", "text/plain");
     if (u.pathname === "/term") return send(200, page(`<title>Term</title><textarea class="xterm-helper-textarea" id="t" style="width:300px;height:60px"></textarea>
 <script>window.EVENTS=[];
 t.addEventListener('keydown',e=>EVENTS.push(['keydown',e.key,e.ctrlKey,e.isTrusted]));
@@ -70,7 +86,7 @@ const URL_A = `http://127.0.0.1:${PA}`, URL_B = `http://localhost:${PB}`;
 // (On Windows the launched process exits at once and the real browser lives on: read the port from
 // DevToolsActivePort in the throwaway profile, and close with Browser.close.)
 const profile = mkdtempSync(join(tmpdir(), "tabduct-e2e-"));
-const chrome = spawn(CHROME, ["--headless", `--user-data-dir=${profile}`, "--remote-debugging-port=0", "--enable-unsafe-extension-debugging", "--no-first-run", "--no-default-browser-check", "--disable-gpu", "about:blank"], { stdio: "ignore", windowsHide: true });
+const chrome = spawn(CHROME, ["--headless", `--user-data-dir=${profile}`, "--remote-debugging-port=0", "--enable-unsafe-extension-debugging", "--host-resolver-rules=MAP *.corp.test 127.0.0.1", "--no-first-run", "--no-default-browser-check", "--disable-gpu", "about:blank"], { stdio: "ignore", windowsHide: true });
 const portFile = join(profile, "DevToolsActivePort");
 for (let i = 0; i < 150 && !existsSync(portFile); i++) await sleep(200);
 if (!existsSync(portFile)) { console.error("Chrome did not start (no DevToolsActivePort)"); process.exit(1); }
@@ -99,7 +115,10 @@ process.on("unhandledRejection", (e) => { console.error("  ERROR:", e); fails++;
 setTimeout(() => { console.error("E2E TIMEOUT (240s)"); fails++; finish(1); }, 240000).unref();
 
 // ---- load the extension, attach to its service worker ----------------------------------------------------------------
-const { id: EXT } = await cdp("Extensions.loadUnpacked", { path: join(REPO, "extension") });
+const extCopy = mkdtempSync(join(tmpdir(), "tabduct-ext-"));
+cpSync(join(REPO, "extension"), extCopy, { recursive: true });
+{ const mf = JSON.parse(readFileSync(join(extCopy, "manifest.json"), "utf8")); delete mf.key; writeFileSync(join(extCopy, "manifest.json"), JSON.stringify(mf, null, 2)); }
+const { id: EXT } = await cdp("Extensions.loadUnpacked", { path: extCopy });
 ok(!!EXT, `extension loaded unpacked (id ${EXT})`);
 // A service worker can't import() modules, so the harness drives the extension's own modules
 // (handlers, consent) from one of its pages: same APIs and permissions, same storage. The
@@ -255,6 +274,97 @@ try {
   ok(!urls2.some((u) => u.endsWith("/end")), "localhost blocked: the request whose redirect HOP was localhost is hidden although it ended on an allowed host", urls2);
   ok(urls2.some((u) => u.endsWith("/plainreq")), "...unrelated requests stay", urls2);
   await sw(`await H.stopAllCdpConsole(); await C.setShareOptions({ allowCdp: false, cdpConsole: false }); return 1;`);
+
+
+  // ======================================================================================================
+  console.log("— CDP eval runs inside the judged context (uniqueContextId) — VCDX-01 / VOPUS-2");
+  await setDeny([]);
+  tab = await sw(`return await openTab(${JSON.stringify(URL_A + "/")});`);
+  r = await sw(`return await call("execute_script", { tabId: ${tab}, code: "return document.title", _engine: "cdp", _pin: "127.0.0.1" });`);
+  ok(r.ok?.via === "cdp" && r.ok?.result === "Shop", "execute_script via CDP evaluates in the page's own context", r);
+  r = await sw(`const rs = await Promise.all([call("execute_script", { tabId: ${tab}, code: "return 1+1", _engine: "cdp" }), call("execute_script", { tabId: ${tab}, code: "return 2+2", _engine: "cdp" }), call("execute_script", { tabId: ${tab}, code: "return 3+3", _engine: "cdp" })]); return rs.map((x) => x.ok?.result ?? x.err);`);
+  ok(JSON.stringify(r) === "[2,4,6]", "...three evaluations at once on one tab all succeed (they queue on the Runtime domain)", r);
+  r = await sw(`return await call("execute_script", { tabId: ${tab}, code: "return typeof __f + typeof __g + typeof denyOrigins", _engine: "cdp" });`);
+  ok(r.ok?.result === "undefinedundefinedundefined", "...and nothing about the consent rules exists in the page for the agent's code to read (VOPUS-2)", r);
+  await setDeny(["unrelated.test"]);
+  r = await sw(`return await call("execute_script", { tabId: ${tab}, code: "return document.title", _engine: "cdp" });`);
+  ok(r.ok?.result === "Shop", "with an unrelated rule in the list the page is still allowed", r);
+  await setDeny(["127.0.0.1"]);
+  r = await sw(`return await call("execute_script", { tabId: ${tab}, code: "return document.title", _engine: "cdp" });`);
+  ok(r.err === "ORIGIN_DENIED", "...and a page on a blocked origin is refused", r);
+  await setDeny([]);
+
+  // ======================================================================================================
+  console.log("— a popup that INHERITED a blocked origin (about:blank, location.origin is 'null') — VOPUS-1");
+  const opener = await sw(`return await openTab(${JSON.stringify(URL_B + "/final")});`);
+  const { targetInfos } = await cdp("Target.getTargets");
+  const openerTarget = targetInfos.find((t) => t.type === "page" && t.url.startsWith(URL_B + "/final"));
+  const { sessionId: PS } = await cdp("Target.attachToTarget", { targetId: openerTarget.targetId, flatten: true });
+  await cdp("Runtime.evaluate", { expression: "(function(){var w=window.open('about:blank'); w.document.title='Statement'; w.document.body.textContent='secret statement'; return !!w;})()", userGesture: true, returnByValue: true }, PS);
+  let popup = null;
+  for (let i = 0; i < 30 && popup == null; i++) { await sleep(200); popup = await sw(`return (await chrome.tabs.query({})).find((t) => t.openerTabId === ${opener})?.id ?? null;`); }
+  ok(popup != null, "a real about:blank popup was opened by the localhost page", popup);
+  const origins = await sw(`return await evalIn(${popup}, "JSON.stringify([location.origin, self.origin, location.href])");`);
+  ok(JSON.parse(origins)[2] === "about:blank" && JSON.parse(origins)[1] === `http://localhost:${PB}`, "the popup is a pure about:blank document that inherited the opener's origin (self.origin)", origins);
+  console.log("  info: location.origin in this Chrome =", JSON.parse(origins)[0]);
+  await setDeny(["localhost"]);
+  r = await sw(`return await call("get_page_content", { tabId: ${popup} });`);
+  ok(r.err === "ORIGIN_DENIED", "reading it is ORIGIN_DENIED although the tab's URL is about:blank", r);
+  r = await sw(`return await call("execute_script", { tabId: ${popup}, code: "return document.body.innerText", _engine: "cdp" });`);
+  ok(r.err === "ORIGIN_DENIED", "...and so is a CDP evaluation (the browser reports the context's real origin)", r);
+  r = await sw(`return await call("press_key", { tabId: ${popup}, key: "a", _trusted: true });`);
+  ok(r.err === "ORIGIN_DENIED", "...and trusted input", r);
+  await setDeny([]);
+  r = await sw(`return await call("get_page_content", { tabId: ${popup} });`);
+  ok(r.ok?.content?.includes("secret statement"), "with the filter off the popup reads normally", r);
+
+  // ======================================================================================================
+  console.log("— trusted click: an overlay on an ANCESTOR document is detected — VCDX-12");
+  tab = await sw(`return await openTab(${JSON.stringify(URL_A + "/nested")});`);
+  r = await sw(`return await call("list_frames", { tabId: ${tab}, _pin: "127.0.0.1" });`);
+  const innerId = r.ok?.frames?.find((f) => f.frameId !== 0)?.frameId;
+  ok(innerId > 0, "the same-origin iframe is listed", r);
+  r = await sw(`return await call("click", { tabId: ${tab}, frameId: ${innerId}, selector: "#ib", trusted: true, _trusted: true, _pin: "127.0.0.1" });`);
+  ok(r.ok?.trusted === true, "no overlay: the trusted click inside the nested frame goes through", r);
+  ev = JSON.parse(await sw(`return await evalIn(${tab}, "JSON.stringify(window.EVENTS)", ${innerId});`));
+  ok(ev.some((e) => e[0] === "inner-click" && e[1] === true), "...and the inner button saw a trusted click", ev);
+  tab = await sw(`return await openTab(${JSON.stringify(URL_A + "/nested-ov")});`);
+  r = await sw(`return await call("list_frames", { tabId: ${tab}, _pin: "127.0.0.1" });`);
+  const innerId2 = r.ok?.frames?.find((f) => f.frameId !== 0)?.frameId;
+  r = await sw(`return await call("click", { tabId: ${tab}, frameId: ${innerId2}, selector: "#ib", trusted: true, _trusted: true, _pin: "127.0.0.1" });`);
+  ok(r.err === "INVALID_ARGS" && /covered/.test(r.msg || ""), "an overlay in the TOP document over the iframe: refused as covered (a real click would hit the overlay)", r);
+  ev = JSON.parse(await sw(`return await evalIn(${tab}, "JSON.stringify(window.EVENTS)");`));
+  ok(!ev.some((e) => e[0] === "overlay-click"), "...and the overlay received no click", ev);
+
+  // ======================================================================================================
+  console.log("— the paste shortcut is refused; keys must go to the named frame — VOPUS-5 / VCDX-08");
+  r = await sw(`return await call("press_key", { tabId: ${tab}, key: "v", modifiers: ["ctrl"], _trusted: true });`);
+  ok(r.err === "INVALID_ARGS" && /clipboard/.test(r.msg || ""), "press_key Ctrl+V is refused", r);
+  r = await sw(`return await call("press_key", { tabId: ${tab}, frameId: ${innerId2}, key: "Enter", _trusted: true, _pin: "127.0.0.1" });`);
+  ok(r.err === "INVALID_ARGS", "press_key with a frameId and no selector while that frame holds no focus is refused", r);
+
+  // ======================================================================================================
+  console.log("— console + network buffers: judged by the DOCUMENT that produced the entry (same-site hr frame) — VCDX-03 / VOPUS-11");
+  await setDeny([]);
+  const APP = `http://app.corp.test:${PA}`;
+  tab = await sw(`return await openTab("about:blank");`);
+  await sw(`await C.setShareOptions({ allowCdp: true, cdpConsole: true }); await H.startCdpConsole(${tab}); return 1;`);
+  await sw(`await chrome.tabs.update(${tab}, { url: ${JSON.stringify(APP + "/consolepage")} }); await new Promise(r => setTimeout(r, 2500)); return 1;`);
+  r = await sw(`return await call("get_console_logs", { tabId: ${tab} });`);
+  let texts = (r.ok?.logs || []).map((l) => l.text);
+  ok(texts.includes("top-line") && texts.includes("hr-secret"), "no filter: the page's line and the hr frame's line (script from a neutral CDN host) are both captured", texts);
+  r = await sw(`return await call("list_network_requests", { tabId: ${tab}, urlContains: "cdn.corp.test", limit: 100 });`);
+  let nets = (r.ok?.requests || []).map((q) => q.url.replace(/^.*corp.test:\d+/, ""));
+  ok(nets.includes("/toplevel") && nets.includes("/hrdata") && nets.includes("/lib.js"), "no filter: requests of the page and of the hr frame are all listed", nets);
+  await setDeny(["hr.corp.test"]);
+  r = await sw(`return await call("get_console_logs", { tabId: ${tab} });`);
+  texts = (r.ok?.logs || []).map((l) => l.text);
+  ok(r.ok?.source === "cdp" && texts.includes("top-line") && !texts.includes("hr-secret"), "hr.corp.test blocked: its console line is withheld (judged by the context's origin; the script URL is neutral), the page's stays", r.ok ? texts : r);
+  r = await sw(`return await call("list_network_requests", { tabId: ${tab}, urlContains: "cdn.corp.test", limit: 100 });`);
+  nets = (r.ok?.requests || []).map((q) => q.url.replace(/^.*corp.test:\d+/, ""));
+  ok(nets.includes("/toplevel") && !nets.includes("/hrdata") && !nets.includes("/lib.js"), "...and so are the requests its document issued (/hrdata, /lib.js), though their URLs are neutral", nets);
+  await sw(`await H.stopAllCdpConsole(); await C.setShareOptions({ allowCdp: false, cdpConsole: false }); return 1;`);
+  await setDeny([]);
 
   // ======================================================================================================
   console.log("— B7: restoring shares after an extension Reload (real storage and real tab ids)");

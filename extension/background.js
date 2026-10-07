@@ -212,16 +212,22 @@ async function gate(tool, args) {
   const state = await CONSENT.getState();
   // Destination guard for tools carrying a target URL: only http(s), never a
   // denylisted/allow-list-blocked origin (and don't disclose which). Blocks file:/data:/javascript:.
-  let destHost;
+  // The origin filter is judged only AFTER the call is authorized: asked first, ORIGIN_DENIED vs
+  // NOT_SHARED would let a caller with no access probe which sites are on the user's list.
+  let destHost, destBlocked = false;
   if ((tool === "navigate" || tool === "open_tab") && args?.url) {
     let scheme = null; try { scheme = new URL(args.url).protocol; } catch {}
     if (scheme !== "http:" && scheme !== "https:") return { allow: false, code: "INVALID_ARGS", message: "only http(s) destinations are allowed" };
     destHost = CONSENT.hostOf(args.url);
-    if (CONSENT.originBlocked(state, destHost)) return { allow: false, code: "ORIGIN_DENIED", message: "destination not allowed by consent policy" };
+    destBlocked = CONSENT.originBlocked(state, destHost);
     if (tool === "open_tab") destHost = undefined; // a NEW tab isn't bound by the lock of an existing one
   }
+  const DEST_DENIED = { allow: false, code: "ORIGIN_DENIED", message: "destination not allowed by consent policy" };
 
-  if (CONSENT.CREATE.has(tool)) return { ...CONSENT.evaluate(state, { tool }) };
+  if (CONSENT.CREATE.has(tool)) {
+    const d = { ...CONSENT.evaluate(state, { tool }) };
+    return d.allow && destBlocked ? DEST_DENIED : d;
+  }
 
   let tabId = typeof args?.tabId === "number" ? args.tabId : await resolveActiveTabId();
   if (tabId == null) return { allow: false, code: "TAB_NOT_FOUND", message: "no active tab" };
@@ -231,6 +237,7 @@ async function gate(tool, args) {
   const needCap = (tool === "screenshot" && args?.activate) ? "execute" : undefined; // activating steals focus → treat as write
   const d = CONSENT.evaluate(state, { tool, tabId, host, now: Date.now(), needCap, destHost });
   if (d.revoke) { await CONSENT.unshareTab(tabId); detachCdpTab(tabId); emitEvent({ kind: "permission_revoked", tabId, reason: d.code }); scheduleBadges(); } // an EXPIRED share
+  if (d.allow && destBlocked) return DEST_DENIED; // authorized caller, forbidden destination
   // A tab that left its shared origin is PAUSED, not unshared: refuse the call, stop capturing
   // what it does elsewhere (debugger + buffers), keep the grant so access resumes on return.
   if (d.code === "ORIGIN_DRIFT") {
@@ -397,11 +404,20 @@ async function updateContextMenu() {
     }
   } catch {}
 }
+// One share/unshare toggle for the popup button, the hotkey and the context menu. A PAUSED tab
+// (grant alive, tab on another site) reads as "not shared" everywhere in the UI, so toggling it
+// shares it again on the site it is on now instead of silently ending the dormant grant.
+async function toggleShareTab(id) {
+  const st = await CONSENT.getState();
+  const tab = await chrome.tabs.get(id);
+  const paused = CONSENT.pausedTabIds(st, [tab], Date.now()).length > 0;
+  if (st.allow?.[String(id)] && !paused) await CONSENT.unshareTab(id); else await CONSENT.shareTab(id);
+}
 chrome.contextMenus?.onClicked.addListener(async (info, tab) => {
   if (info.menuItemId !== CTX_SHARE || tab?.id == null) return;
   const st = await CONSENT.getState();
   if (st.tier === "all") return; // safety: menu shouldn't exist in this mode
-  if (st.allow?.[String(tab.id)]) await CONSENT.unshareTab(tab.id); else await CONSENT.shareTab(tab.id);
+  await toggleShareTab(tab.id);
   scheduleBadges();
   chrome.runtime.sendMessage({ evt: "sharing" }).catch(() => {});
 });
@@ -507,6 +523,15 @@ function markGroupMoves(ids) { groupMask.mark(ids); }
 let groupQueue = Promise.resolve();
 function inGroupQueue(fn) { const r = groupQueue.then(fn); groupQueue = r.then(() => {}, () => {}); return r; }
 
+async function setUserUngrouped(tabId, on) {
+  try {
+    const { tdUngrouped = [] } = await chrome.storage.session.get("tdUngrouped");
+    const set = new Set(tdUngrouped);
+    if (on) set.add(tabId); else if (!set.delete(tabId)) return;
+    await chrome.storage.session.set({ tdUngrouped: [...set] });
+  } catch {}
+}
+
 // Optional: mark shared tabs with a native "⚡" tab group (opt-in; may rearrange tabs).
 function applyTabGroup(sharedIds, allTabs) { return inGroupQueue(() => _applyTabGroup(sharedIds, allTabs)); }
 async function _applyTabGroup(sharedIds, allTabs) {
@@ -521,13 +546,22 @@ async function _applyTabGroup(sharedIds, allTabs) {
     const ours = new Set(tdGroups);
     const inOurs = new Set(allTabs.filter((t) => ours.has(t.groupId)).map((t) => t.id));
     const leftover = [...inOurs].filter((id) => !sharedIds.has(id)); // in our group but no longer shared
+    // Tabs the USER pulled out of the group (with "unshare on leave" off they stay shared) keep the
+    // place the user gave them: don't herd them back in at the next badge refresh.
+    const { tdUngrouped = [] } = await chrome.storage.session.get("tdUngrouped");
+    const userOut = new Set(tdUngrouped.filter((id) => sharedIds.has(id))); // a tab that stopped being shared forgets its spot
+    if (userOut.size !== tdUngrouped.length) await chrome.storage.session.set({ tdUngrouped: [...userOut] });
+    const ownGroupOfWin = new Map(); // windowId -> an existing group of ours in that window (join it, don't open a second one)
+    for (const t of allTabs) if (ours.has(t.groupId) && !ownGroupOfWin.has(t.windowId)) ownGroupOfWin.set(t.windowId, t.groupId);
     const byWin = new Map();
-    for (const t of allTabs) if (sharedIds.has(t.id) && !inOurs.has(t.id)) { if (!byWin.has(t.windowId)) byWin.set(t.windowId, []); byWin.get(t.windowId).push(t.id); }
+    for (const t of allTabs) if (sharedIds.has(t.id) && !inOurs.has(t.id) && !userOut.has(t.id)) { if (!byWin.has(t.windowId)) byWin.set(t.windowId, []); byWin.get(t.windowId).push(t.id); }
     if (!leftover.length && !byWin.size) return; // steady state → touch nothing
     if (leftover.length) { markGroupMoves(leftover); await chrome.tabs.ungroup(leftover); }
     const gids = new Set(tdGroups);
-    for (const ids of byWin.values()) {
+    for (const [winId, ids] of byWin) {
       markGroupMoves(ids);
+      const existing = ownGroupOfWin.get(winId);
+      if (existing !== undefined) { try { await chrome.tabs.group({ groupId: existing, tabIds: ids }); continue; } catch { /* the group vanished: open a new one */ } }
       const gid = await chrome.tabs.group({ tabIds: ids });
       gids.add(gid);
       await chrome.storage.local.set({ tdGroups: [...gids] }); // remember the group before its first events are judged
@@ -648,8 +682,7 @@ chrome.commands?.onCommand.addListener(async (cmd) => {
   ensureConnected();
   if (cmd !== "toggle-share-tab") return;
   const id = await resolveActiveTabId(); if (id == null) return;
-  const st = await CONSENT.getState();
-  if (st.allow?.[String(id)]) await CONSENT.unshareTab(id); else await CONSENT.shareTab(id);
+  await toggleShareTab(id);
   await refreshBadges();
   chrome.runtime.sendMessage({ evt: "sharing" }).catch(() => {});
 });
@@ -699,6 +732,8 @@ chrome.tabs.onUpdated.addListener(async (tabId, info, tab) => {
   if (groupMask.consume(tabId)) return; // our own programmatic move — consume, don't act
   const { useTabGroup, tdGroups = [], unshareOnGroupLeave, noAutoShareOpened } = await chrome.storage.local.get(["useTabGroup", "tdGroups", "unshareOnGroupLeave", "noAutoShareOpened"]);
   const st = await CONSENT.getState();
+  const inOur = info.groupId >= 0 && tdGroups.includes(info.groupId);
+  if (inOur) await setUserUngrouped(tabId, false); // back into the group: the normal sync owns it again
   const action = groupAction({
     tier: st.tier, useTabGroup,
     inOurGroup: info.groupId >= 0 && tdGroups.includes(info.groupId),
@@ -707,8 +742,12 @@ chrome.tabs.onUpdated.addListener(async (tabId, info, tab) => {
     justOpened: createdAt.has(tabId), noAutoShareOpened, unshareOnLeave: unshareOnGroupLeave === true,
   });
   if (action === "share") await CONSENT.shareTab(tabId);
-  else if (action === "unshare") await CONSENT.unshareTab(tabId);
-  else return;
+  else if (action === "unshare") { await CONSENT.unshareTab(tabId); await setUserUngrouped(tabId, false); }
+  else {
+    // Taken out of the group by the user while the share stays on: remember it (see _applyTabGroup).
+    if (info.groupId === -1 && st.allow?.[String(tabId)]) await setUserUngrouped(tabId, true);
+    return;
+  }
   scheduleBadges();
   chrome.runtime.sendMessage({ evt: "sharing" }).catch(() => {});
 });
@@ -746,7 +785,9 @@ chrome.runtime.onStartup.addListener(async () => {
   // session consent is wiped on restart but native tab groups persist → drop any
   // leftover "⚡" groups so they don't imply sharing that no longer exists; and the mirror must
   // go too, or the next Reload could resurrect shares from a previous browser session.
-  CONSENT.clearMirror().catch(() => {});
+  // Queued with the other consent mutators (not fire-and-forget): see browserStarted.
+  await CONSENT.browserStarted().catch(() => {});
+  scheduleBadges(); updateContextMenu();
   cleanupTabGroups();
   // Auto-join an already-running hub (or revive if we were connected). Respects Stop.
   await ensureConnected();
@@ -764,7 +805,7 @@ chrome.runtime.onMessage.addListener((req, _sender, sendResponse) => {
       case "status": sendResponse(await getConnState()); break;
       // sharing
       case "sharing.status": sendResponse(await sharingStatus()); break;
-      case "sharing.toggleActive": { const id = await resolveActiveTabId(); if (id != null) { const st = await CONSENT.getState(); if (st.allow?.[String(id)]) await CONSENT.unshareTab(id); else await CONSENT.shareTab(id); } scheduleBadges(); sendResponse(await sharingStatus()); break; }
+      case "sharing.toggleActive": { const id = await resolveActiveTabId(); if (id != null) await toggleShareTab(id); scheduleBadges(); sendResponse(await sharingStatus()); break; }
       case "sharing.unshare": await CONSENT.unshareTab(req.tabId); scheduleBadges(); sendResponse(await sharingStatus()); break;
       case "sharing.tier": await CONSENT.setTier(req.tier); if (req.tier !== "tabs") await cleanupTabGroups(); updateContextMenu(); scheduleBadges(); sendResponse(await sharingStatus()); break;
       case "sharing.setOptions": {

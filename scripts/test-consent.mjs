@@ -2,7 +2,7 @@
 // Unit test for the PURE consent decision logic (no Chrome). Covers the
 // security-critical cases from PROTOCOL.md §6a.
 
-import { presetOptions, isFullAccess, evaluate, denyMatch, originBlocked, visibleTabIds, pausedTabIds, hostOf, normalizeDenyRule, REQUIRED_CAP, cdpDecision, evaluateFrame, entryExpiresAt, tierExpiresAtOf, expiredGrants, repinGrants, moveGrant, restoreGrants, RESTORE_FRESH_MS } from "../extension/consent.js";
+import { presetOptions, isFullAccess, evaluate, denyMatch, originBlocked, visibleTabIds, pausedTabIds, hostOf, normalizeDenyRule, REQUIRED_CAP, cdpDecision, evaluateFrame, entryExpiresAt, tierExpiresAtOf, expiredGrants, repinGrants, moveGrant, restoreGrants, RESTORE_FRESH_MS, releasePausedGrants } from "../extension/consent.js";
 
 let fails = 0;
 const eq = (a, b, m) => { const p = JSON.stringify(a) === JSON.stringify(b); console.log(`${p ? "ok" : "FAIL"}: ${m}${p ? "" : ` (got ${JSON.stringify(a)}, want ${JSON.stringify(b)})`}`); if (!p) fails++; };
@@ -253,10 +253,40 @@ eq(REQUIRED_CAP.press_key, "execute", "REQUIRED_CAP: press_key needs execute");
 eq(code(evaluate(RO, { tool: "press_key", tabId: 3, host: "x.com" })), "CAP_NOT_GRANTED", "read-only: press_key denied");
 eq(code(evaluate(RWTOOLS, { tool: "press_key", tabId: 3, host: "x.com" })), "ALLOW", "read-write: press_key allowed");
 eq(presetOptions("full"), { lockToDomain: false, readOnly: false, ttlMs: 0, allowCdp: true }, "preset full: lock off, read-only off, no TTL, CDP eval on — and nothing about the origin list");
-eq(presetOptions("safe"), { lockToDomain: true, readOnly: false, ttlMs: 0, allowCdp: false, cdpAlways: false, cdpConsole: false }, "preset safe: factory defaults");
+eq(presetOptions("safe"), { lockToDomain: true, allowCdp: false, cdpAlways: false, cdpConsole: false }, "preset safe: lock on + CDP off, and NOTHING about read-only / expiry (a safe button must not switch a restriction the user set off)");
 eq(presetOptions("bogus"), null, "preset: unknown name → null");
 eq(Object.keys(presetOptions("full")).some((k) => /origin|deny|mode|frame/i.test(k)), false, "preset full never carries origin-filter or frame settings (the filter is not weakened)");
 eq([isFullAccess({ lockToDomain: false, readOnly: false, ttlMs: 0, allowCdp: true }), isFullAccess({ lockToDomain: true, readOnly: false, ttlMs: 0, allowCdp: true }), isFullAccess({ lockToDomain: false, readOnly: false, ttlMs: 300000, allowCdp: true })], [true, false, false], "isFullAccess matches only the full combination");
+
+// ---- review round 2 ----------------------------------------------------------------------------------
+// IDN rules: the host a rule is compared with is punycode (URL parser), so the rule must be too (VOPUS-7)
+eq([normalizeDenyRule("\u043f\u043e\u0447\u0442\u0430.\u0440\u0444"), normalizeDenyRule("*.\u043f\u043e\u0447\u0442\u0430.\u0440\u0444"), normalizeDenyRule("https://\u043f\u043e\u0447\u0442\u0430.\u0440\u0444/x")], ["xn--80a1acny.xn--p1ai", "*.xn--80a1acny.xn--p1ai", "xn--80a1acny.xn--p1ai"], "normalize rule: an internationalized rule becomes punycode, like hostOf() does");
+eq([normalizeDenyRule("localhost:3000"), normalizeDenyRule("Example.COM."), normalizeDenyRule("   "), normalizeDenyRule("bad host")], ["localhost", "example.com", null, null], "normalize rule: port, case and trailing dot are dropped; junk is rejected");
+eq(originBlocked({ originMode: "block", denyOrigins: [normalizeDenyRule("*.\u043f\u043e\u0447\u0442\u0430.\u0440\u0444")] }, hostOf("https://www.\u043f\u043e\u0447\u0442\u0430.\u0440\u0444/")), true, "a rule typed in Cyrillic blocks the site");
+
+// a paused grant on a site the filter excludes is still listed - never invisible to its owner (VCDX-07)
+{
+  const st = { tier: "tabs", allow: { 7: { host: "example.com", sharedAt: 1 } }, denyOrigins: ["mail.bad.com"], originMode: "block", lockToDomain: true };
+  const tabs2 = [{ id: 7, url: "https://mail.bad.com/inbox" }];
+  eq([visibleTabIds(st, tabs2, 2).length, pausedTabIds(st, tabs2, 2).map((t) => t.id)], [0, [7]], "a shared tab that went to a filtered-out site is hidden from the agent but listed as paused for the user");
+}
+
+// the lock goes OFF: related-site pauses wake up, tabs the user took elsewhere are released (VOPUS-3)
+{
+  const st = { tier: "tabs", lockToDomain: true, denyOrigins: [], originMode: "block", ttlMs: 0,
+    allow: { 1: { host: "console.aws.amazon.com", sharedAt: 1 }, 2: { host: "docs.corp.example", sharedAt: 1 }, 3: { host: "a.com", sharedAt: 1 }, 4: { host: null, sharedAt: 1 } } };
+  const tabs3 = [{ id: 1, url: "https://us-east-1.console.aws.amazon.com/x" }, { id: 2, url: "https://webmail.example/inbox" }, { id: 3, url: "https://a.com/" }, { id: 4, url: "https://shop.com/" }];
+  const out = releasePausedGrants(st, tabs3, 2);
+  eq(Object.keys(out).sort(), ["1", "3"], "lock off: the AWS regional sub-domain (related) keeps its grant, a tab moved to webmail and a blank-tab grant that became a shop are released, an untouched tab stays");
+  eq(releasePausedGrants(st, [tabs3[0], tabs3[2]], 2), null, "lock off: nothing to release when every paused tab is on a related site");
+}
+
+// navigate pre-check also covers a blank tab's grant (VOPUS-15)
+{
+  const st = { tier: "tabs", allow: { 5: { host: null, sharedAt: 1 } }, denyOrigins: [], originMode: "block", lockToDomain: true, readOnly: false, ttlMs: 0 };
+  eq(code(evaluate(st, { tool: "navigate", tabId: 5, host: null, destHost: "example.com", now: 2 })), "ORIGIN_DENIED", "lock on: a blank-tab grant can't navigate away either (it would pause at once) - use open_tab");
+  eq(code(evaluate({ ...st, lockToDomain: false }, { tool: "navigate", tabId: 5, host: null, destHost: "example.com", now: 2 })), "ALLOW", "lock off: a blank tab navigates freely");
+}
 
 console.log(fails ? `\nCONSENT TESTS FAILED (${fails})` : "\nCONSENT TESTS PASSED");
 process.exit(fails ? 1 : 0);

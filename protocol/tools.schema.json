@@ -130,7 +130,7 @@
     },
     {
       "name": "click",
-      "description": "Click an element in a shared tab by CSS selector. CSP-safe: injects a function (page CSP blocks string eval, not extension-injected functions). With trusted:true the click is a real, browser-generated mouse click (CDP Input) — needed by controls that ignore scripted clicks (many custom dropdowns/menus, canvas UIs); it requires the user to have enabled 'Allow CDP eval', is refused if the element is covered by something else at its centre, can't locate elements inside cross-origin frames (use type / press_key there), and is refused while the page shows a frame of a site excluded by the user's origin filter.",
+      "description": "Click an element in a shared tab by CSS selector. CSP-safe: injects a function (page CSP blocks string eval, not extension-injected functions). With trusted:true the click is a real, browser-generated mouse click (CDP Input) — needed by controls that ignore scripted clicks (many custom dropdowns/menus, canvas UIs); it requires the user to have enabled 'Allow CDP eval', is refused if the element is covered by something else at its centre (in any ancestor document too), can't locate elements inside cross-origin frames (use type / press_key there), and is refused while the page contains (even hidden) a frame of a site excluded by the user's origin filter.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -145,7 +145,7 @@
     },
     {
       "name": "type",
-      "description": "Type text into an input/textarea/select/contenteditable element in a shared tab by CSS selector (a <select> picks the option by value or visible text). Dispatches input/change events so frameworks (React/Vue) notice the change. CSP-safe (injected function). With trusted:true the text is inserted by the browser itself (CDP Input.insertText): use it for terminals (xterm.js, e.g. AWS CloudShell) and rich/canvas editors that ignore scripted input; there `selector` is optional (omit it to type into whatever is focused, e.g. after a trusted click), and the target must be focusable (for xterm.js: its helper textarea, `.xterm-helper-textarea`). Works inside cross-origin frames. Needs 'Allow CDP eval'; refused while the page shows a frame of a site excluded by the origin filter. Newlines are inserted as text, not as Enter: use press_key for that.",
+      "description": "Type text into an input/textarea/select/contenteditable element in a shared tab by CSS selector (a <select> picks the option by value or visible text). Dispatches input/change events so frameworks (React/Vue) notice the change. CSP-safe (injected function). With trusted:true the text is inserted by the browser itself (CDP Input.insertText): use it for terminals (xterm.js, e.g. AWS CloudShell) and rich/canvas editors that ignore scripted input; there `selector` is optional (omit it to type into whatever is focused, e.g. after a trusted click), and the target must be focusable (for xterm.js: its helper textarea, `.xterm-helper-textarea`). Works inside cross-origin frames. Needs 'Allow CDP eval'; refused while the page contains (even hidden) a frame of a site excluded by the origin filter; with a frameId and no selector that frame must hold the keyboard focus. Newlines are inserted as text, not as Enter: use press_key for that.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -163,7 +163,7 @@
     {
       "name": "press_key",
       "x-requires": "cdp-input",
-      "description": "Press a key (with optional modifiers) as REAL browser-level keyboard input (CDP Input.dispatchKeyEvent, isTrusted) in a shared tab: Enter to run a command in a terminal (xterm.js / AWS CloudShell), Tab, Escape, arrows, Ctrl+C, Ctrl+A... The key goes to the focused element (pass `selector` to focus one first); it works inside cross-origin frames (pass the frameId, or just focus the element). Needs the user to have enabled 'Allow CDP eval' (and read-only off); refused while the page shows a frame of a site excluded by the user's origin filter. To enter text use type with trusted:true.",
+      "description": "Press a key (with optional modifiers) as REAL browser-level keyboard input (CDP Input.dispatchKeyEvent, isTrusted) in a shared tab: Enter to run a command in a terminal (xterm.js / AWS CloudShell), Tab, Escape, arrows, Ctrl+C, Ctrl+A... The key goes to the focused element (pass `selector` to focus one first); it works inside cross-origin frames (pass the frameId, or just focus the element). Needs the user to have enabled 'Allow CDP eval' (and read-only off); refused while the page contains (even hidden) a frame of a site excluded by the user's origin filter. With a frameId and no selector, that frame must already hold the keyboard focus. Paste shortcuts (Ctrl/Cmd+V, Shift+Insert) are refused because they would read the user's clipboard. To enter text use type with trusted:true.",
       "inputSchema": {
         "type": "object",
         "properties": {

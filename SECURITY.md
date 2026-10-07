@@ -46,6 +46,10 @@ Pre-1.0: only the latest `main` is supported. Pin a commit if you need stability
 - **Auto-expire** — un-shares tabs after a chosen time (live, like the lock).
 - **Full access preset** — a convenience over the flags above (lock off, read-only
   off, no expiry, CDP eval on). It never changes the origin list, its mode or the frame rule.
+  Switching the lock off (by hand or with this preset) wakes tabs that were paused on a
+  *related* site (a sub-domain of where they were shared) and releases the ones you took to an
+  unrelated site. **Safe defaults** turns the lock back on and the CDP options off; it leaves
+  read-only and the expiry time as you set them.
 - **Don't auto-share tabs the agent opens** (default on).
 
 ## Known limitations (by design)
@@ -73,18 +77,31 @@ Pre-1.0: only the latest `main` is supported. Pin a commit if you need stability
   the host verifies the hub's `hub.json` pid+port before disclosing it.
 - **TOCTOU.** Every page tool probes the document, judges it, and acts on that
   exact document by its `documentId`; a page that self-navigates in between makes the
-  action fail instead of landing on another origin. The CDP eval path embeds the same
-  check in the evaluated expression. Residual risk: with lock-to-domain *off* the
-  embedded origin filter (your block/allow list) is part of that expression, so a page
-  that tampers with built-in JS prototypes could in principle observe the list — only
-  when you opted into CDP eval and switched the lock off.
+  action fail instead of landing on another origin. The CDP eval path does the same with
+  the browser's own bookkeeping: it asks the browser for the top frame's JavaScript context
+  (and the real origin of its document), judges that origin in the extension, and evaluates
+  *inside that context* (`uniqueContextId`) - a context dies with its document, so a
+  navigation in between makes the call fail (`ORIGIN_DRIFT`). Nothing about your rules is
+  sent into the page, and nothing a page can overwrite takes part in the decision. A document
+  is judged by its own origin (`self.origin`, which for an `about:blank` popup is the origin it
+  inherited - `location.origin` would say `null`), the origin of its URL and the host of its URL.
 - **Trusted input** (`type`/`click` with `trusted`, `press_key`) is browser-level: it
-  goes to whatever has focus, or to the element under the pointer. It is refused while
-  the page shows a frame of a site excluded by the origin filter, but a hostile page
-  that moves focus in the milliseconds between the check and the keystroke is not
-  something this can fully exclude. It needs *Allow CDP eval* and is refused in read-only.
+  goes to whatever has focus, or to the element under the pointer. Right before the events
+  are sent, over the same debugger session, the browser's frame tree is read again: the top
+  document must still pass the pin and the origin filter, and *no* frame of the page - visible
+  or not - may belong to a filtered-out site; a key sequence re-checks that the page did not
+  navigate between presses. What cannot be excluded is a page that moves focus within the few
+  milliseconds between that look and the event. With a `frameId` and no selector the named
+  frame must hold the keyboard focus. Paste shortcuts (Ctrl/Cmd+V, Shift+Insert) are refused:
+  they would read your clipboard (use `type`); Ctrl/Cmd+C and Ctrl/Cmd+X are not refused (a terminal needs Ctrl+C) but copy to your clipboard when something is selected.
+  It needs *Allow CDP eval* and is refused in read-only.
 - **Screenshots capture pixels.** A screenshot is refused while the page shows a visible
-  frame of a filtered-out site; a hidden (0×0) frame cannot be seen in it.
+  frame of a filtered-out site; the page is checked before AND after the capture and the
+  image is dropped if it changed in between (a frame shown and hidden again entirely inside
+  the capture cannot be seen from here). A hidden (0×0) frame is not in the picture.
+- **What an agent learns from a redirect.** `navigate` that ends on a page the caller may not
+  see (a filtered-out site, or another origin than the lock pins the tab to) answers without
+  that page's address and title.
 - **Not on the Chrome Web Store.** Manifest V3 forbids runtime arbitrary code, so
   `execute_script` can't ship as-is to the store; the required `debugger` permission
   adds further review friction. Install unpacked / from source.

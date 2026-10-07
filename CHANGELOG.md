@@ -12,12 +12,14 @@ All notable changes to this project are documented here. The format follows
   input (`Input.insertText` / mouse / key events through the DevTools Protocol), which is what
   terminals (xterm.js — e.g. AWS CloudShell), Cloudscape/Material dropdowns and canvas or
   rich-text editors require: they ignore scripted `el.click()` and synthetic `input` events.
-  Same opt-in as CDP eval (*Allow CDP eval* on, read-only off); refused while the page shows
-  a frame of a site the origin filter excludes; typing and keys also work inside cross-origin
-  frames. `type` with `trusted` takes an optional `selector` (omit it to type into whatever has focus).
+  Same opt-in as CDP eval (*Allow CDP eval* on, read-only off); refused while the page contains
+  (even hidden) a frame of a site the origin filter excludes - re-checked over the very debugger
+  session that sends the events; typing and keys also work inside cross-origin frames. Paste
+  shortcuts are refused (they would read your clipboard). `type` with `trusted` takes an optional `selector` (omit it to type into whatever has focus).
 - **Full access / Safe defaults presets** in Settings: one click over the ordinary flags
   (lock-to-domain off, read-only off, no auto-expire, CDP eval on — never the origin list or the
-  frame rule), with a confirmation and a header chip while active.
+  frame rule), with a confirmation and a header chip while active. *Safe defaults* turns the lock
+  on and the CDP options off and leaves read-only and the expiry time alone.
 - **Version/feature handshake.** `open` carries `extensionVersion` and `features`. A call that
   needs a feature the loaded extension build lacks (`list_frames`, a `frameId`, trusted input)
   is refused with `EXTENSION_OUTDATED` instead of being silently run somewhere else — an older
@@ -47,9 +49,16 @@ All notable changes to this project are documented here. The format follows
   `ORIGIN_DRIFT` on every cross-host redirect even with the lock off (`wait_for`, calls racing a
   navigation), and was switched off for host-less pages.
 - The "⚡" group: taking a tab out of the group no longer unshares it unless you opt in (new setting,
-  off by default — Chrome also reports group changes for window moves and closed groups); a tab Chrome
-  itself puts into the group (a link opened from a grouped tab) is not auto-shared; overlapping group
-  moves are masked correctly and run one at a time.
+  off by default — Chrome also reports group changes for window moves and closed groups) and the tab
+  stays where you put it; new shared tabs join the window's existing group instead of opening another;
+  a tab Chrome itself puts into the group (a link opened from a grouped tab) is not auto-shared;
+  overlapping group moves are masked correctly and run one at a time.
+- Switching the lock **off** wakes the tabs paused on a related site (a sub-domain of where they were
+  shared - the AWS regions case) and releases those you took to an unrelated site (your webmail).
+- The share button, hotkey and context menu treat a paused tab as not shared: using them shares it
+  again on the site it is on now, instead of ending the dormant grant behind your back.
+- With the lock on, `navigate` from a shared blank tab is refused up front like any other navigation
+  off the shared origin (it would have paused the tab at once); `open_tab` is the way to a new site.
 - `navigate` reports `completed: false` after its 15 s deadline instead of looking successful;
   `get_page_content {maxChars: 0}` is capped at 8,000,000 characters; a reply over 30 MiB is answered
   with `FRAME_TOO_LARGE` instead of timing out; `wait_for` may wait its full 25 s.
@@ -76,10 +85,31 @@ All notable changes to this project are documented here. The format follows
 
 ### Security
 - Origin filter: a `blob:` / `filesystem:` document, or `about:blank` page, of a blocked site no longer
-  slips through as "host-less"; a sandboxed frame or one nested inside a blocked frame is judged by its
-  URL and ancestors; `screenshot` is refused while the page shows a visible frame of a blocked site; a
-  redirected request is hidden from the network log when *any* hop is on a blocked origin; CDP console
-  lines are filtered by their source URL.
+  slips through as "host-less" (a document is judged by its own origin `self.origin` - for an `about:blank`
+  popup `location.origin` is `null` -, by its URL's origin and by its URL's host); a sandboxed frame or one
+  nested inside a blocked frame is judged by its URL and ancestors; `screenshot` is refused while the page
+  shows a visible frame of a blocked site (checked before and after the capture); a redirected request is
+  hidden from the network log when *any* hop - or the document that issued it - is on a blocked origin;
+  CDP console lines are filtered by the origin of the context that logged them and by their source URL
+  (an unidentifiable source is withheld while a filter is active).
+- **CDP eval is bound to the judged JavaScript context** (`Runtime.evaluate` with `uniqueContextId`)
+  instead of embedding a copy of your block list in the evaluated expression, which the agent's own
+  code could read and a hostile page could tamper with. A navigation between check and evaluation
+  makes the call fail with `ORIGIN_DRIFT`.
+- `navigate` no longer describes a page it ended on after a redirect when the caller may not see it
+  (address and title are withheld); the block list's rules are matched in punycode, so a rule typed in
+  a non-Latin script (an internationalized domain) really blocks the site; the destination filter is judged only after the call is
+  authorized (no probing of the list with `open_tab`/`navigate` when nothing is shared).
+- Trusted input: paste shortcuts are refused; a `frameId` without a `selector` must name the frame that
+  holds the focus; the browser's frame tree is re-read right before the events go out, and a hidden frame
+  of a blocked site stops them; a key sequence stops if the page navigates between presses; an overlay on
+  an ancestor document over an iframe is detected for trusted clicks.
+- `Revoke all` and `list_tabs` also name a browser that is alive but that the hub could not reach; the
+  hub refuses a call that needs a feature the target browser's build lacks (a not yet restarted host)
+  and answers 502 when the browser refuses an unshare/stop request.
+- An extension update applied together with a browser start can no longer bring last session's shares
+  back (the start-up revoke is queued with the restore).
+- A grant whose tab sits on a filtered-out site is still listed (paused) in the popup.
 - The auto-expire setting now applies to tabs that are already shared (it used to be sealed at share time).
 
 ## [1.5.0] — 2026-09-25

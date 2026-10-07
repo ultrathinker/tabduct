@@ -20,15 +20,34 @@ const area = (d) => ({
 let PAGE = { frames: {}, content: "hello", tabs: {} };
 let LOG = [];
 let CDP = []; // what was sent to the (mock) debugger
+const LISTENERS = []; // chrome.debugger.onEvent listeners
+const emit = (method, params, tabId = 1) => { for (const f of LISTENERS) f({ tabId }, method, params); };
+// What the (mock) browser answers over CDP, derived from the scripted PAGE (frames[0] = the top document,
+// the others its children) unless the test overrides PAGE.tree / PAGE.contexts / PAGE.evalError / PAGE.loader.
+const treeOf = () => {
+  const top = PAGE.frames[0] || probe("null", { url: "about:blank" });
+  return PAGE.tree || { frame: { id: "F0", loaderId: PAGE.loader || "L1", url: top.url, securityOrigin: top.origin },
+    childFrames: Object.entries(PAGE.frames).filter(([f]) => f !== "0").map(([f, r]) => ({ frame: { id: `F${f}`, url: r.url, securityOrigin: r.origin } })) };
+};
+function cdpReply(method) {
+  if (method === "Runtime.enable") {
+    const top = PAGE.frames[0] || probe("null", { url: "about:blank" });
+    for (const c of PAGE.contexts || [{ id: 7, uniqueId: "u7", origin: top.origin, auxData: { frameId: "F0", isDefault: true } }]) emit("Runtime.executionContextCreated", { context: c });
+    return {};
+  }
+  if (method === "Page.getFrameTree") { const t = treeOf(); if (PAGE.onTree) PAGE.onTree(); return { frameTree: t }; }
+  if (method === "Runtime.evaluate") { if (PAGE.evalError) throw new Error(PAGE.evalError); return { result: { value: PAGE.evalValue ?? 42 } }; }
+  return {};
+}
 const probe = (origin, extra = {}) => ({ url: origin + "/", origin, top: origin, ancestors: [], depth: 0, title: "t", width: 800, height: 600, ...extra });
 globalThis.chrome = {
   storage: { session: area(store.session), local: area(store.local) },
   permissions: { contains: async () => true },
   debugger: {
-    onEvent: { addListener() {} },
+    onEvent: { addListener(f) { LISTENERS.push(f); } },
     async attach() { CDP.push({ method: "attach" }); },
     async detach() { CDP.push({ method: "detach" }); },
-    async sendCommand(_t, method, params) { CDP.push({ method, params }); return {}; },
+    async sendCommand(_t, method, params) { CDP.push({ method, params }); return cdpReply(method, params); },
   },
   tabs: {
     async get(id) { return PAGE.tabs[id] || { id, url: "https://a.com/", active: true, windowId: 1 }; },
@@ -48,7 +67,8 @@ globalThis.chrome = {
     },
   },
 };
-const { HANDLERS, cdpGuardSource, keyDescriptor } = await import("../extension/handlers/index.js");
+const baseExec = chrome.scripting.executeScript;
+const { HANDLERS, judgeContext, consoleEntryBlocked, probeFrame, keyDescriptor, startCdpConsole, stopCdpConsole } = await import("../extension/handlers/index.js");
 const setState = (o) => { store.local.originMode = o.originMode || "block"; store.local.denyOrigins = o.denyOrigins || []; };
 const run = async (fn) => { try { return { ok: await fn() }; } catch (e) { return { err: e.code || String(e) }; } };
 const page = (frames) => { PAGE = { frames, content: "hello", tabs: {} }; LOG = []; };
@@ -134,21 +154,92 @@ polls = 0;
 r = await run(() => HANDLERS.wait_for({ tabId: 1, urlContains: "landed", timeoutMs: 5000, _pin: "a.com" }));
 eq(r.err, "ORIGIN_DRIFT", "wait_for across a cross-host redirect, lock on: ORIGIN_DRIFT");
 
-// ---- CDP in-page guard (pure source, executed here against a fake location) ----------------------
-const runGuard = (src, origin) => {
-  const loc = { origin };
-  return new Function("location", "URL", `return (()=>{ ${src} return "ran"; })()`)(loc, URL);
-};
+chrome.scripting.executeScript = baseExec; // the wait_for tests above swapped in a polling mock
+// ---- the document's real origin (probeFrame): about:blank inherits it, location.origin says "null" ----------
+const vm = await import("node:vm");
+const runProbe = (selfOrigin, locOrigin, href = "about:blank") =>
+  vm.runInNewContext(`(${probeFrame.toString()})()`, { self: { origin: selfOrigin }, location: { origin: locOrigin, href, ancestorOrigins: [] }, document: { title: "t" }, innerWidth: 1, innerHeight: 1, Array });
+eq(runProbe("https://x.bank.com", "null").origin, "https://x.bank.com", "probeFrame: an about:blank popup of a bank reports the BANK's origin (self.origin), not location.origin 'null' (VOPUS-1)");
+eq(runProbe("null", "https://x.bank.com", "https://x.bank.com/widget").origin, "https://x.bank.com", "probeFrame: a sandboxed frame (opaque self.origin) falls back to the origin of its URL");
+eq(runProbe("https://a.com", "https://a.com", "https://a.com/").origin, "https://a.com", "probeFrame: an ordinary page");
+setState({ originMode: "allow", denyOrigins: ["ok.com"] });
+page({ 0: probe("https://ok.com", { url: "about:blank" }) });
+eq((await run(() => HANDLERS.get_page_content({ tabId: 1 }))).ok?.content, "hello", "allow mode: an about:blank document that inherited an ALLOWED origin is usable (editors on srcdoc/blank frames)");
+page({ 0: probe("https://evil.com", { url: "about:blank" }) });
+eq((await run(() => HANDLERS.get_page_content({ tabId: 1 }))).err, "ORIGIN_DENIED", "allow mode: ...and one that inherited an unlisted origin is refused");
+setState({ denyOrigins: ["*.bank.com"] });
+
+// ---- CDP evaluation runs in the context that was judged (VCDX-01, VOPUS-2) -------------------------------
 const ST = { originMode: "block", denyOrigins: ["*.bank.com"] };
-eq(runGuard(cdpGuardSource("a.com", ST), "https://a.com"), "ran", "cdp guard, pinned: same host runs");
-eq(runGuard(cdpGuardSource("a.com", ST), "https://b.com"), { __tabduct_drift: true }, "cdp guard, pinned: other host → drift");
-eq(runGuard(cdpGuardSource(null, ST), "null"), "ran", "cdp guard, pin null: opaque/blank page runs");
-eq(runGuard(cdpGuardSource(undefined, ST), "https://anything.com"), "ran", "cdp guard, lock off: any non-blocked host runs");
-eq(runGuard(cdpGuardSource(undefined, ST), "https://x.bank.com"), { __tabduct_denied: true }, "cdp guard, lock off: blocked host is refused in-page");
-eq(runGuard(cdpGuardSource(undefined, { originMode: "allow", denyOrigins: ["ok.com"] }), "https://ok.com"), "ran", "cdp guard, allow mode: listed host runs");
-eq(runGuard(cdpGuardSource(undefined, { originMode: "allow", denyOrigins: ["ok.com"] }), "https://other.com"), { __tabduct_denied: true }, "cdp guard, allow mode: unlisted host refused");
-eq(runGuard(cdpGuardSource(undefined, { originMode: "allow", denyOrigins: ["ok.com"] }), "null"), { __tabduct_denied: true }, "cdp guard, allow mode: opaque origin refused (no wildcard)");
-eq(runGuard(cdpGuardSource("a.com", ST), "https://a.com./"), "ran", "cdp guard: trailing-dot origin normalizes");
+eq([judgeContext(ST, "a.com", "https://a.com"), judgeContext(ST, "a.com", "https://b.com")?.code, judgeContext(ST, undefined, "https://x.bank.com")?.code, judgeContext(ST, undefined, "https://ok.com"),
+    judgeContext(ST, null, "null"), judgeContext(ST, null, "https://a.com")?.code, judgeContext({ originMode: "allow", denyOrigins: ["ok.com"] }, undefined, "null")?.code, judgeContext(ST, "a.com", "https://a.com./")],
+   [null, "ORIGIN_DRIFT", "ORIGIN_DENIED", null, null, "ORIGIN_DRIFT", "ORIGIN_DENIED", null], "judgeContext: pin drift, filter, blank pages, trailing dot");
+
+page({ 0: probe("https://a.com") }); CDP = [];
+r = await run(() => HANDLERS.execute_script({ tabId: 1, code: "return 1", _engine: "cdp", _pin: "a.com" }));
+const evalCall = CDP.find((c) => c.method === "Runtime.evaluate");
+eq([r.ok?.via, r.ok?.result, evalCall?.params.uniqueContextId], ["cdp", 42, "u7"], "cdp eval: Runtime.evaluate runs inside the judged context (uniqueContextId)");
+eq([evalCall?.params.expression.includes("bank.com"), evalCall?.params.expression.includes("denyOrigins")], [false, false], "cdp eval: the consent rules are NOT sent into the page (the agent's code can't read them, the page can't tamper with them)");
+eq(CDP.map((c) => c.method), ["attach", "Runtime.disable", "Runtime.enable", "Page.getFrameTree", "Runtime.evaluate", "Runtime.disable", "detach"], "cdp eval: enables Runtime for the call and switches it off again");
+
+page({ 0: probe("https://a.com") }); PAGE.contexts = [{ id: 8, uniqueId: "u8", origin: "https://b.com", auxData: { frameId: "F0", isDefault: true } }]; CDP = [];
+r = await run(() => HANDLERS.execute_script({ tabId: 1, code: "return 1", _engine: "cdp", _pin: "a.com" }));
+eq([r.err, CDP.some((c) => c.method === "Runtime.evaluate")], ["ORIGIN_DRIFT", false], "cdp eval, lock on: the page's context is on another origin than the pin -> ORIGIN_DRIFT, nothing evaluated");
+page({ 0: probe("https://a.com") }); PAGE.contexts = [{ id: 8, uniqueId: "u8", origin: "https://x.bank.com", auxData: { frameId: "F0", isDefault: true } }]; CDP = [];
+r = await run(() => HANDLERS.execute_script({ tabId: 1, code: "return 1", _engine: "cdp" }));
+eq([r.err, CDP.some((c) => c.method === "Runtime.evaluate")], ["ORIGIN_DENIED", false], "cdp eval, lock off: a context of a blocked origin -> ORIGIN_DENIED, nothing evaluated (a page can't talk its way past this: the origin comes from the browser)");
+page({ 0: probe("https://a.com", { url: "about:blank" }) }); PAGE.contexts = [{ id: 8, uniqueId: "u8", origin: "https://x.bank.com", auxData: { frameId: "F0", isDefault: true } }]; CDP = [];
+eq((await run(() => HANDLERS.execute_script({ tabId: 1, code: "return 1", _engine: "cdp" }))).err, "ORIGIN_DENIED", "cdp eval: an about:blank popup that inherited the bank's origin is refused (VOPUS-1)");
+page({ 0: probe("https://a.com") }); PAGE.evalError = "Cannot find context with specified id"; CDP = [];
+eq((await run(() => HANDLERS.execute_script({ tabId: 1, code: "return 1", _engine: "cdp", _pin: "a.com" }))).err, "ORIGIN_DRIFT", "cdp eval: the context died between check and evaluation (navigation) -> ORIGIN_DRIFT, never a run in the new document");
+page({ 0: probe("https://a.com") }); PAGE.contexts = []; CDP = [];
+eq((await run(() => HANDLERS.execute_script({ tabId: 1, code: "return 1", _engine: "cdp" }))).err, "SCRIPT_ERROR", "cdp eval: no context found for the top frame -> SCRIPT_ERROR, nothing evaluated");
+
+// ---- console + network buffers: judged by the document that produced the line (VCDX-03, VOPUS-11) ------------
+eq([consoleEntryBlocked(ST, { origin: "https://x.bank.com", url: "https://cdn.example/b.js" }), consoleEntryBlocked(ST, { origin: "https://shop.com", url: "https://x.bank.com/a.js" }),
+    consoleEntryBlocked(ST, { origin: "https://shop.com" }), consoleEntryBlocked(ST, { origin: "", url: "" }), consoleEntryBlocked({ originMode: "block", denyOrigins: [] }, { origin: "", url: "" }),
+    consoleEntryBlocked({ originMode: "allow", denyOrigins: ["shop.com"] }, { origin: "https://shop.com" })],
+   [true, true, false, true, false, false], "consoleEntryBlocked: context origin or script URL decides; an unknown source is dropped while a filter is active (and only then)");
+
+page({ 0: probe("https://shop.com") });
+PAGE.contexts = [
+  { id: 7, uniqueId: "u7", origin: "https://shop.com", auxData: { frameId: "F0", isDefault: true } },
+  { id: 8, uniqueId: "u8", origin: "https://pay.bank.com", auxData: { frameId: "F3", isDefault: true } },
+  { id: 9, uniqueId: "u9", origin: "", auxData: { frameId: "F4", isDefault: true } },
+];
+await startCdpConsole(1);
+const say = (ctx, text, url) => emit("Runtime.consoleAPICalled", { type: "log", executionContextId: ctx, args: [{ type: "string", value: text }], ...(url ? { stackTrace: { callFrames: [{ url }] } } : {}) });
+say(7, "shop line", "https://shop.com/app.js"); say(7, "shop line without a stack"); say(8, "bank frame line from a CDN bundle", "https://cdn.example/bundle.js"); say(9, "opaque frame, no stack");
+r = await run(() => HANDLERS.get_console_logs({ tabId: 1 }));
+eq(r.ok?.logs.map((l) => l.text), ["shop line", "shop line without a stack"], "cdp console: lines of a blocked site's frame and of an unidentifiable (opaque, no URL) source are not handed over");
+emit("Network.requestWillBeSent", { requestId: "r1", type: "XHR", documentURL: "https://pay.bank.com/frame", request: { url: "https://api.example/x", method: "GET", headers: { Referer: "https://pay.bank.com/" } } });
+emit("Network.requestWillBeSent", { requestId: "r2", type: "XHR", documentURL: "https://shop.com/", request: { url: "https://api.example/y", method: "GET", headers: {} } });
+r = await run(() => HANDLERS.list_network_requests({ tabId: 1 }));
+eq(r.ok?.requests.map((q) => q.requestId), ["r2"], "network buffer: a request issued by a blocked site's document is hidden even though its URL is neutral");
+eq((await run(() => HANDLERS.get_network_request({ tabId: 1, requestId: "r1" }))).err, "ORIGIN_DENIED", "...and can't be fetched by id either");
+r = await run(() => HANDLERS.get_network_request({ tabId: 1, requestId: "r2" }));
+eq(["docUrl" in (r.ok?.request ?? {}), r.ok?.request?.url], [false, "https://api.example/y"], "...while the allowed one is returned without the internal docUrl field");
+await stopCdpConsole(1);
+
+// ---- navigate does not describe a page the caller may not see (VOPUS-6) ----------------------------------
+page({ 0: probe("https://a.com") });
+PAGE.tabs[1] = { id: 1, url: "https://mail.bank.com/inbox", title: "Inbox (5) - jane@example.com", windowId: 1 };
+r = await run(() => HANDLERS.navigate({ tabId: 1, url: "https://sho.rt/x", waitUntilComplete: false }));
+eq([r.ok?.withheld, r.ok?.url, r.ok?.title], [true, undefined, undefined], "navigate that ends on a blocked site (redirect): address and title are withheld");
+PAGE.tabs[1] = { id: 1, url: "https://b.com/landing", title: "B", windowId: 1 };
+r = await run(() => HANDLERS.navigate({ tabId: 1, url: "https://sho.rt/x", waitUntilComplete: false, _pin: "a.com" }));
+eq([r.ok?.withheld, r.ok?.url], [true, undefined], "navigate that ends off the pinned origin (lock on): withheld too");
+PAGE.tabs[1] = { id: 1, url: "https://a.com/next", title: "A", windowId: 1 };
+r = await run(() => HANDLERS.navigate({ tabId: 1, url: "https://a.com/next", waitUntilComplete: false, _pin: "a.com" }));
+eq([r.ok?.withheld, r.ok?.url], [undefined, "https://a.com/next"], "navigate that stays inside what is shared: the normal reply");
+
+// ---- screenshot: a second look AFTER the capture (VCDX-02) -----------------------------------------------
+page({ 0: probe("https://shop.com") });
+PAGE.tabs[1] = shotTab;
+chrome.tabs.captureVisibleTab = async () => { PAGE.frames[3] = probe("https://pay.bank.com", { top: "https://shop.com", depth: 1, width: 300, height: 200 }); return "data:image/png;base64,QUJD"; };
+r = await run(() => HANDLERS.screenshot({ tabId: 1, _pin: "shop.com" }));
+eq([r.err, r.ok], ["ORIGIN_DENIED", undefined], "screenshot: a blocked frame that became visible while the pixels were taken -> the image is dropped");
+chrome.tabs.captureVisibleTab = async () => "data:image/png;base64,QUJD";
 
 // ---- trusted input (F1): CDP Input.* ------------------------------------------------------------------------
 eq([keyDescriptor("Enter").key, keyDescriptor("Enter").text, keyDescriptor("Enter").windowsVirtualKeyCode], ["Enter", "\r", 13], "keyDescriptor: Enter types a carriage return");
@@ -181,7 +272,7 @@ r = await run(() => HANDLERS.type({ tabId: 1, selector: ".xterm-helper-textarea"
 eq([r.err, CDP.length], ["CDP_NOT_PERMITTED", 0], "trusted type without the gate's opt-in (_trusted) is refused before any debugger attach");
 
 r = await run(() => HANDLERS.type({ tabId: 1, selector: ".xterm-helper-textarea", text: "echo hello", trusted: true, _trusted: true }));
-eq([r.ok?.trusted, cdpMethods(), CDP.find((c) => c.method === "Input.insertText")?.params], [true, ["attach", "Input.insertText", "detach"], { text: "echo hello" }], "trusted type: focuses in the pinned document, then Input.insertText, then detaches");
+eq([r.ok?.trusted, cdpMethods(), CDP.find((c) => c.method === "Input.insertText")?.params], [true, ["attach", "Page.getFrameTree", "Input.insertText", "detach"], { text: "echo hello" }], "trusted type: focuses in the pinned document, then Input.insertText, then detaches");
 eq(LOG.some((l) => l.fn === "focusElement" && l.target.documentIds?.[0] === "doc0"), true, "...the focus ran in the probed document");
 
 CDP = []; injected = { focus: { ok: true, focused: true, hasFocus: true, tag: "textarea" } };
@@ -231,6 +322,39 @@ eq([(await run(() => HANDLERS.click({ tabId: 1, frameId: 0, selector: "b", trust
 injected = {}; CDP = [];
 r = await run(() => HANDLERS.click({ tabId: 1, selector: "button", trusted: false }));
 eq(cdpMethods().length, 0, "click without trusted never touches the debugger");
+
+// ---- trusted input: the browser's own look right before the events (VOPUS-4), and its other guards -----------
+const inputSent = () => CDP.some((c) => c.method.startsWith("Input."));
+const frameNode = (id, url, securityOrigin, childFrames = []) => ({ frame: { id, url, securityOrigin }, childFrames });
+page({ 0: probe("https://shop.com") }); injected = {}; CDP = [];
+PAGE.tree = { frame: { id: "F0", loaderId: "L1", url: "https://shop.com/", securityOrigin: "https://shop.com" }, childFrames: [frameNode("F9", "https://pay.bank.com/x", "https://pay.bank.com")] };
+eq([(await run(() => HANDLERS.type({ tabId: 1, selector: "#a", text: "x", trusted: true, _trusted: true }))).err, (await run(() => HANDLERS.press_key({ tabId: 1, key: "Enter", _trusted: true }))).err, (await run(() => HANDLERS.click({ tabId: 1, selector: "#a", trusted: true, _trusted: true }))).err, inputSent()],
+   ["ORIGIN_DENIED", "ORIGIN_DENIED", "ORIGIN_DENIED", false], "a blocked site's frame in the frame tree - even one the visibility probe didn't see (0x0, added after it) - stops trusted input before any event");
+PAGE.tree = { frame: { id: "F0", loaderId: "L1", url: "https://shop.com/", securityOrigin: "https://shop.com" }, childFrames: [frameNode("F2", "https://js.hsforms.net/f", "https://js.hsforms.net", [frameNode("F3", "about:blank", "https://x.bank.com")])] }; CDP = [];
+eq([(await run(() => HANDLERS.press_key({ tabId: 1, key: "Enter", _trusted: true }))).err, inputSent()], ["ORIGIN_DENIED", false], "...also when it is nested deeper, inside an allowed frame");
+PAGE.tree = { frame: { id: "F0", loaderId: "L1", url: "https://evil.com/", securityOrigin: "https://evil.com" }, childFrames: [] }; CDP = [];
+eq([(await run(() => HANDLERS.type({ tabId: 1, selector: "#a", text: "x", trusted: true, _trusted: true, _pin: "shop.com" }))).err, inputSent()], ["ORIGIN_DRIFT", false], "the page moved to another origin between the probe and the attach (lock on): ORIGIN_DRIFT, nothing typed");
+PAGE.tree = { frame: { id: "F0", loaderId: "L1", url: "about:blank", securityOrigin: "https://x.bank.com" }, childFrames: [] }; CDP = [];
+eq([(await run(() => HANDLERS.type({ tabId: 1, selector: "#a", text: "x", trusted: true, _trusted: true }))).err, inputSent()], ["ORIGIN_DENIED", false], "...and a top document whose real origin (securityOrigin) is a blocked site is refused even at about:blank");
+
+page({ 0: probe("https://shop.com") }); injected = {}; CDP = [];
+{ let n = 0; PAGE.onTree = () => { if (++n === 1) PAGE.loader = "L2"; }; } // the page navigates right after the first look
+r = await run(() => HANDLERS.press_key({ tabId: 1, key: "Enter", count: 3, _trusted: true }));
+eq([r.err, CDP.filter((c) => c.method === "Input.dispatchKeyEvent").length], ["ORIGIN_DRIFT", 2], "press_key x3: a navigation after the first key stops the rest (one keyDown/keyUp pair went out)");
+
+injected = {}; CDP = [];
+const pasteErrs = [];
+for (const [key, modifiers] of [["v", ["ctrl"]], ["V", ["meta"]], ["v", ["ctrl", "shift"]], ["Insert", ["shift"]]]) pasteErrs.push((await run(() => HANDLERS.press_key({ tabId: 1, key, modifiers, _trusted: true }))).err);
+eq([pasteErrs, CDP.length], [["INVALID_ARGS", "INVALID_ARGS", "INVALID_ARGS", "INVALID_ARGS"], 0], "press_key Ctrl/Cmd+V and Shift+Insert (paste = the user's clipboard) are refused before any debugger attach");
+eq((await run(() => HANDLERS.press_key({ tabId: 1, key: "a", modifiers: ["ctrl"], _trusted: true }))).ok?.pressed, true, "...other chords (Ctrl+A) still work");
+
+page({ 0: probe("https://shop.com"), 3: probe("https://js.hsforms.net", { top: "https://shop.com", depth: 1 }) }); CDP = [];
+injected = { focus: { ok: true, focused: true, hasFocus: false, tag: "input" } };
+eq([(await run(() => HANDLERS.type({ tabId: 1, frameId: 3, text: "x", trusted: true, _trusted: true }))).err, (await run(() => HANDLERS.press_key({ tabId: 1, frameId: 3, key: "Enter", _trusted: true }))).err, inputSent()],
+   ["INVALID_ARGS", "INVALID_ARGS", false], "frameId without a selector while another frame holds the focus: refused (the keys would go to that other frame)");
+eq((await run(() => HANDLERS.press_key({ tabId: 1, frameId: 3, selector: "#e", key: "Enter", _trusted: true }))).ok?.pressed, true, "...with a selector the element is focused first, so it works");
+injected = {};
+eq((await run(() => HANDLERS.press_key({ tabId: 1, frameId: 3, key: "Enter", _trusted: true }))).ok?.pressed, true, "...and when the named frame does hold the focus, a selector isn't needed");
 
 console.log(fails ? `\nHANDLER TESTS FAILED (${fails})` : "\nHANDLER TESTS PASSED");
 process.exit(fails ? 1 : 0);

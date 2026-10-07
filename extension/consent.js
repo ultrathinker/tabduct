@@ -54,8 +54,10 @@ export function normalizeDenyRule(r) {
   if (!r) return null;
   const wild = r.startsWith("*.");
   let body = wild ? r.slice(2) : r;
-  if (body.includes("/") || body.includes("://")) { try { body = new URL(body.includes("://") ? body : "http://" + body).hostname; } catch {} }
-  body = body.replace(/:\d+$/, "").replace(/\.$/, "");
+  // Always through the URL parser, exactly like hostOf() does for the hosts it compares against:
+  // an internationalized rule (a domain in a non-Latin script) must become its punycode form or it would never match.
+  try { body = new URL(body.includes("://") ? body : "http://" + body).hostname; } catch { return null; }
+  body = body.replace(/\.$/, "");
   return body ? (wild ? "*." : "") + body : null;
 }
 
@@ -137,7 +139,9 @@ export function evaluate(state, { tool, tabId, host, now, needCap, destHost }) {
   if (driftsSticky(entry, host, state)) return deny("ORIGIN_DRIFT", "this tab is no longer on the origin it was shared on (lock-to-domain); it stays shared and works again when it returns there, or when the user turns the lock off in the Tabduct popup");
   // With the lock on, refuse a navigation that would leave the shared origin BEFORE it
   // happens — otherwise the agent cuts its own access with one call.
-  if (destHost !== undefined && state.lockToDomain !== false && entry.host != null && destHost !== entry.host) {
+  // (A blank tab - host null - counts too: the navigation would drift it to a real origin and
+  // pause it at once, so say so up front instead of letting the agent cut its own access.)
+  if (destHost !== undefined && state.lockToDomain !== false && destHost !== entry.host) {
     return deny("ORIGIN_DENIED", "lock-to-domain is on: this navigation would leave the origin the tab was shared on. Ask the user to turn the lock off in the Tabduct popup, or use open_tab");
   }
   if (writeBlocked) return capDeny();
@@ -183,15 +187,16 @@ export function visibleTabIds(state, tabs, now) {
   });
 }
 
-// Tabs that hold a grant but are PAUSED because they left the shared origin (the popup
-// lists them so a dormant grant is never invisible to the user).
+// Tabs that hold a grant but are PAUSED because they left the shared origin, or sit on an origin
+// the filter excludes (the grant comes back when they return): the popup lists them so a dormant
+// grant is never invisible to the user - it is the user's own view, not the agent's.
 export function pausedTabIds(state, tabs, now) {
   if (state.tier !== "tabs") return [];
   return tabs.filter((t) => {
     const entry = state.allow?.[String(t.id)];
     if (!entry || isExpired(entry, now, state)) return false;
     const host = hostOf(t.url);
-    return !originBlocked(state, host) && driftsSticky(entry, host, state);
+    return originBlocked(state, host) || driftsSticky(entry, host, state);
   });
 }
 
@@ -200,10 +205,12 @@ export function pausedTabIds(state, tabs, now) {
 //  full — "let the agent work freely on what I shared": lock off, read-only off, no auto-expire,
 //         CDP eval on (trusted input needs it). Continuous console/network capture (which keeps the
 //         browser's "being debugged" banner up) and "always use CDP" stay as they are.
-//  safe — the factory defaults.
+//  safe — back to the safe side of what "full" opened up: lock on, all CDP options off. It does NOT
+//         touch read-only or the expiry time: pressing a "safe" button must never switch a
+//         restriction the user set off (read-only, a TTL) - those are changed individually.
 export function presetOptions(name) {
   if (name === "full") return { lockToDomain: false, readOnly: false, ttlMs: 0, allowCdp: true };
-  if (name === "safe") return { lockToDomain: true, readOnly: false, ttlMs: 0, allowCdp: false, cdpAlways: false, cdpConsole: false };
+  if (name === "safe") return { lockToDomain: true, allowCdp: false, cdpAlways: false, cdpConsole: false };
   return null;
 }
 // Does the current state match the "full" preset? (drives the header indicator)
@@ -250,6 +257,22 @@ export function repinGrants(allow, tabs) {
     out[k] = { ...e, host: hostOf(t.url) };
   }
   return out;
+}
+
+// The lock is being switched OFF: paused tabs (grants whose tab left its shared site) come back to
+// life on wherever they are now. That is wanted for a tab that moved within the same site
+// (console.aws.amazon.com -> us-east-1.console.aws.amazon.com) but not for one the USER took
+// elsewhere (a work page -> their webmail): those grants are released instead. `related` =
+// same host or one a sub-domain of the other. Returns the new allow map (or null: nothing to drop).
+export function releasePausedGrants(state, tabs, now) {
+  const related = (a, b) => !!a && !!b && (a === b || a.endsWith("." + b) || b.endsWith("." + a));
+  const allow = { ...(state.allow || {}) };
+  let dropped = false;
+  for (const t of pausedTabIds({ ...state, lockToDomain: true }, tabs, now)) {
+    if (related(hostOf(t.url), allow[String(t.id)]?.host)) continue;
+    delete allow[String(t.id)]; dropped = true;
+  }
+  return dropped ? allow : null;
 }
 
 // Chrome replaced a tab id with another (prerender / instant): carry the grant over.
@@ -307,7 +330,9 @@ export async function getState() {
     chrome.storage.local.get(["denyOrigins", "shareReadOnly", "shareTtlMs", "shareTtlSetAt", "originMode", "lockToDomain", "allowCdp", "cdpAlways", "cdpConsole"]),
   ]);
   const s = sess.consent ?? { tier: "none", allow: {} };
-  const { denyOrigins = [], shareReadOnly = false, shareTtlMs = 0 } = loc;
+  const { shareReadOnly = false, shareTtlMs = 0 } = loc;
+  // Rules saved by an older build may not be in the current normal form (IDN): normalize on read.
+  const denyOrigins = [...new Set((Array.isArray(loc.denyOrigins) ? loc.denyOrigins : []).map(normalizeDenyRule).filter(Boolean))];
   return {
     tier: s.tier ?? "none", allow: s.allow ?? {}, tierSetAt: s.tierSetAt ?? null,
     denyOrigins, readOnly: !!shareReadOnly, ttlMs: Number(shareTtlMs) || 0, ttlSetAt: Number(loc.shareTtlSetAt) || 0,
@@ -371,6 +396,11 @@ export function setShareOptions({ readOnly, ttlMs, lockToDomain, noAutoShareOpen
     if (cdpAlways !== undefined) patch.cdpAlways = !!cdpAlways;
     if (cdpConsole !== undefined) patch.cdpConsole = !!cdpConsole;
     if (unshareOnGroupLeave !== undefined) patch.unshareOnGroupLeave = !!unshareOnGroupLeave;
+    // Lock switched OFF: free the tabs paused on a related site, release those the user moved elsewhere.
+    if (lockToDomain === false && prev.lockToDomain !== false && prev.tier === "tabs" && Object.keys(prev.allow).length) {
+      const allow = releasePausedGrants(prev, await chrome.tabs.query({}), Date.now());
+      if (allow) await saveConsent({ tier: prev.tier, allow, tierSetAt: prev.tierSetAt });
+    }
     await chrome.storage.local.set(patch);
     // Lock switched ON: pin every already-shared tab to the host it is on right now.
     if (lockToDomain === true && prev.lockToDomain === false && Object.keys(prev.allow).length) {
@@ -448,3 +478,14 @@ export function touchMirror() {
 }
 // Browser restart: grants die with the session, and so must their mirror.
 export function clearMirror() { return chrome.storage.local.remove("allowMirror"); }
+// The browser has just started. Chrome delivers runtime.onInstalled("update") together with
+// onStartup when an update is applied at start-up, in either order: an `update` that ran first
+// would have restored last session's grants from a still-fresh mirror. Queued with the other
+// mutators, this runs after such a restore and ends with nothing shared and no mirror (and
+// before it, the restore finds no mirror).
+export function browserStarted() {
+  return serial(async () => {
+    await chrome.storage.session.remove("consent");
+    await chrome.storage.local.remove("allowMirror");
+  });
+}

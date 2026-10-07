@@ -191,7 +191,11 @@ Per-tool behaviour a conforming extension MUST implement:
   lock-to-domain on, the page must still be on the host the tab was authorized on
   (else `ORIGIN_DRIFT`); either way its origin must pass the origin filter (else
   `ORIGIN_DENIED`). `blob:`/`filesystem:` documents and `about:blank` pages that inherit
-  a site's origin count as that site.
+  a site's origin count as that site: the document is judged by its own origin
+  (`self.origin`; `location.origin` is `"null"` for such a page), by the origin of its URL and
+  by the host of its URL. The CDP engine of `execute_script` evaluates in the top frame's
+  JavaScript context whose origin the browser reported and the extension judged
+  (`Runtime.evaluate` with `uniqueContextId`), so it holds the same guarantee.
 - **Frames** (`frameId` on the page tools, `list_frames`): a frame is reachable
   only inside a tab that passed the checks above. The frame is judged by its own
   origin, by the host of its URL, and by every ancestor between it and the page (so a
@@ -200,9 +204,18 @@ Per-tool behaviour a conforming extension MUST implement:
   sections. Lock-to-domain governs the tab, not its frames — an embedded form is part
   of the shared page. An unknown `frameId` → `INVALID_ARGS`.
 - **Pixels and buffers.** `screenshot` is refused (`ORIGIN_DENIED`) while the page
-  shows a visible frame of a filtered-out site. CDP-captured network records are hidden
-  when ANY hop of a redirect chain is on a filtered-out origin, and CDP console lines
-  are filtered by the origin of their source URL.
+  shows a visible frame of a filtered-out site (checked before and after the capture).
+  CDP-captured network records are hidden when ANY hop of a redirect chain, or the document
+  that issued the request, is on a filtered-out origin; CDP console lines are filtered by
+  the origin of the JavaScript context that logged them and by their source URL, and a line
+  whose source cannot be established is withheld while a filter is active.
+- **Trusted input.** `type`/`click` with `trusted`, and `press_key`, read the browser's frame
+  tree over the debugger session that sends the events: the top document must pass the pin and
+  the filter and no frame of the page may belong to a filtered-out site (visible or not).
+  `press_key` refuses paste shortcuts. A `frameId` without a `selector` requires that frame
+  to hold the keyboard focus (`INVALID_ARGS` otherwise).
+- **Redirects in `navigate`.** If the tab ends on a page outside what is shared, the reply
+  carries `withheld: true` and a note instead of that page's `url` and `title`.
 
 The extension MAY send `event` notifications (ext→host, no reply) for
 `permission_revoked`, `permission_paused` and `tab_removed`; hosts MAY ignore them.

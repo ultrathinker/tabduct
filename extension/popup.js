@@ -199,7 +199,7 @@ function renderShareList(s) {
   const selfId = peersData.selfId;
   // Require a known selfId so the current browser (also present in the hub snapshot) is
   // never rendered twice — once under "Current" and again as its own group.
-  const others = (peersData.instances || []).filter((i) => selfId && i.instanceId !== selfId && (i.tier === "all" || (i.tabs && i.tabs.length)));
+  const others = (peersData.instances || []).filter((i) => selfId && i.instanceId !== selfId && (i.tier === "all" || i.tier === "unknown" || (i.tabs && i.tabs.length)));
   const grouped = others.length > 0;
   // "Revoke all sharing" shows whenever ANYTHING is shared anywhere (this browser or
   // another) and clears every instance at once.
@@ -270,7 +270,7 @@ $("allowCdp").addEventListener("change", async () => {
 $("cdpAlways").addEventListener("change", async () => renderSharing(await send({ cmd: "sharing.setOptions", cdpAlways: $("cdpAlways").checked })));
 $("cdpConsole").addEventListener("change", async () => renderSharing(await send({ cmd: "sharing.setOptions", cdpConsole: $("cdpConsole").checked })));
 $("presetFull").addEventListener("click", async () => {
-  if (!confirm("Full access for shared tabs?\n\nThe agent will be able to navigate them to any site, click and type (not only read), keep access without a time limit, and use browser-level (debugger) input. Chrome will show its 'is being debugged' banner while that is in use.\n\nYour blocked-origins list still applies to everything. You can switch individual options back at any time, or press 'Safe defaults'.")) return;
+  if (!confirm("Full access for shared tabs?\n\nThe agent will be able to navigate them to any site, click and type (not only read), keep access without a time limit, and use browser-level (debugger) input. Chrome will show its 'is being debugged' banner while that is in use.\n\nTabs that are paused because they moved to another site come back to life if they are on a related site (a sub-domain of where you shared them); tabs you took to a different site are un-shared.\n\nYour blocked-origins list still applies to everything. You can switch individual options back at any time, or press 'Safe defaults'.")) return;
   renderSharing(await send({ cmd: "sharing.preset", name: "full" }));
 });
 $("presetSafe").addEventListener("click", async () => renderSharing(await send({ cmd: "sharing.preset", name: "safe" })));

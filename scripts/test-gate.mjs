@@ -16,6 +16,7 @@ const ev = () => { const ls = []; return { addListener: (f) => ls.push(f), fire:
 const area = () => { const d = {}; return { d, async get(k) { const ks = typeof k === "string" ? [k] : Array.isArray(k) ? k : Object.keys(k || {}); const o = {}; for (const x of ks) if (x in d) o[x] = JSON.parse(JSON.stringify(d[x])); return o; }, async set(o) { for (const [k, v] of Object.entries(o)) d[k] = JSON.parse(JSON.stringify(v)); }, async remove(k) { for (const x of [].concat(k)) delete d[x]; } }; };
 let TABS = [];
 let PAGE = {}; // tabId -> probe origin
+let FRAMES = {}; // tabId -> extra frames [{frameId, documentId, result}] reported by the allFrames probe
 let SHOT = "data:image/png;base64,QUJD";
 let ports = [];
 const mkPort = () => { const p = { sent: [], onMessage: ev(), onDisconnect: ev(), postMessage(m) { p.sent.push(m); }, disconnect() { p.closed = true; } }; ports.push(p); return p; };
@@ -38,7 +39,7 @@ globalThis.chrome = {
   scripting: {
     async executeScript(d) {
       if (d.func?.name === "probeFrame") {
-        if (d.target.allFrames) return [{ frameId: 0, documentId: "d0", result: probeOf(d.target.tabId) }];
+        if (d.target.allFrames) return [{ frameId: 0, documentId: "d0", result: probeOf(d.target.tabId) }, ...(FRAMES[d.target.tabId] || [])];
         return [{ frameId: 0, documentId: "d0", result: probeOf(d.target.tabId ?? 1) }];
       }
       return [{ result: "page text" }];
@@ -168,6 +169,24 @@ await evs.onStartup.fire();
 await evs.onInstalled.fire({ reason: "update" });
 eq((await C.getState()).tier, "none", "after a browser restart (onStartup clears the mirror) nothing is restored");
 
+// update applied together with a browser start (VCDX-11): whichever event comes first, nothing may stay shared
+{
+  const wipeSession = () => { const s = area(); chrome.storage.session.get = s.get; chrome.storage.session.set = s.set; chrome.storage.session.remove = s.remove; };
+  const shareFresh = async () => { await C.setShareOptions({ lockToDomain: false }); TABS[0].url = "https://console.aws.amazon.com/home"; await C.revokeAll(); await C.shareTab(1); wipeSession(); };
+  await shareFresh();
+  await evs.onInstalled.fire({ reason: "update" });
+  eq((await C.getState()).tier, "tabs", "(setup) the update restored the share");
+  await evs.onStartup.fire();
+  eq((await C.getState()).tier, "none", "update first, then startup: the startup revokes what the update restored");
+  await shareFresh();
+  await Promise.all([evs.onStartup.fire(), evs.onInstalled.fire({ reason: "update" })]);
+  eq((await C.getState()).tier, "none", "startup and update dispatched together: nothing is shared afterwards");
+  await shareFresh();
+  await Promise.all([evs.onInstalled.fire({ reason: "update" }), evs.onStartup.fire()]);
+  eq((await C.getState()).tier, "none", "...and in the other order too");
+  wipeSession();
+}
+
 // ---- a late disconnect of a replaced native port must not kill the new connection (CDX-6) ---------------
 await popup({ cmd: "disconnect" });
 const { port: P2 } = await connect();
@@ -176,6 +195,37 @@ const stAfter = await popup({ cmd: "status" });
 eq(stAfter.state, "connected", "a late onDisconnect from the old port leaves the new connection alone");
 eq(code(await call(P2, "list_tabs")), "ok", "...and the new port still answers invokes");
 eq(ports.length >= 2 && P1 !== P2, true, "(two distinct ports were used)");
+
+// ---- the origin filter is judged only AFTER authorization (VCDX-06) -------------------------------------------
+TABS.push({ id: 2, url: "https://shop.com/", active: false, windowId: 1, title: "Shop" });
+await chrome.storage.local.set({ denyOrigins: ["*.bank.com"], originMode: "block" });
+await C.revokeAll();
+eq([code(await call(P2, "open_tab", { url: "https://x.bank.com/" })), code(await call(P2, "open_tab", { url: "https://ok.com/" })), code(await call(P2, "navigate", { tabId: 2, url: "https://x.bank.com/" })), code(await call(P2, "navigate", { tabId: 2, url: "https://ok.com/" }))],
+   ["NOT_SHARED", "NOT_SHARED", "NOT_SHARED", "NOT_SHARED"], "nothing shared: a blocked and an ordinary destination are answered alike, so the list can't be probed");
+await C.setTier("tabs");
+eq(code(await call(P2, "open_tab", { url: "https://x.bank.com/" })), "ORIGIN_DENIED", "sharing on (authorized caller): a blocked destination is refused as ORIGIN_DENIED");
+await C.revokeAll();
+
+// ---- forged internal args can't unlock a screenshot of a blocked frame (VOPUS-12) ---------------------------
+await C.setShareOptions({ lockToDomain: false });
+TABS[0].url = "https://support.console.aws.amazon.com/"; TABS[0].active = true; TABS[1].active = false;
+await C.shareTab(1);
+FRAMES[1] = [{ frameId: 3, documentId: "d3", result: { url: "https://pay.bank.com/", origin: "https://pay.bank.com", top: "https://support.console.aws.amazon.com", ancestors: [], depth: 1, title: "", width: 300, height: 200 } }];
+eq([code(await call(P2, "screenshot", { tabId: 1 })), code(await call(P2, "screenshot", { tabId: 1, _manual: true }))], ["ORIGIN_DENIED", "ORIGIN_DENIED"], "a visible blocked frame refuses the screenshot, and a forged _manual:true from the wire doesn't change that");
+delete FRAMES[1];
+eq(code(await call(P2, "type", { tabId: 1, selector: "#a", text: "x", trusted: true, _trusted: true })), "CDP_NOT_PERMITTED", "a forged _trusted:true can't switch trusted input on without the opt-in");
+
+// ---- the share button / hotkey / menu on a PAUSED tab re-shares it instead of ending the dormant grant (VOPUS-9) -----
+await C.setShareOptions({ lockToDomain: true });
+TABS[0].url = "https://support.console.aws.amazon.com/";
+await C.revokeAll(); await C.shareTab(1);
+TABS[0].url = "https://elsewhere.example/";
+eq((await popup({ cmd: "sharing.status" })).paused.map((t) => t.id), [1], "(setup) the tab left its site: paused");
+await popup({ cmd: "sharing.toggleActive" });
+eq([(await C.getState()).allow["1"]?.host], ["elsewhere.example"], "toggle on a paused tab shares it again on the site it is on now (not unshare)");
+await popup({ cmd: "sharing.toggleActive" });
+eq(Object.keys((await C.getState()).allow), [], "...and the next toggle, on an active share, unshares");
+await C.revokeAll();
 
 // ---- group sync logic (B6) -----------------------------------------------------------------------------------
 const m = new GroupMask(2000);
@@ -191,6 +241,32 @@ eq(groupAction({ ...base, inOurGroup: true, shared: false, blocked: true }), nul
 eq(groupAction({ ...base, inOurGroup: true, shared: false, justOpened: true }), null, "a tab Chrome just opened into the group is not auto-shared (OPUS-9)");
 eq(groupAction({ ...base, inOurGroup: true, shared: false, justOpened: true, noAutoShareOpened: false }), "share", "...unless the user turned that guard off");
 eq(groupAction({ ...base, tier: "all", inOurGroup: true, shared: false }), null, "'Everything' mode: group sync is off");
+
+// ---- tab groups: one group per window; a tab the user pulled out stays out (VOPUS-14) ----------------------------
+{
+  let gseq = 100; const calls = [];
+  chrome.tabGroups = { async update() {} };
+  chrome.tabs.group = async ({ tabIds, groupId }) => { const gid = groupId ?? ++gseq; calls.push({ tabIds, groupId: groupId ?? null }); for (const id of tabIds) { const t = TABS.find((x) => x.id === id); t.groupId = gid; setTimeout(() => evs.tabsUpdated.fire(id, { groupId: gid }, t), 0); } return gid; };
+  chrome.tabs.ungroup = async (ids) => { for (const id of [].concat(ids)) { const t = TABS.find((x) => x.id === id); t.groupId = -1; setTimeout(() => evs.tabsUpdated.fire(id, { groupId: -1 }, t), 0); } };
+  TABS = [{ id: 1, url: "https://a.com/", active: true, windowId: 1, groupId: -1 }, { id: 2, url: "https://b.com/", active: false, windowId: 1, groupId: -1 }, { id: 3, url: "https://c.com/", active: false, windowId: 1, groupId: -1 }];
+  await chrome.storage.local.set({ useTabGroup: true, tdGroups: [], unshareOnGroupLeave: false, noAutoShareOpened: true, denyOrigins: [] });
+  await C.revokeAll(); await C.setShareOptions({ lockToDomain: false });
+  await C.shareTab(1); await C.shareTab(2);
+  await popup({ cmd: "sharing.toggleActive" }); await popup({ cmd: "sharing.toggleActive" }); // unshare + re-share the active tab: any sharing change repaints the badges/groups
+  await sleep(500);
+  eq(calls.map((c) => c.groupId), [null], "(setup) two shared tabs open ONE group");
+  await C.shareTab(3); await popup({ cmd: "sharing.toggleActive" }); await popup({ cmd: "sharing.toggleActive" }); // any sharing change repaints
+  await sleep(400);
+  eq([calls.length, calls[1]?.groupId, TABS[2].groupId], [2, 101, 101], "a third shared tab JOINS the existing group instead of opening a second one");
+  // the user pulls tab 2 out of the group: with 'unshare on leave' off it stays shared and stays out
+  TABS[1].groupId = -1;
+  await evs.tabsUpdated.fire(2, { groupId: -1 }, TABS[1]);
+  eq(Object.keys((await C.getState()).allow).includes("2"), true, "dragging a tab out of the group does not unshare it (default)");
+  const n = calls.length;
+  await popup({ cmd: "sharing.toggleActive" }); await popup({ cmd: "sharing.toggleActive" });
+  await sleep(400);
+  eq([calls.slice(n).some((c) => c.tabIds.includes(2)), TABS[1].groupId], [false, -1], "...and the next repaint doesn't herd it back into a group");
+}
 
 console.log(fails ? `\nGATE TESTS FAILED (${fails})` : "\nGATE TESTS PASSED");
 process.exit(fails ? 1 : 0);

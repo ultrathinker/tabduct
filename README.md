@@ -117,7 +117,8 @@ canvas editors only react to events the browser itself generated. `type` / `clic
 `trusted: true`, and `press_key`, send exactly that through the DevTools Protocol. It needs the
 same opt-in as CDP eval (**Allow CDP eval**, read-only off) and works inside cross-origin
 frames for typing and keys. A terminal: `click` it (or `type` into its helper textarea,
-`.xterm-helper-textarea`) with `trusted: true`, then `press_key Enter`.
+`.xterm-helper-textarea`) with `trusted: true`, then `press_key Enter`. Paste shortcuts are refused
+(they would read your clipboard).
 
 Most tools — including `click` / `type` / `wait_for` / `get_dom_snapshot` — run as
 **injected functions**, so they work even on strict-CSP sites (GitHub, banks, SaaS).
@@ -139,7 +140,7 @@ the browser). All of these are in the popup:
 - **Lock shared tabs to their domain** (default on) — a shared tab that navigates to another site is *paused*: the agent is refused and the tab disappears from its list, so a shared shopping tab can't follow you into your bank; the share is kept and resumes when the tab is back. It is a live setting — switching it off frees tabs you already shared.
 - **Read-only** — the agent may look but never click, type, navigate, run scripts, or open/close tabs.
 - **Auto-expire** — un-shares tabs after a chosen time (5 min … 10 h), counted from when each was shared or from when you changed the setting.
-- **Full access / Safe defaults** — one click over the flags above for "let the agent work freely on what I shared" (lock off, read-only off, no expiry, CDP eval on), or back to the factory defaults. The origin list is never touched.
+- **Full access / Safe defaults** — one click over the flags above for "let the agent work freely on what I shared" (lock off, read-only off, no expiry, CDP eval on), or back to the safe side (lock on, CDP options off; read-only and expiry stay as you set them). The origin list is never touched.
 - **Don't auto-share tabs the agent opens** (default on).
 - **CDP mode** (Advanced, opt-in, default off) — lets `execute_script` bypass a page's CSP via the DevTools Protocol, with an optional "developer mode" that routes all eval through it and full console/error capture. Chrome forbids requesting `debugger` at runtime, so it's a **required** permission granted at install — but **nothing attaches until you flip this toggle on**, and use is still gated by consent (never in read-only). Chrome shows a "being debugged" banner whenever it's actually in use.
 - Sharing resets when the browser restarts (so nothing stays shared by accident), but survives reloading the extension — handy after a `git pull`.

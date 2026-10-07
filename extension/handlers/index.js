@@ -44,21 +44,35 @@ function tabInfo(t) {
 // Runs inside a frame: what it is, and which top-level page it lives in.
 // Self-contained (serialized by chrome.scripting). `ancestors` are the intermediate parents
 // (nearest first, the top-level page excluded); `top` is the top-level page's origin.
-function probeFrame() {
+export function probeFrame() {
   const a = location.ancestorOrigins ? Array.from(location.ancestorOrigins) : [];
+  // `location.origin` is the origin of the document's URL: "null" for about:blank / srcdoc even
+  // when the document INHERITED a real origin (a bank's window.open() + document.write popup).
+  // `self.origin` is the document's own origin, so it wins whenever it is a real one.
+  const own = self.origin && self.origin !== "null" ? self.origin : location.origin;
   return {
-    url: location.href, origin: location.origin, top: a.length ? a[a.length - 1] : location.origin,
+    url: location.href, origin: own, urlOrigin: location.origin, top: a.length ? a[a.length - 1] : own,
     ancestors: a.slice(0, -1),
     depth: a.length, title: document.title, width: innerWidth, height: innerHeight,
   };
 }
 
-// Consent verdict for one probed frame (the top frame included).
+// Consent verdict for one probed frame (the top frame included). Judged by the document's own
+// origin, by the origin of its URL and by the host of its URL (all three must pass).
 function frameVerdict(state, pin, f) {
   return evaluateFrame(state, {
     pin, topHost: hostOf(f.top), frameHost: hostOf(f.origin), frameUrlHost: hostOf(f.url),
-    ancestorHosts: (f.ancestors || []).map(hostOf),
+    ancestorHosts: [...(f.ancestors || []).map(hostOf), ...[f.urlOrigin && f.urlOrigin !== f.origin ? hostOf(f.urlOrigin) : null].filter(Boolean)],
   });
+}
+
+// The reply to navigate describes the page the tab ENDED on. A redirect can end it on a page the
+// caller has no right to see (a filtered-out site, or another origin than the one the lock pins
+// the tab to): then say so without its address or title.
+async function withholdIfOutside(info, pin) {
+  const h = hostOf(info.url);
+  if (!originBlocked(await getConsentState(), h) && (pin === undefined || h === pin)) return info;
+  return { id: info.id, windowId: info.windowId, withheld: true, note: "the tab ended on a page outside what is shared (a redirect); its address and title are withheld" };
 }
 
 // executeScript with a readable error: a call that lands on a document that has just been
@@ -134,7 +148,7 @@ export const HANDLERS = {
     const tabId = await resolveTabId(args);
     if (args.waitUntilComplete === false) {
       await chrome.tabs.update(tabId, { url: args.url });
-      return tabInfo(await chrome.tabs.get(tabId));
+      return withholdIfOutside(tabInfo(await chrome.tabs.get(tabId)), args._pin);
     }
     // Attach listeners BEFORE update() to avoid a lost-wakeup race; guard tab
     // close; bound with an internal deadline < the host's invoke timeout.
@@ -154,9 +168,10 @@ export const HANDLERS = {
     });
     await chrome.tabs.update(tabId, { url: args.url });
     const outcome = await done;
-    const info = tabInfo(await chrome.tabs.get(tabId));
+    const info = await withholdIfOutside(tabInfo(await chrome.tabs.get(tabId)), args._pin);
     // The deadline is not a failure of the navigation itself (slow SPAs, consoles that never
     // go idle), but it must not be reported as "complete" either: say what happened.
+    if (info.withheld) return { ...info, completed: outcome === "complete" };
     return outcome === "complete" ? { ...info, completed: true }
       : { ...info, completed: false, note: "still loading after 15s; use wait_for (selector / urlContains / loadState) for what you need" };
   },
@@ -288,6 +303,11 @@ export const HANDLERS = {
     if (!args._manual) await assertCapturable(tabId, pin);
     const dataUrl = await chrome.tabs.captureVisibleTab(tab.windowId, opts);
     if (await activeIs() !== tabId) throw err("INTERNAL", "active tab changed during capture; retry");
+    // The page can change between the check above and the instant the pixels were taken (a frame
+    // that was 0x0 or absent gets shown, the document navigates): look again AFTERWARDS and drop
+    // the image if the page is no longer one we would have let through. Best effort - a frame
+    // shown and hidden again entirely inside the capture cannot be seen from here.
+    if (!args._manual) await assertCapturable(tabId, pin);
     return { mimeType, dataUrl };
   },
 
@@ -462,7 +482,7 @@ export const HANDLERS = {
       // same-site iframe of a blocked host logs into the same buffer).
       const state = await getConsentState();
       const buf = cdpLogs.get(tabId);
-      const logs = (buf ? buf : []).filter((e) => !e.url || !originBlocked(state, hostOf(e.url))).map(({ url, ...rest }) => rest);
+      const logs = (buf ? buf : []).filter((e) => !consoleEntryBlocked(state, e)).map(({ url, origin, ...rest }) => rest);
       if (clear) cdpLogs.set(tabId, []); // keep a (now empty) buffer: dropping it would silently stop the capture
       return { logs, source: "cdp", note: "captured via CDP (console + exceptions + browser log entries)" };
     }
@@ -555,7 +575,8 @@ export const HANDLERS = {
         if (typeof body === "string" && body.length > cap) { body = body.slice(0, cap); bodyTruncated = true; }
       } catch (e) { bodyError = String(e?.message ?? e); } // body no longer buffered / not applicable (e.g. redirects)
     }
-    return { request: rec, body, bodyBase64, bodyTruncated, bodyError };
+    const { docUrl, ...request } = rec;
+    return { request, body, bodyBase64, bodyTruncated, bodyError };
   },
 };
 
@@ -602,6 +623,16 @@ function outlineDom(maxChars) {
   return { snapshot: out, truncated };
 }
 
+// Is a buffered console line from a document of a filtered-out origin? Judged by the execution
+// context's origin AND the call-frame / resource URL. A line whose source can't be established
+// at all (an opaque origin, no URL) is dropped while any filter is active: fail closed.
+export function consoleEntryBlocked(state, e) {
+  if (state.originMode !== "allow" && !(state.denyOrigins || []).length) return false; // nothing is filtered
+  const hosts = [e.origin, e.url].map((u) => (u ? hostOf(u) : null));
+  if (hosts.some((h) => h && originBlocked(state, h))) return true;
+  return hosts.every((h) => !h);
+}
+
 // Origin re-check for the CDP-buffer tools: the buffer keeps filling across a navigation,
 // so a tab that wandered off its shared origin (lock on) or onto a filtered-out origin
 // could otherwise leak that origin's traffic. Checks the committed URL AND a PENDING
@@ -642,6 +673,9 @@ async function assertCapturable(tabId, pin) {
 // hop) is on a filtered-out origin.
 function recordBlocked(state, rec) {
   if (originBlocked(state, hostOf(rec.url))) return true;
+  // ...or when the DOCUMENT that issued it is (a same-site frame of a blocked host fetching from a
+  // neutral API host): its Referer / Authorization headers would otherwise be handed over.
+  if (rec.docUrl && originBlocked(state, hostOf(rec.docUrl))) return true;
   return (rec.redirects || []).some((h) => originBlocked(state, hostOf(h.url)));
 }
 
@@ -702,6 +736,8 @@ export const cdpConsoleTabs = new Set(); // tabIds we hold attached for console 
 // until a CDP setting is changed deliberately (background clears this set then).
 export const cdpUserCancelled = new Set();
 const cdpLogs = new Map(); // tabId -> ring buffer array (cap 500 entries)
+const cdpContexts = new Map(); // tabId -> Map(executionContextId -> {origin, uniqueId, frameId, isDefault}): which document each JS context belongs to
+const CTX_CAP = 2000;
 // Network capture (PART 7): per-tab Map(requestId -> record), insertion-ordered so
 // listing newest-last is just iteration order. Filled by the Network.* branch of
 // ensureCdpListeners while the tab is captured (same lifecycle as cdpLogs). Capped
@@ -709,20 +745,87 @@ const cdpLogs = new Map(); // tabId -> ring buffer array (cap 500 entries)
 const cdpNet = new Map(); // tabId -> Map(requestId -> record)
 const NET_CAP = 300;
 
-// The guard that runs INSIDE the page, in the same Runtime.evaluate as the agent's code (so a
-// navigation can't slip in between a separate check and the payload). `pin` is the host the tab
-// is pinned to (lock-to-domain on; null = a blank page), or undefined when the lock is off: then
-// the page must instead pass the origin filter, which is embedded in the expression. Uses the
-// document's ORIGIN (not location.hostname) so a blob: document of a blocked site is judged by
-// its real site. Returns the JS source of the guard (a PURE function - unit-tested).
-export function cdpGuardSource(pin, state) {
-  const pinned = pin !== undefined;
-  const filter = pinned ? null : { mode: state?.originMode === "allow" ? "allow" : "block", rules: state?.denyOrigins || [] };
-  return `const __pinned=${pinned}, __pin=${JSON.stringify(pinned ? pin : null)}, __f=${JSON.stringify(filter)};` +
-    `let __h=""; try { __h=new URL(location.origin).hostname.toLowerCase().replace(/\\.$/,""); } catch(e) {} ` +
-    `if(__pinned && __h!==(__pin===null?"":__pin)) return {__tabduct_drift:true}; ` +
-    `if(__f){ const __hit=__f.rules.some((r)=>r.startsWith("*.")?(__h===r.slice(2)||__h.endsWith("."+r.slice(2))):__h===r); ` +
-    `if(__f.mode==="allow"?(__h===""||!__hit):(__h!==""&&__hit)) return {__tabduct_denied:true}; } `;
+// CDP evaluation is bound to ONE JavaScript context of the page: the browser tells us which
+// document each context belongs to (its real origin, not something the page can report about
+// itself), we judge that origin, and Runtime.evaluate then runs INSIDE that very context
+// (`uniqueContextId`). A context dies with its document, so if the page navigates between the
+// check and the evaluation the call fails (ORIGIN_DRIFT) instead of running in a different,
+// possibly blocked, document - the same guarantee the scripting path gets from documentId.
+// Nothing about the consent rules is sent into the page, and nothing the page can overwrite
+// (Array.prototype, URL, ...) takes part in the decision.
+
+// Pure verdict for the origin of the context a CDP call is about to run in. `pin` = the host the
+// tab is pinned to (lock-to-domain on; null = a blank page) or undefined (lock off / "Everything":
+// then only the origin filter applies). Returns null (allowed) or { code, message }.
+export function judgeContext(state, pin, origin) {
+  const host = hostOf(origin); // "null" / "" (opaque) -> null
+  if (pin !== undefined && host !== pin) return { code: "ORIGIN_DRIFT", message: "tab navigated away from the authorized origin" };
+  if (originBlocked(state, host)) return { code: "ORIGIN_DENIED", message: "destination not allowed by consent policy" };
+  return null;
+}
+
+// The default (main-world) context of the tab's top frame, from the context map the Runtime
+// domain keeps filled. Retries briefly: the context events of a document that has just committed
+// can trail the frame tree by a few milliseconds.
+async function topContext(send, tabId) {
+  const topId = (await send("Page.getFrameTree"))?.frameTree?.frame?.id;
+  for (let i = 0; i < 8; i++) {
+    let best = null;
+    for (const [id, c] of cdpContexts.get(tabId) || []) if (c.isDefault && c.frameId === topId && c.uniqueId && (!best || id > best.id)) best = { id, ...c };
+    if (best) return best;
+    await new Promise((r) => setTimeout(r, 25));
+  }
+  throw err("SCRIPT_ERROR", "can't find the page's JavaScript context (is the tab still loading?) - retry");
+}
+
+// Evals on one tab run one after another: they share the Runtime domain (and its context map).
+const evalChain = new Map(); // tabId -> tail promise
+export function cdpEval(tabId, code, callArgs, pin, opts = {}) {
+  const run = (evalChain.get(tabId) || Promise.resolve()).then(() => cdpEvalNow(tabId, code, callArgs, pin, opts));
+  const tail = run.then(() => {}, () => {});
+  evalChain.set(tabId, tail);
+  tail.then(() => { if (evalChain.get(tabId) === tail) evalChain.delete(tabId); });
+  return run;
+}
+
+async function cdpEvalNow(tabId, code, callArgs, pin, { hold } = {}) {
+  const state = await getConsentState();
+  return cdpWith(tabId, { hold }, async (send) => {
+    // Console capture keeps Runtime enabled (and the map current) on its own; otherwise enable it
+    // for this call - that re-announces every live context - and switch it off again afterwards.
+    const ours = !cdpConsoleTabs.has(tabId);
+    if (ours) { cdpContexts.delete(tabId); try { await send("Runtime.disable"); } catch {} } // start from a clean slate: a fresh enable re-announces every context
+    try {
+      await send("Runtime.enable");
+      const ctx = await topContext(send, tabId);
+      const bad = judgeContext(state, pin, ctx.origin);
+      if (bad) { cdpAttached.delete(tabId); throw err(bad.code, bad.message); } // drop any force-hold so the finally detaches this tab
+      // The agent's code `return`s its value inside the async IIFE; `args` is by name.
+      // allowUnsafeEvalBlockedByCSP lets eval run even under a strict page CSP.
+      let r;
+      try {
+        r = await send("Runtime.evaluate", {
+          expression: `(async()=>{ const args = ${JSON.stringify(callArgs)}; ${code} })()`,
+          uniqueContextId: ctx.uniqueId, awaitPromise: true, returnByValue: true, allowUnsafeEvalBlockedByCSP: true, userGesture: false,
+        });
+      } catch (e) {
+        if (/context|not found|navigat/i.test(e?.message || "")) { cdpAttached.delete(tabId); throw err("ORIGIN_DRIFT", "the page navigated while the call was starting; nothing ran in the new page - retry"); }
+        throw e;
+      }
+      if (r?.exceptionDetails) {
+        const msg = r.exceptionDetails.exception?.description || r.exceptionDetails.text || "eval failed";
+        throw err("SCRIPT_ERROR", msg);
+      }
+      const value = r?.result?.value;
+      // Same 8MB cap as the scripting path so a huge return can't drop the reply.
+      const CAP = 8_000_000;
+      let s; try { s = JSON.stringify(value); } catch { s = undefined; }
+      if (s !== undefined && s.length > CAP) return { result: s.slice(0, CAP), truncated: true, note: "result truncated to 8MB", via: "cdp" };
+      return { result: value, via: "cdp" };
+    } finally {
+      if (ours && !cdpConsoleTabs.has(tabId)) { try { await send("Runtime.disable"); } catch {} cdpContexts.delete(tabId); }
+    }
+  });
 }
 
 // Run `fn(send)` with the debugger attached to the tab (attach is idempotent; the session is
@@ -746,36 +849,6 @@ async function cdpWith(tabId, { hold = false } = {}, fn) {
     // Detach unless force mode / console capture / another in-flight call holds it.
     if (!cdpHeld(tabId)) { try { await chrome.debugger.detach({ tabId }); } catch {} }
   }
-}
-
-export async function cdpEval(tabId, code, callArgs, pin, { hold } = {}) {
-  const state = await getConsentState();
-  return cdpWith(tabId, { hold }, async (send) => {
-    // The origin re-check is folded INTO the eval expression so it is ATOMIC with
-    // the agent's code — a navigation can't slip between a separate check and the
-    // payload (the scripting path gets this for free by being one injected func).
-    // allowUnsafeEvalBlockedByCSP lets eval run even under a strict page CSP. The
-    // agent's code `return`s its value inside the async IIFE; `args` is by name.
-    const r = await send("Runtime.evaluate", {
-      expression: `(async()=>{ ${cdpGuardSource(pin, state)} const args = ${JSON.stringify(callArgs)}; ${code} })()`,
-      awaitPromise: true, returnByValue: true, allowUnsafeEvalBlockedByCSP: true, userGesture: false,
-    });
-    if (r?.exceptionDetails) {
-      const msg = r.exceptionDetails.exception?.description || r.exceptionDetails.text || "eval failed";
-      throw err("SCRIPT_ERROR", msg);
-    }
-    const value = r?.result?.value;
-    if (value && typeof value === "object" && (value.__tabduct_drift || value.__tabduct_denied)) {
-      cdpAttached.delete(tabId); // drift → drop any force-hold so the finally detaches this tab
-      if (value.__tabduct_denied) throw err("ORIGIN_DENIED", "destination not allowed by consent policy");
-      throw err("ORIGIN_DRIFT", "tab navigated away from the authorized origin");
-    }
-    // Same 8MB cap as the scripting path so a huge return can't drop the reply.
-    const CAP = 8_000_000;
-    let s; try { s = JSON.stringify(value); } catch { s = undefined; }
-    if (s !== undefined && s.length > CAP) return { result: s.slice(0, CAP), truncated: true, note: "result truncated to 8MB", via: "cdp" };
-    return { result: value, via: "cdp" };
-  });
 }
 
 // ---------------------------------------------------------------------------
@@ -823,11 +896,36 @@ export function keyDescriptor(key, modifiers) {
   return { key: d.key, code: d.code, windowsVirtualKeyCode: d.vk, text, modifiers: bits };
 }
 
-async function pressKeyCdp(send, d, count = 1) {
+async function pressKeyCdp(send, d, count = 1, between) {
   for (let i = 0; i < count; i++) {
+    if (i > 0 && between) await between(); // a key (Enter) may have submitted the page: look again before the next one
     await send("Input.dispatchKeyEvent", { type: d.text !== undefined ? "keyDown" : "rawKeyDown", modifiers: d.modifiers, key: d.key, code: d.code, windowsVirtualKeyCode: d.windowsVirtualKeyCode, ...(d.text !== undefined ? { text: d.text, unmodifiedText: d.text } : {}) });
     await send("Input.dispatchKeyEvent", { type: "keyUp", modifiers: d.modifiers, key: d.key, code: d.code, windowsVirtualKeyCode: d.windowsVirtualKeyCode });
   }
+}
+
+// The browser's own view of the page, asked over the very CDP session that is about to send the
+// input (the pre-attach checks above ran some milliseconds - an attach - earlier): the top frame
+// must still pass the pin / origin filter, and NO frame of the page, visible or not, may belong
+// to a filtered-out site (input goes to wherever the browser's focus is, including a 0x0 frame).
+// Returns the top frame's loaderId so a multi-key press can notice a navigation between keys.
+async function assertTreeAllowed(send, pin) {
+  const state = await getConsentState();
+  const root = (await send("Page.getFrameTree"))?.frameTree;
+  const top = root?.frame;
+  if (!top) throw err("SCRIPT_ERROR", "can't read the page's frame tree");
+  const d = evaluateFrame(state, { pin, topHost: hostOf(top.securityOrigin), frameHost: hostOf(top.securityOrigin), frameUrlHost: hostOf(top.url), ancestorHosts: [] });
+  if (!d.allow) throw err(d.code, d.message);
+  const walk = (node, ancestors) => {
+    for (const c of node.childFrames || []) {
+      const h = hostOf(c.frame?.securityOrigin);
+      const v = evaluateFrame(state, { pin: undefined, topHost: null, frameHost: h, frameUrlHost: hostOf(c.frame?.url), ancestorHosts: ancestors });
+      if (!v.allow) throw err("ORIGIN_DENIED", "the page contains a frame of a site excluded by the origin filter; refusing trusted input");
+      walk(c, [...ancestors, h]);
+    }
+  };
+  walk(root, []);
+  return top.loaderId;
 }
 
 // Judge + pin the target document and make sure nothing filtered is on screen.
@@ -884,6 +982,11 @@ function locateElement(sel) {
     x += fr.left + fe.clientLeft + (parseFloat(cs.paddingLeft) || 0);
     y += fr.top + fe.clientTop + (parseFloat(cs.paddingTop) || 0);
     w = w.parent;
+    // The real click lands on whatever is topmost at this point of the OUTER page: an overlay on
+    // an ancestor document (over the iframe) would take it, so check every level, not just the
+    // innermost one.
+    const above = w.document.elementFromPoint(x, y);
+    if (above !== fe) return { __covered: above && above.tagName ? above.tagName.toLowerCase() + (above.id ? `#${above.id}` : "") : "nothing" };
   }
   return { ok: true, x, y, tag: el.tagName.toLowerCase() };
 }
@@ -897,13 +1000,23 @@ function focusProblem(r, args) {
   return null;
 }
 
+// Input.* events go to the browser's focused frame, not to the frame the call named. When the
+// agent names a child frame but no selector, the keys/text would land wherever the focus really
+// is (another frame, judged by nobody): insist that the named frame is the one holding it.
+function frameMustHoldFocus(args, r) {
+  if (args.selector || !args.frameId || r.hasFocus) return;
+  throw err("INVALID_ARGS", `frame ${args.frameId} does not hold the keyboard focus, so the input would go to another frame: pass a selector for an element inside it, or click into it first (click with trusted:true)`);
+}
+
 async function trustedType(args) {
   const t = await prepareTrusted(args);
   const clear = !!args.clear;
   const r = (await exec(t.target, { args: [args.selector || null, clear], func: focusElement }))?.[0]?.result;
   const bad = focusProblem(r, args);
   if (bad) throw bad;
+  frameMustHoldFocus(args, r);
   await cdpWith(t.tabId, {}, async (send) => {
+    await assertTreeAllowed(send, args._pin);
     if (args.text === "") { if (clear) await pressKeyCdp(send, keyDescriptor("Delete")); }
     else await send("Input.insertText", { text: args.text });
   });
@@ -920,6 +1033,7 @@ async function trustedClick(args) {
   if (r.__covered) throw err("INVALID_ARGS", `${args.selector} is covered by <${r.__covered}> at its centre; a real click would hit that instead. Scroll/close the overlay first`);
   if (r.__crossOrigin) throw err("INVALID_ARGS", "can't work out where an element of a cross-origin frame is on screen. Focus it another way (click its container) and use type / press_key, which work inside cross-origin frames");
   await cdpWith(t.tabId, {}, async (send) => {
+    await assertTreeAllowed(send, args._pin);
     await send("Input.dispatchMouseEvent", { type: "mouseMoved", x: r.x, y: r.y });
     await send("Input.dispatchMouseEvent", { type: "mousePressed", x: r.x, y: r.y, button: "left", buttons: 1, clickCount: 1 });
     await send("Input.dispatchMouseEvent", { type: "mouseReleased", x: r.x, y: r.y, button: "left", buttons: 0, clickCount: 1 });
@@ -930,14 +1044,29 @@ async function trustedClick(args) {
 async function pressKey(args) {
   const d = keyDescriptor(args.key, args.modifiers);
   if (!d) throw err("INVALID_ARGS", `unknown key ${JSON.stringify(args.key)}: use Enter, Tab, Escape, Backspace, Delete, Space, ArrowUp/Down/Left/Right, Home, End, PageUp, PageDown, F1-F12 or a single character (modifiers: ctrl, alt, shift, meta)`);
+  // A trusted Ctrl/Cmd+V or Shift+Insert is the browser's own Paste command: it would hand the agent
+  // whatever is on the USER's clipboard (a copied password, a 2FA code). Page scripts cannot do
+  // that, so neither can this tool; text goes in through `type`.
+  if ((d.code === "KeyV" && (d.modifiers & 6)) || (d.key === "Insert" && (d.modifiers & 8))) {
+    throw err("INVALID_ARGS", "paste shortcuts are refused: they would read the user's clipboard. Use type with trusted:true to enter text");
+  }
   const count = Math.min(Math.max(Math.trunc(Number(args.count)) || 1, 1), 100);
   const t = await prepareTrusted(args);
-  if (args.selector) {
-    const r = (await exec(t.target, { args: [args.selector, false], func: focusElement }))?.[0]?.result;
+  // With a selector the element is focused first. Without one the keys go to whatever holds the
+  // focus - and when a frameId was named, that has to be THAT frame (see frameMustHoldFocus).
+  if (args.selector || args.frameId) {
+    const r = (await exec(t.target, { args: [args.selector || null, false], func: focusElement }))?.[0]?.result;
     const bad = focusProblem(r, args);
     if (bad) throw bad;
+    frameMustHoldFocus(args, r);
   }
-  await cdpWith(t.tabId, {}, (send) => pressKeyCdp(send, d, count));
+  await cdpWith(t.tabId, {}, async (send) => {
+    const loader = await assertTreeAllowed(send, args._pin);
+    await pressKeyCdp(send, d, count, async () => {
+      const now = (await send("Page.getFrameTree"))?.frameTree?.frame;
+      if (!now || now.loaderId !== loader) throw err("ORIGIN_DRIFT", "the page navigated in the middle of the key presses; the rest were not sent");
+    });
+  });
   return { pressed: true, key: args.key, modifiers: args.modifiers ?? [], count };
 }
 
@@ -952,6 +1081,7 @@ export async function detachCdpTab(tabId) {
   cdpAttached.delete(tabId);
   cdpConsoleTabs.delete(tabId);
   cdpLogs.delete(tabId);
+  cdpContexts.delete(tabId);
   cdpNet.delete(tabId);
   if (!cdpHeld(tabId)) { try { await chrome.debugger.detach({ tabId }); } catch {} }
 }
@@ -973,6 +1103,7 @@ export async function detachAllCdp() {
   cdpAttached.clear();
   cdpConsoleTabs.clear();
   cdpLogs.clear();
+  cdpContexts.clear();
   cdpNet.clear();
 }
 
@@ -1019,7 +1150,7 @@ function ensureCdpListeners() {
         if (params.redirectResponse) redirects.push({ url: prev?.url ?? params.redirectResponse.url, status: params.redirectResponse.status });
         m.set(params.requestId, {
           requestId: params.requestId, url: req.url, method: req.method,
-          resourceType: params.type || prev?.resourceType || "Other", requestHeaders: req.headers || {},
+          resourceType: params.type || prev?.resourceType || "Other", requestHeaders: req.headers || {}, docUrl: params.documentURL || prev?.docUrl,
           startedMs: prev?.startedMs ?? Date.now(), finished: false,
           redirects: redirects.length ? redirects : undefined,
         });
@@ -1040,14 +1171,29 @@ function ensureCdpListeners() {
       }
       return;
     }
+    // Remember which origin each JS execution context belongs to (a context id is stable for the
+    // life of its document): a console line carries only the id, and neither a call-frame URL nor
+    // the page URL says where a line from an about:blank / data: / srcdoc frame came from.
+    if (method === "Runtime.executionContextCreated") {
+      const c = params?.context;
+      if (c && typeof c.id === "number") {
+        let m = cdpContexts.get(tabId); if (!m) cdpContexts.set(tabId, m = new Map());
+        m.set(c.id, { origin: typeof c.origin === "string" ? c.origin : "", uniqueId: c.uniqueId, frameId: c.auxData?.frameId, isDefault: c.auxData?.isDefault === true });
+        if (m.size > CTX_CAP) m.delete(m.keys().next().value);
+      }
+      return;
+    }
+    if (method === "Runtime.executionContextDestroyed") { cdpContexts.get(tabId)?.delete(params?.executionContextId); return; }
+    if (method === "Runtime.executionContextsCleared") { cdpContexts.get(tabId)?.clear(); return; }
+    const ctxOrigin = (id) => (typeof id === "number" ? cdpContexts.get(tabId)?.get(id)?.origin : undefined);
     let entry;
     if (method === "Runtime.consoleAPICalled") {
       const t = params.type; // log|warning|error|info|debug|…
       const level = t === "warning" ? "warn" : (t === "error" ? "error" : (t === "info" ? "info" : (t === "debug" ? "debug" : "log")));
-      entry = { level, source: "console", ts: Date.now(), text: ((params.args || []).map(fmtCdpArg).join(" ")).slice(0, 1000), url: params.stackTrace?.callFrames?.[0]?.url };
+      entry = { level, source: "console", ts: Date.now(), text: ((params.args || []).map(fmtCdpArg).join(" ")).slice(0, 1000), url: params.stackTrace?.callFrames?.[0]?.url, origin: ctxOrigin(params.executionContextId) };
     } else if (method === "Runtime.exceptionThrown") {
       const d = params.exceptionDetails;
-      entry = { level: "error", source: "exception", ts: Date.now(), text: String(d?.exception?.description || d?.text || "uncaught exception").slice(0, 1000), url: d?.url || d?.stackTrace?.callFrames?.[0]?.url };
+      entry = { level: "error", source: "exception", ts: Date.now(), text: String(d?.exception?.description || d?.text || "uncaught exception").slice(0, 1000), url: d?.url || d?.stackTrace?.callFrames?.[0]?.url, origin: ctxOrigin(d?.executionContextId) };
     } else if (method === "Log.entryAdded") {
       const e = params.entry || {};
       entry = { level: e.level === "warning" ? "warn" : (e.level || "info"), source: e.source || "log", ts: Date.now(), text: String(e.text || "").slice(0, 1000), url: e.url };
@@ -1095,6 +1241,7 @@ export async function stopCdpConsole(tabId) {
   try { await chrome.debugger.sendCommand({ tabId }, "Network.disable"); } catch {}
   if (!cdpHeld(tabId)) { try { await chrome.debugger.detach({ tabId }); } catch {} }
   cdpLogs.delete(tabId);
+  cdpContexts.delete(tabId);
   cdpNet.delete(tabId);
 }
 
