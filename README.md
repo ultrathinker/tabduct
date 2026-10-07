@@ -63,10 +63,10 @@ npm run register        # installs the native-messaging manifest for your OS + b
 
 ## Point your agent at it (MCP)
 
-> **Hub mode requires the Node host.** The "shared hub" below is implemented only
-> in `hosts/node/src/hub.js`. If you are running the Python or .NET host, skip to
-> the per-instance config and point your agent at the port + token shown in the
-> popup (Settings → MCP endpoint / Authorization).
+> **Use the Node host.** The "shared hub" below is implemented only in
+> `hosts/node/src/hub.js`, and the current extension requires it. The Python and .NET
+> hosts are direct-mode ports that predate the hub (see the host table below), so they
+> cannot be used with this extension yet.
 
 With the shared hub (on by default **when using the Node host**), every browser
 you connect appears behind one stable endpoint with a token that never changes:
@@ -157,8 +157,8 @@ which is also where to report a vulnerability (please don't open a public issue)
 ## Multiple browsers & profiles
 
 > This section describes the Node-host hub. The Python and .NET hosts expose one
-> per-instance endpoint each (the port + token shown in the popup) and do not
-> aggregate behind a shared endpoint.
+> per-instance endpoint each, do not aggregate behind a shared endpoint and do not
+> work with the current extension.
 
 Install Tabduct in each Chrome profile you use (each Google account / profile is
 separate). Start it in **one** browser — any other profile you open joins the same
@@ -204,11 +204,13 @@ extension/            MV3 extension (the fixed point): consent, sharing, popup, 
 hosts/node/           reference host — CLI (register/doctor/run/instances/hub) + src/
 protocol/             PROTOCOL.md + JSON schemas + conformance runners
 docs/                 ARCHITECTURE, DESIGN-consent-and-multibrowser, ROADMAP
-scripts/              consent unit tests, icon/key generators
+scripts/              tests (consent, store, handlers, gate, wake, host; opt-in real-Chrome e2e), icon/key generators
 ```
 
-Run the full test suite (pure JS, no browser needed): `npm test` — consent unit
-tests + host conformance + hub conformance.
+Run the full test suite (pure JS, no browser needed): `npm test` — the consent, store,
+handler, wake, gate and host tests (mock chrome / fake host) + host conformance + hub
+conformance. Two opt-in runs use a real, throwaway Chrome: `npm run test:e2e` (headless)
+and `npm run test:e2e-wake` (opens a window for a few seconds).
 
 ## Status
 

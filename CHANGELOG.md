@@ -4,6 +4,17 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims for
 [Semantic Versioning](https://semver.org/) once it reaches 1.0.
 
+## [Unreleased]
+
+### Changed
+- Documentation brought in line with the code: the architecture diagram shows the hub, the host
+  watchdog and `wake.js`; the roadmap marks the capability handshake as done and the Python and .NET
+  hosts as direct-mode only; the test commands (`npm test` chain, `test:e2e`, `test:e2e-wake`) are
+  described as they are; `PROTOCOL.md` no longer cites `cmd /c start /B` for the hub (it is a plain
+  detached child, restarted by the host watchdog); the conformance README says checks 4-6 are
+  skipped, not failed, for non-Node hosts; the `get_dom_snapshot.maxChars` description matches the
+  code (0 uses the 40000 default).
+
 ## [1.6.2] — 2026-10-07
 
 ### Fixed

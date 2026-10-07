@@ -12,8 +12,8 @@ it's deferred only so the MVP can prove the core loop first.
 - [x] `register` templates an absolute node path into `run_host.*`; implement
       `doctor` (stat manifest, resolve launcher, probe `node --version`).
 - [~] Generate real icon PNGs (done: placeholders) and run `gen-key.js`.
-- [x] End-to-end smoke: Claude Code `--mcp-config` → `127.0.0.1:12310/mcp` with
-      bearer token; drive `list_tabs` + `execute_script` + `screenshot`.
+- [x] End-to-end smoke: Claude Code `--mcp-config` → the hub endpoint
+      `127.0.0.1:12311/mcp` (originally the direct port 12310) with bearer token; drive `list_tabs` + `execute_script` + `screenshot`.
 
 ## Headline features — chosen design in [DESIGN-consent-and-multibrowser.md](DESIGN-consent-and-multibrowser.md)
 
@@ -47,10 +47,11 @@ loop is proven.
       Still open: **CDP inside child frames** (`Target.setAutoAttach` + per-frame sessions),
       for `execute_script` in a frame whose own CSP blocks eval, and console/network capture
       of cross-origin frames.
-- [ ] **Capability handshake** — on `open`, exchange
-      `{ protocolVersion, capabilities: [tool names] }`; the host advertises only
-      tools the extension actually implements instead of failing late with
-      `UNKNOWN_TOOL`.
+- [~] **Capability handshake** — done as a version/feature handshake: `open` carries
+      `extensionVersion` and `features`, and a call that needs a feature the loaded
+      extension lacks (frames, trusted input) is refused with `EXTENSION_OUTDATED`
+      instead of being run somewhere else. Still open: advertising only the tools the
+      extension implements (the tool list itself is static).
 - [ ] **Pagination / cursor for large reads** — `get_page_content` currently
       truncates client-side with no "next chunk"; add a cursor so an agent can
       fetch the rest.
@@ -67,8 +68,10 @@ loop is proven.
       conformance, or the extension, so vocabulary drift (the bug the reviewers
       caught) is not yet mechanically prevented. Import + assert against it to close this.
 - [x] **Conformance harness** — `protocol/conformance/run.mjs` (host-language-
-      neutral; `-- <cmd>` runs any host) + `run-hub.mjs`. `npm test` runs consent + host + hub conformance in
-      CI (GitHub Actions, Linux/macOS/Windows). Shared vectors still TODO.
+      neutral; `-- <cmd>` runs any host) + `run-hub.mjs`. `npm test` runs the consent, store,
+      handler, wake, gate and host tests plus host and hub conformance in CI (GitHub
+      Actions, Linux/macOS/Windows; Python and .NET host jobs). `npm run test:e2e` and
+      `npm run test:e2e-wake` are opt-in runs in a real Chrome. Shared vectors still TODO.
 - [x] **Prompt-injection UX / consent tiers** — shipped: a global **read-only** mode
       (no click/type/nav/eval), the **origin filter** (block/allow), **lock-to-domain**
       with sticky-revoke, **don't-auto-share**, auto-expire, and a denied-invoke
@@ -76,8 +79,10 @@ loop is proven.
 
 ## Later / maybe
 
-- [x] Python host (`hosts/python`) — official `mcp` SDK, passes conformance, with per-OS `register`.
-- [x] .NET host (`hosts/dotnet`) — `ModelContextProtocol` SDK, passes conformance, with per-OS `register`.
+- [~] Python host (`hosts/python`) — official `mcp` SDK, per-OS `register`; direct mode only: it
+      predates the hub, the version/feature handshake and `relabel`, so the current extension
+      cannot use it. Needs the hub-era contract ported.
+- [~] .NET host (`hosts/dotnet`) — `ModelContextProtocol` SDK, per-OS `register`; same limitation.
 - [ ] Firefox support (MV3 differences: `background.scripts`, `browser.*`,
       `allowed_extensions` NM manifest) — currently Chromium-only; scope the docs
       accordingly until then.

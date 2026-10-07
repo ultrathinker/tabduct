@@ -402,10 +402,12 @@ simply reports `tier:"unknown"` in the snapshot.
 - **Accepted risks:** the shared `tAgent` reaches every instance's popup (blast
   radius = all shared tabs, bounded by consent); a well-known `HUB_PORT` on a
   multi-user box can be pre-bound to harvest `tAgent` (fate shared with any local
-  MCP server); mixed hub+direct instances break "one endpoint" (`instances`/`doctor`
-  warn). **Instance spoofing:** the hub proxies whatever instances appear in the
+  MCP server); mixed hub+direct instances break "one endpoint" (`tabduct instances` prints a note
+  about the direct instances proxied behind a running hub). **Instance spoofing:** the hub proxies whatever instances appear in the
   0700 discovery dir, so a same-OS-user process could register a fake one — instance
   trust == same-OS-user trust (the hub does a `tools/list` shape check to drop
-  obvious impostors, but this is not authentication). On Windows, a hub spawned by a
-  browser-launched host may be job-killed when that browser closes — mitigated by
-  `cmd /c start /B` (escapes the job); verify at real-browser E2E.
+  obvious impostors, but this is not authentication). The hub is started by a host as a
+  detached child (`detached: true`, no window, output to `~/.tabduct/hub.log`). If it
+  still dies with the browser that launched it (e.g. a Windows job object; not verified),
+  the watchdog of every other running host brings it back within about 10 s (retries back
+  off up to 5 minutes), and so does the next host that opens.

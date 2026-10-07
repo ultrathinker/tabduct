@@ -7,21 +7,32 @@
 │ CLI agent  (Claude Code / Kilo / OpenCode / Cursor …)             │
 │   speaks MCP — knows nothing about Tabduct internals              │
 └───────────────┬───────────────────────────────────────────────────┘
-                │  MCP  (streamable HTTP)   http://127.0.0.1:<port>/mcp
+                │  MCP  (streamable HTTP)   http://127.0.0.1:12311/mcp
                 ▼
 ┌─────────────────────────────────────────────────────────────────┐
-│ Tabduct HOST   (hosts/node | hosts/python | hosts/dotnet)         │
+│ Tabduct HUB    (hosts/node/src/hub.js, started on demand)         │
+│   • ONE stable endpoint + token for every connected browser       │
+│   • routes a call to the right browser (composite tabId),         │
+│     refuses calls the extension build cannot do (EXTENSION_OUTDATED)│
+└───────────────┬───────────────────────────────────────────────────┘
+                │  per-browser MCP endpoint (loopback, own token)
+                ▼
+┌─────────────────────────────────────────────────────────────────┐
+│ Tabduct HOST   (hosts/node; Python and .NET: direct mode only)    │
 │   • MCP server: registers tools from protocol/tools.schema.json   │
 │   • Native-messaging client: stdio framing (protocol/PROTOCOL.md)  │
 │   • Bridge: MCP call → tool_call msg → await response → MCP result │
 │   • register/doctor CLI: installs native-messaging manifest        │
+│   • watchdog: brings a dead hub back                              │
 └───────────────┬───────────────────────────────────────────────────┘
                 │  Chrome Native Messaging (stdin/stdout, length-prefixed JSON)
                 ▼
 ┌─────────────────────────────────────────────────────────────────┐
 │ Tabduct EXTENSION  (MV3, the one shared JS impl)                  │
-│   • background.js: connectNative, start/stop (open/close), dispatch │
+│   • background.js: connectNative, start/stop (open/close), the consent│
+│     gate, dispatch; wake.js brings a sleeping window forward        │
 │   • handlers/: implement each tool via chrome.tabs / chrome.scripting│
+│     / the debugger (CDP), each page tool on ONE pinned document     │
 │   • popup: status + port + Start button                            │
 └───────────────┬───────────────────────────────────────────────────┘
                 │  chrome.scripting.executeScript / chrome.tabs / captureVisibleTab
@@ -34,22 +45,26 @@
 - **Agent-agnosticism is free.** The north edge is MCP; any MCP client works
   with no Tabduct-specific code. "Support Kilo/OpenCode" = "they speak MCP".
 - **Host-language-agnosticism is cheap.** The south edge is a small, fully
-  specified wire protocol (`protocol/`). A host is a thin adapter — ~1k LOC in
-  any of the shipped languages (Node ≈1.0k, Python ≈1.0k, .NET ≈1.1k, including
-  `register` and conformance plumbing).
+  specified wire protocol (`protocol/`). A host is a thin adapter: Node ≈1.5k LOC
+  (it also carries the hub and the watchdog), Python ≈1.1k, .NET ≈1.2k, including
+  `register`. Only the Node host has the hub the current extension requires; Python
+  and .NET are direct-mode ports that have not been brought up to it.
 - **The extension is the only thing that must be JS** and the only place real
   browser capability lives. It changes rarely; hosts are interchangeable.
 
 ## Request lifecycle (execute_script example)
 
-1. Agent calls MCP tool `execute_script { code, tabId }` over HTTP.
+1. Agent calls MCP tool `execute_script { code, tabId }` over HTTP to the hub, which
+   picks the browser from the composite tab id and forwards the call to that host.
 2. Host's MCP handler generates an `id`, sends over stdio:
    `{ type:"invoke", id, payload:{ tool:"execute_script", args } }`.
-3. Extension `background.js` receives it, runs
+3. Extension `background.js` receives it, checks consent (`gate`), wakes the window if
+   it is asleep and the user left "Wake the browser" on, then runs
    `chrome.scripting.executeScript` in the target tab, captures the result.
 4. Extension replies: `{ replyTo:id, ok:true, result }`.
 5. Host resolves the pending promise, returns `result` as the MCP tool result.
-6. Timeout guard (default 20 s) rejects to an MCP error if step 4 never comes.
+6. Timeout guard (default 20 s, longer for `wait_for`) rejects to an MCP error if
+   step 4 never comes.
 
 ## Trust & safety model
 
@@ -85,6 +100,19 @@ The extension background is an MV3 service worker and can be evicted.
   and re-`connect()`s from `chrome.runtime.onStartup`, so a restarted worker or
   browser restores the endpoint without a manual reconnect. The popup reads
   state from storage, never from worker globals. See PROTOCOL.md §8.
+
+## Waking a sleeping tab
+
+A minimized window, a window covered by others or a background tab is "hidden" to
+Chrome: the page stops drawing, reports no focus and cannot be screenshotted (DOM reads
+and input still work, but the page is stale). Chrome offers no way to render a hidden
+page, so with *Wake the browser* on (default) `extension/wake.js` brings the window
+forward for `screenshot`, `type`, `click`, `press_key`, `get_page_content` and
+`get_dom_snapshot`, and puts it back about 2.5 s after the last call (a minimized window
+is minimized again; a covered one stays on top, an extension cannot lower a window). A
+window the user is working in is never touched, and a tab Chrome unloaded to save memory
+is never woken (that would reload the page). Shared tabs are marked non-discardable
+while shared.
 
 ## execute_script & page CSP
 
@@ -145,9 +173,9 @@ tabduct/
 ├── extension/           # the one shared MV3 extension (JS)
 ├── hosts/
 │   ├── node/                reference host (build first)
-│   ├── python/              mcp SDK — passes conformance, per-OS register
-│   └── dotnet/              ModelContextProtocol SDK — passes conformance, per-OS register
-├── scripts/             # gen-key etc.
+│   ├── python/              mcp SDK — direct mode only (no hub), per-OS register
+│   └── dotnet/              ModelContextProtocol SDK — direct mode only (no hub), per-OS register
+├── scripts/             # gen-key etc. and the tests (mock chrome, gate, wake, e2e)
 └── docs/
 ```
 
@@ -156,7 +184,7 @@ tabduct/
 1. `scripts/gen-key.js` → stable extension ID.
 2. Extension: manifest + background + one tool (`execute_script`) + popup.
 3. Node host: native-messaging + bridge + MCP server + register.
-4. End-to-end smoke test with Claude Code (`--mcp-config` → 12310).
+4. End-to-end smoke test with Claude Code (`--mcp-config` → the hub endpoint, 12311).
 5. Fill in remaining tools.
 6. `protocol/conformance/run.mjs`.
 7. Python / .NET hosts (only when wanted) against the same conformance suite.

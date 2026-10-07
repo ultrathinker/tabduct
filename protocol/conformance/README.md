@@ -53,8 +53,8 @@ conformance/
 
 `run.mjs` takes a host launch command as argv. It is written against the Node host; the
 Python and .NET hosts predate the hub, feature gating and `relabel` (they work only in
-direct mode, which the current extension no longer uses — see their READMEs) and will fail
-checks 4–6:
+direct mode, which the current extension no longer uses — see their READMEs), so checks 4–6
+are skipped for them (the runner prints `skip` unless the host command is `node`):
 
 ```bash
 node run.mjs -- node ../../hosts/node/src/index.js

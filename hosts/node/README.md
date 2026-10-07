@@ -52,4 +52,4 @@ your agent's config. The shared hub endpoint is `http://127.0.0.1:12311/mcp`.
 - **Chrome's minimal-env spawn.** `register` records the absolute `node` path in
   `node_path.txt`, and the launcher (`run_host.sh` / `run_host.bat`) uses it so the
   host starts even when Chrome spawns it with a bare `PATH`.
-- **Tests.** From the repo root: `npm test` (consent unit + host & hub conformance).
+- **Tests.** From the repo root: `npm test` (consent, store, handler, wake, gate and host tests + host & hub conformance).

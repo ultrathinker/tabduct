@@ -186,7 +186,7 @@
         "properties": {
           "tabId": { "type": "integer", "description": "Target tab; omit for active tab." },
           "frameId": { "type": "integer", "minimum": 0, "x-requires": "frames", "description": "Act inside this frame of the tab (frameId from list_frames or get_dom_snapshot) — e.g. an embedded, cross-origin form. Omit (or 0) for the page itself." },
-          "maxChars": { "type": "integer", "minimum": 0, "maximum": 200000, "default": 40000, "description": "Truncate the outline to this many chars (0 = no limit, hard cap 200000)." }
+          "maxChars": { "type": "integer", "minimum": 0, "maximum": 200000, "default": 40000, "description": "Truncate the outline to this many chars (default 40000, also used for 0; hard cap 200000)." }
         },
         "additionalProperties": false
       }
