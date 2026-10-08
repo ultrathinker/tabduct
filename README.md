@@ -140,19 +140,26 @@ presentation. The rules, also written into the tool descriptions:
    minimized window or a background tab. Prefer them. A screenshot needs a drawn page: use it only when text will not do.
 2. **For polling and scheduled checks pass `quiet: true`.** The call never brings the window forward, never activates a tab;
    when the page cannot answer without that you get an error that says so, and you can report it instead of interrupting the user.
-3. **Without `quiet`**, and with the user's *Wake the browser* setting on, `screenshot`, `type`, `click`, `press_key`, `get_page_content` and
+3. **Without `quiet`**, where the user allows waking the tab, `screenshot`, `type`, `click`, `press_key`, `get_page_content` and
    `get_dom_snapshot` may bring a minimized or covered window forward and put it back afterwards. `activate_tab`, `screenshot` with
    `activate:true` and `open_tab` with `active:true` always take the user's focus: last resort only.
-4. **A page Chrome has frozen is thawed silently** (see below) before the call, so a long-hidden tab is not a reason to raise anything.
-   A call the page does not answer ends with `TIMEOUT` after 18 s: look for a dialog ("Leave site?") instead of retrying blindly, and do not call
-   `location.reload()` from `execute_script` on a tab the user has been using.
+4. **The user decides, per tab, whether a tab may be woken** (the 🔔 / 🔕 next to the tab's ✕ in the Tabduct popup; new shares take the default
+   from the settings, on) **and can switch waking off for every tab at once with Silent mode.** `list_tabs` shows `wakeAllowed:false` for a tab you
+   may not bring forward: `activate_tab` and `screenshot` with `activate:true` are then refused with `WAKE_NOT_ALLOWED`, and in Silent mode `open_tab`
+   opens the tab in the background. Respect it: do not retry, work with the tab where it is, or tell the user.
+5. **A page Chrome has frozen** is thawed silently (see below) before the call. If that fails and the call is `quiet:true` (or waking is off for the
+   tab) you get `TAB_FROZEN` at once, with the reason; repeat the call without `quiet` to wake it (the window is brought forward, which the user
+   allowed by default), or leave it. A call the page does not answer ends with `TIMEOUT` after 18 s: look for a dialog ("Leave site?") instead of
+   retrying blindly, and do not call `location.reload()` from `execute_script` on a tab the user has been using.
 
 **Why a tab stops answering.** Chrome slows timers in a hidden tab (once a second, once a minute after 5 minutes), can unload it from memory
 (Tabduct marks shared tabs non-discardable) and, with Energy Saver on, *freezes* one that has been hidden and silent for more than five minutes: a
 frozen page runs nothing, so every call to it hangs. Tabduct sees `tab.frozen` and thaws the page through the debugger (`Page.setWebLifecycleState`),
 which needs *Allow CDP eval* on, and keeps the debugger attached to that tab for the call and 20 s after it (Chrome does not freeze a page that is being
-inspected) and tries up to three ways of thawing in turn; without the setting, the usual wake (raising the window) is the fallback unless the call is
-`quiet`. If a call still hangs, the `TIMEOUT` text says whether the tab is frozen and what each way of thawing did, and `list_tabs` shows `frozen: true`. Chrome has no extension
+inspected) and tries up to three ways of thawing in turn. Chrome 154 does not let the debugger thaw every kind of freeze (reproduced on a tab Chrome froze
+by itself; one frozen from `chrome://discards` thaws), so the dependable way is the window, as when you click the tab yourself: a call without `quiet` brings the window
+forward where waking is allowed, and the call goes on. A `quiet` call, or one on a tab where waking is off, gets
+`TAB_FROZEN` with what each way of thawing did. `list_tabs` shows `frozen: true`. Chrome has no extension
 API for its "Always keep these sites active" list, so Tabduct does not touch it.
 
 ## Security & consent
@@ -169,7 +176,7 @@ the browser). All of these are in the popup:
 - **Lock shared tabs to their domain** (default on) — a shared tab that navigates to another site is *paused*: the agent is refused and the tab disappears from its list, so a shared shopping tab can't follow you into your bank; the share is kept and resumes when the tab is back. It is a live setting — switching it off frees tabs you already shared.
 - **Read-only** — the agent may look but never click, type, navigate, run scripts, or open/close tabs.
 - **Auto-expire** — un-shares tabs after a chosen time (5 min … 10 h), counted from when each was shared or from when you changed the setting.
-- **Wake the browser** (default on) — a minimized window, a window covered by others or a background tab does not draw, shows no focus and cannot be screenshotted, so `screenshot`, `type`, `click`, `press_key` and page reads come back stale or ignored. With this on, the extension brings that window forward for the call and puts it back afterwards (a minimized one is minimized again a few seconds after the last call; Windows gives the focus back to the app you were in). A window you are working in is never touched. Turn it off if you don't want the browser to pop up. A tab Chrome unloaded to save memory is never woken, since that would reload the page; shared tabs are marked as not discardable while shared.
+- **Let the agent wake a tab by bringing the browser forward** (default on; the starting value for each tab you share) — a minimized window, a window covered by others, a background tab or a tab Chrome has frozen does not draw or answer, so `screenshot`, `type`, `click`, `press_key` and page reads come back stale, ignored or never come back. Where waking is allowed the extension brings that window forward for the call and puts it back afterwards (a minimized one is minimized again a few seconds after the last call; Windows gives the focus back to the app you were in). A window you are working in is never touched. Each shared tab has its own 🔔 / 🔕 switch next to its ✕ in the popup (it works for the tabs of the other browsers listed there too), and the **Silent** button in the popup header switches waking off for every tab in every browser at once (a *mute* mark shows on the toolbar icon); your per-tab choices are kept and come back when you turn Silent mode off. In Silent mode an agent also cannot take the focus with `activate_tab`, and `open_tab` opens tabs in the background. A tab Chrome unloaded to save memory is never woken, since that would reload the page; shared tabs are marked as not discardable while shared.
 - **Full access / Safe defaults** — one click over the flags above for "let the agent work freely on what I shared" (lock off, read-only off, no expiry, CDP eval on), or back to the safe side (lock on, CDP options off; read-only and expiry stay as you set them). The origin list is never touched.
 - **Don't auto-share tabs the agent opens** (default on).
 - **CDP mode** (Advanced, opt-in, default off) — lets `execute_script` bypass a page's CSP via the DevTools Protocol, with an optional "developer mode" that routes all eval through it and full console/error capture. Chrome forbids requesting `debugger` at runtime, so it's a **required** permission granted at install — but **nothing attaches until you flip this toggle on**, and use is still gated by consent (never in read-only). Chrome shows a "being debugged" banner whenever it's actually in use.

@@ -151,8 +151,10 @@ process and OS user shares localhost. So:
 `TIMEOUT` (also raised by the extension itself after 18 s without an answer from the page, with a hint that a dialog may be blocking it), `CSP_BLOCKED`, `SCRIPT_ERROR`, `FRAME_TOO_LARGE`, `VERSION_MISMATCH`,
 `INVALID_ARGS`, `INTERNAL`, `EXTENSION_OUTDATED` (the loaded extension build lacks a
 feature the call needs — see "Feature gating"), the consent codes (§6a) `NOT_SHARED`,
-`ORIGIN_DRIFT`, `ORIGIN_DENIED`, `CAP_NOT_GRANTED`, and the CDP code (§6b)
-`CDP_NOT_PERMITTED`. `FRAME_TOO_LARGE` is also what the extension answers when a result
+`ORIGIN_DRIFT`, `ORIGIN_DENIED`, `CAP_NOT_GRANTED`, the window codes `WAKE_NOT_ALLOWED` (the user forbade bringing
+this tab to the front, or turned Silent mode on: `activate_tab`, `screenshot` with `activate:true`)
+and `TAB_FROZEN` (Chrome froze the page, it could not be thawed silently, and nothing may raise the window: a
+`quiet:true` call, or waking is off for the tab), and the CDP code (§6b) `CDP_NOT_PERMITTED`. `FRAME_TOO_LARGE` is also what the extension answers when a result
 is too big for the wire (30 MiB), so the call fails by name instead of timing out.
 
 ## 6a. Consent semantics (Feature B)

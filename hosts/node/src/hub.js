@@ -271,7 +271,8 @@ class Hub {
 
   // /control handler (popup-driven, tControl-authed, NOT the agent path).
   //  GET  → { instances: [{ instanceId, label, tier, sharedCount, tabs, activeTabId }] }
-  //  POST → { op: "unshare", instanceId, tabId } | { op: "stopAll", instanceId }
+  //  POST → { op: "unshare", instanceId, tabId } | { op: "stopAll", instanceId } | { op: "setWake", instanceId, tabId, on }
+  //         | { op: "setSilent", on, exceptInstanceId } (every browser; the caller sets itself)
   // Tab ids stay per-instance numeric (the popup pairs them with instanceId — no
   // composite rewrite here). One instance failing never sinks the whole snapshot.
   async _control(method, body) {
@@ -286,7 +287,7 @@ class Hub {
           // isError / unparsable = an instance that doesn't implement `_td/snapshot`
           // (a non-Node host, or a pre-feature build) → mark unknown, don't imply "nothing shared".
           if (!snap) instances.push({ instanceId: id, label, tier: "unknown", sharedCount: 0, tabs: [], unavailable: true });
-          else instances.push({ instanceId: id, label, tier: snap.tier ?? "none", sharedCount: snap.sharedCount ?? 0, tabs: Array.isArray(snap.tabs) ? snap.tabs : [], activeTabId: snap.activeTabId ?? null });
+          else instances.push({ instanceId: id, label, tier: snap.tier ?? "none", sharedCount: snap.sharedCount ?? 0, tabs: Array.isArray(snap.tabs) ? snap.tabs : [], activeTabId: snap.activeTabId ?? null, silent: snap.silent === true });
         } catch { instances.push({ instanceId: id, label, tier: "unknown", sharedCount: 0, tabs: [], unavailable: true }); }
       }));
       return { status: 200, json: { instances } };
@@ -321,6 +322,24 @@ class Hub {
         const t = setTimeout(() => this._shutdown(true), 400); t.unref?.();
         return { status: 200, json: { ok: true } };
       }
+      // Silent mode for every browser: no agent may raise a window while it is on. Same fan-out and the same honesty as
+      // revokeAll: a browser that could not confirm is named, and the answer is not a success.
+      if (op === "setSilent") {
+        if (typeof body.on !== "boolean") return { status: 400, json: { error: "on must be a boolean" } };
+        const failed = [];
+        const names = new Map();
+        await this._refresh().catch(() => {});
+        await Promise.all([...this.clients.keys()].filter((id) => id !== exceptInstanceId).map(async (id) => {
+          names.set(id, this.meta.get(id)?.label ?? id);
+          try {
+            const r = await this._withTimeout(this.clients.get(id).callTool({ name: "_td/set_silent", arguments: { on: body.on } }), CONTROL_TIMEOUT_MS);
+            if (r?.isError) failed.push(id);
+          } catch { failed.push(id); }
+        }));
+        for (const u of this._unconnected()) if (u.instanceId !== exceptInstanceId) { failed.push(u.instanceId); names.set(u.instanceId, u.label ?? u.instanceId); }
+        if (failed.length) return { status: 502, json: { ok: false, error: `could not confirm in: ${failed.map((id) => names.get(id) ?? id).join(", ")}`, failed } };
+        return { status: 200, json: { ok: true } };
+      }
       // Fan-out op: clear sharing on every instance except the caller (which clears itself locally).
       if (op === "revokeAll") {
         // Report what really happened: claiming success while another browser kept sharing is
@@ -346,6 +365,9 @@ class Hub {
         if (op === "unshare") {
           if (!Number.isInteger(tabId)) return { status: 400, json: { error: "tabId must be an integer" } };
           r = await this._withTimeout(this.clients.get(instanceId).callTool({ name: "_td/unshare", arguments: { tabId } }), CONTROL_TIMEOUT_MS);
+        } else if (op === "setWake") {
+          if (!Number.isInteger(tabId) || typeof body.on !== "boolean") return { status: 400, json: { error: "tabId must be an integer and on a boolean" } };
+          r = await this._withTimeout(this.clients.get(instanceId).callTool({ name: "_td/set_wake", arguments: { tabId, on: body.on } }), CONTROL_TIMEOUT_MS);
         } else if (op === "stopAll") {
           r = await this._withTimeout(this.clients.get(instanceId).callTool({ name: "_td/set_tier", arguments: { tier: "none" } }), CONTROL_TIMEOUT_MS);
         } else return { status: 400, json: { error: "unknown op" } };

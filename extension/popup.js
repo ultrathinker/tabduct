@@ -93,6 +93,7 @@ function host(url) { try { return new URL(url).host; } catch { return url || "";
 // (authoritative, instant); other browsers come from the hub snapshot in `peersData`
 // (refreshed by a light poll while the popup is open).
 let lastSharing = null;
+let silentWarn = null; // set when another browser could not confirm the last switch
 let peersData = { selfId: null, instances: [] };
 let peersInFlight = false; // guard so a slow hub fan-out can't stack overlapping polls
 
@@ -106,6 +107,7 @@ function renderSharing(s) {
   $("unshareOnGroupLeave").checked = !!s.unshareOnGroupLeave;
   $("unshareOnGroupLeave").disabled = !s.useTabGroup;
   $("wakeBrowser").checked = s.wakeBrowser !== false;
+  renderSilent(s);
   $("readOnly").checked = !!s.readOnly;
   $("ttl").value = String(s.ttlMs || 0);
   $("lockToDomain").checked = s.lockToDomain !== false;
@@ -194,6 +196,15 @@ function makeRow(o) {
   if (o.muted) span.style.opacity = "0.6";
   if (o.onClick) span.onclick = o.onClick;
   li.append(icon, span);
+  if (o.onWake) { // may the agent bring the window forward to wake THIS tab? (🔔 yes, 🔕 no); Silent mode dims it, the choice is kept
+    const w = document.createElement("button"); w.className = "wk" + (o.wake ? "" : " off");
+    w.textContent = o.wake ? "🔔" : "🔕";
+    w.title = (o.silent ? "Silent mode is on, so no tab is woken now. This tab's own setting: " : "")
+      + (o.wake ? "the agent may bring the browser window forward to wake this tab (click to forbid)" : "the agent may NOT bring the window forward for this tab (click to allow)");
+    w.setAttribute("aria-pressed", o.wake ? "true" : "false");
+    w.onclick = o.onWake; li.appendChild(w);
+    if (o.silent) li.classList.add("silenced");
+  }
   if (o.onX) { const x = document.createElement("button"); x.className = "x"; x.textContent = "✕"; x.title = o.xTitle || "unshare"; x.onclick = o.onX; li.appendChild(x); }
   return li;
 }
@@ -211,6 +222,10 @@ function appendInstanceRows(ul, g) {
   for (const t of g.tabs || []) {
     ul.appendChild(makeRow({
       favIconUrl: t.favIconUrl, title: t.title || host(t.url), url: t.url,
+      wake: t.wake !== false, silent: g.silent === true,
+      onWake: g.self
+        ? async () => renderSharing(await send({ cmd: "sharing.setWake", tabId: t.id, on: t.wake === false }))
+        : async () => { const r = await send({ cmd: "peers.setWake", instanceId: g.instanceId, tabId: t.id, on: t.wake === false }); if (r?.instances) peersData = r; renderShareList(lastSharing); },
       onClick: g.self ? () => send({ cmd: "sharing.activate", tabId: t.id }) : null,
       onX: g.self
         ? async () => renderSharing(await send({ cmd: "sharing.unshare", tabId: t.id }))
@@ -233,7 +248,7 @@ function renderShareList(s) {
   // Show the "Current" header (and any rows) only when this browser actually shares
   // something — an empty current instance renders nothing, no placeholder.
   if (grouped && currentShared) ul.appendChild(groupHeader("Current"));
-  if (currentShared && (s.tier === "all" || (s.tabs && s.tabs.length) || (s.sharedCount ?? 0) > 0)) appendInstanceRows(ul, { self: true, tier: s.tier ?? "none", tabs: s.tabs ?? [] });
+  if (currentShared && (s.tier === "all" || (s.tabs && s.tabs.length) || (s.sharedCount ?? 0) > 0)) appendInstanceRows(ul, { self: true, tier: s.tier ?? "none", tabs: s.tabs ?? [], silent: s.silent === true });
   // Paused grants (the tab left its shared site while lock-to-domain is on): still shared, just
   // dormant — listed greyed so a dormant share is never invisible; ✕ ends it.
   for (const t of s.paused ?? []) {
@@ -249,7 +264,7 @@ function renderShareList(s) {
   for (const inst of others) {
     n++;
     ul.appendChild(groupHeader(inst.label || `Instance ${n}`));
-    appendInstanceRows(ul, { self: false, instanceId: inst.instanceId, tier: inst.tier, tabs: inst.tabs || [] });
+    appendInstanceRows(ul, { self: false, instanceId: inst.instanceId, tier: inst.tier, tabs: inst.tabs || [], silent: inst.silent === true });
   }
 }
 async function refreshPeers() {
@@ -260,6 +275,26 @@ async function refreshPeers() {
   finally { peersInFlight = false; }
 }
 
+// Silent mode: the master switch over every tab's bell (and over the agent's explicit requests to take the focus).
+function renderSilent(s) {
+  const on = s.silent === true;
+  const b = $("silent");
+  b.classList.toggle("on", on);
+  b.classList.toggle("warn", !!silentWarn);
+  b.setAttribute("aria-pressed", on ? "true" : "false");
+  $("silentIc").textContent = on ? "🔕" : "🔔";
+  $("silentTxt").hidden = !on;
+  b.title = silentWarn
+    ? `Silent mode is ${on ? "on" : "off"} here, but another browser did not confirm: ${silentWarn}`
+    : on ? "Silent mode is ON: no agent raises any window or takes the focus, in any browser. Click to turn it off."
+      : "Silent mode is off: an agent may bring a browser window forward to wake a tab (where the tab allows it). Click to turn Silent mode on - no agent then raises any window or takes the focus, in any browser, until you turn it off.";
+}
+$("silent").addEventListener("click", async () => {
+  const cur = await send({ cmd: "sharing.status" });
+  const r = await send({ cmd: "sharing.setSilent", on: cur?.silent !== true });
+  silentWarn = r && r.peersReachable === false ? (r.peersError || "unreachable") : null;
+  renderSharing(r);
+});
 $("shareThis").addEventListener("click", async () => renderSharing(await send({ cmd: "sharing.toggleActive" })));
 $("shareEvery").addEventListener("click", async () => {
   const s = await send({ cmd: "sharing.status" });

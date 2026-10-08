@@ -4,6 +4,26 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims for
 [Semantic Versioning](https://semver.org/) once it reaches 1.0.
 
+## [1.8.0] — 2026-10-08
+
+### Added
+- **The user decides whether an agent may wake a tab by bringing the browser forward.** Each shared tab has a 🔔 / 🔕 switch left of its ✕ in the
+  popup (it works for the tabs of other browsers listed there too); a new share takes the default from the settings (on). The setting
+  *Wake the browser* became that default (*Let the agent wake a tab by bringing the browser forward, default for newly shared tabs*); it is live for
+  tabs that were never switched by hand.
+- **Silent mode**: a button in the popup header switches waking off for every tab in every browser behind the hub at once (a *mute* mark on the toolbar
+  icon; the per-tab choices are kept). In Silent mode `activate_tab` and `screenshot` with `activate:true` are refused with the new code
+  `WAKE_NOT_ALLOWED`, and `open_tab` opens the tab in the background (the reply says so). The same refusal applies to a tab whose own switch is off.
+- **A frozen page is woken like a hidden one.** Chrome 154 does not let the debugger thaw every kind of freeze (the 1.7.2 trace showed three
+  tries with no effect on a tab Chrome froze by itself), so a call without `quiet` on a tab that stays frozen now brings the window forward
+  (`wake` with `force`, the page cannot be asked whether it is visible) and waits until the page is thawed, as a click on the tab would. This
+  covers every page tool, not only the six that raised the window before.
+- **`TAB_FROZEN`** (new error code): a `quiet:true` call, or a call on a tab where waking is off, that meets a frozen page which the silent thaw
+  could not wake fails **at once** with the reason, what each way of thawing did and what to do next, instead of waiting out the 18 s deadline.
+- `list_tabs` shows `wakeAllowed:false` for a tab the agent may not bring forward (and `frozen:true` for a frozen one); the tool descriptions say so.
+- Control ops `_td/set_wake` and `_td/set_silent` (hub `/control` ops `setWake`, `setSilent`), so one popup can set the other browsers. Unlike the other
+  `_td/*` ops they can switch things on: they decide only whether a window may be raised, never what an agent may read or do.
+
 ## [1.7.2] — 2026-10-08
 
 ### Changed

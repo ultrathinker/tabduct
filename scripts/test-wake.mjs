@@ -135,5 +135,21 @@ Object.assign(W.timing, { probeMs: 30 });
 const t0 = Date.now(); const blocked = await W.wake(1);
 eq([blocked, Date.now() - t0 < 1000], [null, true], "a blocked page (probe never answers) does not hang wake: treated as visible, nothing touched");
 
+// 14. a FROZEN page cannot say whether it is visible: `force` brings the window forward anyway and waits until Chrome has thawed it
+reset({ focused: true }, [tab(1, { active: false, frozen: true }), tab(2, { active: true })], false);
+Object.assign(W.timing, { thawMs: 200 });
+let thawed = null;
+chrome.tabs.update = async (id, p) => { LOG.push(`tab ${id} ${JSON.stringify(p)}`); if (p.active) { for (const t of TABS) t.active = t.id === id; setTimeout(() => { TABS[0].frozen = false; thawed = Date.now(); }, 40); } return {}; };
+const t14 = Date.now();
+const fr = await W.wake(1, { force: true });
+eq([LOG.includes('tab 1 {"active":true}'), thawed !== null, Date.now() - t14 >= 40], [true, true, true], "force: the tab is activated even though the window has the focus, and the call waits until the page is thawed");
+W.release(fr);
+await sleep(80);
+eq(LOG.includes('tab 2 {"active":true}'), true, "...and the tab the user was on is put back afterwards");
+
+// 15. without `force` the same frozen tab in a focused window is left alone (the old rule: the user is in that window)
+reset({ focused: true }, [tab(1, { active: false, frozen: true }), tab(2, { active: true })], false);
+eq([await W.wake(1), LOG], [null, []], "no force: a focused window is never touched");
+
 console.log(fails ? `\n${fails} FAILED` : "\nall wake tests passed");
 process.exit(fails ? 1 : 0);

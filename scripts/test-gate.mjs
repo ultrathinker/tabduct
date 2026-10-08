@@ -51,7 +51,7 @@ globalThis.chrome = {
       return [{ result: "page text" }];
     },
   },
-  action: { setBadgeText() {}, setBadgeBackgroundColor() {}, setBadgeTextColor() {}, setIcon: async () => {} },
+  action: { setBadgeText() {}, setTitle() {}, setBadgeBackgroundColor() {}, setBadgeTextColor() {}, setIcon: async () => {} },
   alarms: { get: async () => ({}), create() {}, onAlarm: evs.alarm },
   windows: { update: async (id, p) => { WINLOG.push(p); }, get: async (id) => ({ id, state: WINSTATE, focused: false }) },
   permissions: { contains: async () => false, onAdded: ev() },
@@ -383,20 +383,75 @@ eq(groupAction({ ...base, tier: "all", inOurGroup: true, shared: false }), null,
   await call(P4, "get_page_content", { tabId: 1, quiet: true });
   eq(DBG.length, 0, "without the CDP opt-in nothing attaches (no silent thaw; falls back to the usual wake)");
 
-  // a call that still hangs says WHY: the tab is frozen, and what the thaw did
-  callDeadline.ms = 80;
-  const real2 = chrome.scripting.executeScript;
-  chrome.scripting.executeScript = (d) => (d.func?.name === "probeFrame" ? real2(d) : new Promise(() => {}));
+  // frozen, and nothing may bring the window forward: TAB_FROZEN at once (no waiting out the deadline), saying why
+  const t0 = Date.now();
   const noCdp = await call(P4, "get_page_content", { tabId: 1, quiet: true });
-  eq([noCdp?.error?.code, /frozen this tab/.test(noCdp?.error?.message || ""), /Allow CDP eval/.test(noCdp?.error?.message || "")], ["TIMEOUT", true, true], "frozen tab, no CDP opt-in: the timeout names the freeze and the setting that would thaw it");
+  const m1 = noCdp?.error?.message || "";
+  eq([noCdp?.error?.code, /frozen by Chrome/.test(m1), /Allow CDP eval/.test(m1), /without quiet:true/.test(m1), Date.now() - t0 < 1000], ["TAB_FROZEN", true, true, true, true], "frozen tab, quiet, no CDP opt-in: TAB_FROZEN at once; names the setting that would thaw it and says how to wake it");
   await C.setShareOptions({ allowCdp: true });
   TABS[0].frozen = true;
   chrome.debugger.sendCommand = async (_t, m) => { DBG.push(m); return {}; }; // the thaw does not take effect
   const stays = await call(P4, "get_page_content", { tabId: 1, quiet: true });
-  eq([stays?.error?.code, /silent thaw ended: still-frozen/.test(stays?.error?.message || "")], ["TIMEOUT", true], "frozen tab, thaw did not take effect: the timeout reports 'still-frozen'");
-  eq(/\(active: still frozen after \d+ ms; frozen, then active: still frozen after \d+ ms; Page\.enable, then active: still frozen after \d+ ms\)/.test(stays?.error?.message || ""), true, "...with what each way of thawing did, so the cause can be read off the error", stays?.error?.message);
-  chrome.scripting.executeScript = real2; callDeadline.ms = 18000;
+  const m2 = stays?.error?.message || "";
+  eq([stays?.error?.code, /silent thaw ended: still-frozen/.test(m2)], ["TAB_FROZEN", true], "frozen tab, the thaw did not take effect: TAB_FROZEN reports 'still-frozen'");
+  eq(/\(active: still frozen after \d+ ms; frozen, then active: still frozen after \d+ ms; Page\.enable, then active: still frozen after \d+ ms\)/.test(m2), true, "...with what each way of thawing did, so the cause can be read off the error", m2);
+
+  // without quiet, where waking is allowed, a frozen tab is brought forward (Chrome thaws a page whose tab is shown) and the call goes through
+  WAKE.timing.thawMs = 30;
+  WINLOG = []; WINSTATE = "minimized";
+  eq(code(await call(P4, "get_page_content", { tabId: 1 })), "ok", "frozen, not quiet, waking allowed: the call is answered after the window was brought forward");
+  eq(WINLOG.some((p) => p.focused), true, "...the window really was brought forward");
+  await sleep(100);
+  // the user's bell on this tab: off -> the tab is never woken, and the agent is told so
+  TABS[0].frozen = true; WINLOG = [];
+  await popup({ cmd: "sharing.setWake", tabId: 1, on: false });
+  eq((await call(P4, "list_tabs")).result.tabs[0]?.wakeAllowed, false, "waking off for the tab: list_tabs tells the agent (wakeAllowed:false)");
+  const nowake = await call(P4, "get_page_content", { tabId: 1 });
+  eq([nowake?.error?.code, /turned waking off/.test(nowake?.error?.message || "")], ["TAB_FROZEN", true], "...a frozen tab is then not woken even without quiet: TAB_FROZEN says the user turned waking off");
+  eq(WINLOG, [], "...and no window is touched");
+  eq(code(await call(P4, "activate_tab", { tabId: 1 })), "WAKE_NOT_ALLOWED", "...activate_tab is refused for it too");
+  eq((await popup({ cmd: "sharing.status" })).tabs[0].wake, false, "...the popup shows the bell off");
+  await popup({ cmd: "sharing.setWake", tabId: 1, on: true });
+  eq(code(await call(P4, "activate_tab", { tabId: 1 })), "ok", "waking back on: activate_tab works again");
+
+  // Silent mode: over every tab's bell, and over the agent's explicit requests to take the focus
+  const answerPeers = async (type) => { const m = await until(() => P4.sent.find((x) => x.type === type && !x.answered)); if (m) { m.answered = true; await P4.onMessage.fire({ replyTo: m.id, ok: true, result: { ok: true } }); } };
+  const pending = answerPeers("peerSetSilent");
+  const sil = await popup({ cmd: "sharing.setSilent", on: true });
+  await pending;
+  eq([sil.silent, sil.peersReachable], [true, true], "Silent mode on: the popup status says so, and the other browsers were asked too");
+  eq(P4.sent.find((x) => x.type === "peerSetSilent")?.payload, { on: true }, "...the request to the other browsers carries on:true");
+  TABS[0].frozen = false; WINLOG = [];
+  const silAct = await call(P4, "activate_tab", { tabId: 1 });
+  eq([silAct?.error?.code, /Silent mode/.test(silAct?.error?.message || "")], ["WAKE_NOT_ALLOWED", true], "Silent mode: activate_tab is refused, and the message names Silent mode");
+  TABS[0].active = false;
+  eq(code(await call(P4, "screenshot", { tabId: 1, activate: true })), "WAKE_NOT_ALLOWED", "...so is a screenshot that asks to activate the tab");
+  TABS[0].active = true;
+  WINSTATE = "minimized";
+  eq(code(await call(P4, "get_page_content", { tabId: 1 })), "ok", "...a plain read of a minimized window still works");
+  await sleep(60);
+  eq(WINLOG, [], "...but the window is NOT raised");
+  eq((await call(P4, "list_tabs")).result.tabs[0].wakeAllowed, false, "...and list_tabs says wakeAllowed:false");
+  const created = [];
+  chrome.tabs.create = async (o) => { created.push(o); return { id: 77, url: "", pendingUrl: o.url, active: o.active }; };
+  const op = await call(P4, "open_tab", { url: "https://claude.ai/directory/manage" });
+  eq([created[0]?.active, /Silent mode/.test(op?.result?.note || "")], [false, true], "Silent mode: open_tab opens the tab in the background and the reply says so");
+  const pending2 = answerPeers("peerSetSilent");
+  const sil2 = await popup({ cmd: "sharing.setSilent", on: false });
+  await pending2;
+  eq([sil2.silent, (await call(P4, "list_tabs")).result.tabs[0].wakeAllowed], [false, undefined], "Silent mode off: everything is back as the tabs were set");
+  // another browser's popup can flip a tab's bell and Silent mode through the hub's control channel
+  const ctl = async (tool, args) => { const id = `c${++seq}`; await P4.onMessage.fire({ type: "invoke", id, payload: { tool, args } }); return until(() => P4.sent.find((m) => m.replyTo === id)); };
+  eq((await ctl("_td/set_wake", { tabId: 1, on: false }))?.ok, true, "_td/set_wake: a bell switched OFF from another browser");
+  eq((await popup({ cmd: "sharing.status" })).tabs[0].wake, false, "...is visible here");
+  eq((await ctl("_td/set_wake", { tabId: 1, on: true }))?.ok, true, "_td/set_wake: ... and ON again (the same rules everywhere)");
+  eq((await ctl("_td/set_silent", { on: true }))?.ok, true, "_td/set_silent: Silent mode switched on from another browser");
+  eq((await ctl("_td/snapshot", {}))?.result?.silent, true, "...the control snapshot reports it");
+  eq((await ctl("_td/set_silent", { on: "yes" }))?.error?.code, "INVALID_ARGS", "...a non-boolean is refused");
+  await ctl("_td/set_silent", { on: false });
+  chrome.scripting.executeScript = real;
   await sleep(150);
+  WINSTATE = "normal";
   chrome.debugger = had.debugger; chrome.permissions.contains = had.contains; delete TABS[0].frozen;
 }
 

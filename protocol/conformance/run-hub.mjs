@@ -44,6 +44,8 @@ function startInstance(instanceId, gen = "", extra = {}) {
     if (t === "list_tabs") ok({ tabs: [{ id: 1, title: `tab-${instanceId}${gen}`, url: "https://example.com", active: true }] });
     else if (t === "_td/revoke_all") { if (instanceId === "B") send({ replyTo: m.id, ok: false, error: { code: "INTERNAL", message: "boom" } }); else ok({ ok: true }); }
     else if (t === "_td/set_tier") ok({ ok: true });
+    else if (t === "_td/set_wake") ok({ ok: true });
+    else if (t === "_td/set_silent") { if (instanceId === "B") send({ replyTo: m.id, ok: false, error: { code: "INTERNAL", message: "boom" } }); else ok({ ok: true }); }
     else if (t === "_td/disconnect") { if (instanceId === "BAD") send({ replyTo: m.id, ok: false, error: { code: "UNKNOWN_TOOL", message: "old build" } }); else ok({ ok: true }); }
     else if (t === "get_active_tab") ok({ id: 7, title: `active-${instanceId}`, url: "https://example.com", active: true });
     else if (t === "navigate") ok({ id: 9, title: "nav", url: m.payload.args?.url, active: true });
@@ -183,6 +185,21 @@ const call = (name, args, sid, token) => rpc({ jsonrpc: "2.0", id: Math.floor(Ma
   ok(rv.status === 502 && rv.json?.ok === false && JSON.stringify(rv.json?.failed) === JSON.stringify(["B"]), `revokeAll with a browser that fails → 502 naming it (got ${rv.status} ${JSON.stringify(rv.json)})`);
   const rv2 = await control({ op: "revokeAll", exceptInstanceId: "B" }, tControl);
   ok(rv2.status === 200 && rv2.json?.ok === true, "revokeAll succeeds when every other browser cleared");
+
+  // a tab's "may be woken" switch, and Silent mode for every browser (both can switch things ON from another browser's popup)
+  const sw1 = await control({ op: "setWake", instanceId: "A", tabId: 1, on: false }, tControl);
+  ok(sw1.status === 200 && sw1.json?.ok === true && A2.invokes.includes("_td/set_wake"), `/control setWake reaches the browser that owns the tab (status ${sw1.status})`);
+  const sw2 = await control({ op: "setWake", instanceId: "A", tabId: "x", on: false }, tControl);
+  ok(sw2.status === 400, `/control setWake with a bad tabId → 400 (got ${sw2.status})`);
+  const sw3 = await control({ op: "setWake", instanceId: "A", tabId: 1 }, tControl);
+  ok(sw3.status === 400, `/control setWake without a boolean on → 400 (got ${sw3.status})`);
+  const si0 = A2.invokes.filter((x) => x === "_td/set_silent").length;
+  const si1 = await control({ op: "setSilent", on: true, exceptInstanceId: "B" }, tControl);
+  ok(si1.status === 200 && A2.invokes.filter((x) => x === "_td/set_silent").length === si0 + 1 && !B.invokes.includes("_td/set_silent"), `/control setSilent: every OTHER browser was told, the caller was not (status ${si1.status})`);
+  const si2 = await control({ op: "setSilent", on: true, exceptInstanceId: "nobody" }, tControl);
+  ok(si2.status === 502 && JSON.stringify(si2.json?.failed) === JSON.stringify(["B"]), `/control setSilent with a browser that does not confirm → 502 naming it (got ${si2.status} ${JSON.stringify(si2.json)})`);
+  const si3 = await control({ op: "setSilent", exceptInstanceId: "B" }, tControl);
+  ok(si3.status === 400, `/control setSilent without a boolean on → 400 (got ${si3.status})`);
 
   // a browser that is alive (discovery entry, live pid) but that the hub cannot reach must be
   // named as unavailable, and "revoke all" must not claim success for it

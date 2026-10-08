@@ -252,6 +252,14 @@ async function handle(msg) {
       try { await hubControl("POST", { op: "unshare", instanceId: payload?.instanceId, tabId: payload?.tabId }); reply(id, true, { ok: true }); }
       catch (e) { reply(id, false, { code: e.code || ERR.INTERNAL, message: e.message }); }
       return;
+    case "peerSetWake": // popup: allow / forbid waking one tab of another instance
+      try { await hubControl("POST", { op: "setWake", instanceId: payload?.instanceId, tabId: payload?.tabId, on: payload?.on === true }); reply(id, true, { ok: true }); }
+      catch (e) { reply(id, false, { code: e.code || ERR.INTERNAL, message: e.message }); }
+      return;
+    case "peerSetSilent": // popup: Silent mode in every OTHER instance (this one is set locally)
+      try { await hubControl("POST", { op: "setSilent", on: payload?.on === true, exceptInstanceId: currentInstance }); reply(id, true, { ok: true }); }
+      catch (e) { reply(id, false, { code: e.code || ERR.INTERNAL, message: e.message }); }
+      return;
     case "peerStopAll": // popup: turn off Share-Everything in another instance
       try { await hubControl("POST", { op: "stopAll", instanceId: payload?.instanceId }); reply(id, true, { ok: true }); }
       catch (e) { reply(id, false, { code: e.code || ERR.INTERNAL, message: e.message }); }

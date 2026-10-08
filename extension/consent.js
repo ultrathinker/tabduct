@@ -218,6 +218,21 @@ export function isFullAccess(state) {
   return state.lockToDomain === false && !state.readOnly && !(Number(state.ttlMs) > 0) && state.allowCdp === true;
 }
 
+// May the agent bring the window forward to work with this tab (wake.js: raise a minimized or covered window,
+// activate the tab, thaw a frozen page)? Silent mode (the master switch, live, for every tab) beats everything; then
+// the tab's own switch, once the user has flipped it; every other tab (and the "Everything" tier, which has no per-tab
+// grants) follows the default (`wakeBrowser`, live, on unless switched off in the settings).
+export function wakeAllowed(state, tabId) {
+  if (state.silent) return false;
+  const own = state.tier === "tabs" ? state.allow?.[String(tabId)]?.wake : undefined;
+  return own !== undefined ? own !== false : state.wakeBrowser !== false;
+}
+// The tab's own setting without the master switch (what the popup's per-tab switch shows).
+export function tabWake(state, tabId) {
+  const own = state.tier === "tabs" ? state.allow?.[String(tabId)]?.wake : undefined;
+  return own !== undefined ? own !== false : state.wakeBrowser !== false;
+}
+
 // CDP eval gating (PART 4) — PURE (no chrome refs), unit-tested.
 // Decides whether execute_script may use the CDP engine, from the user's two
 // global CDP settings + the requested engine. cdpAlways implies allowCdp (it is
@@ -327,7 +342,7 @@ export async function getState() {
   // Read both stores in one shot so a concurrent mutator can't yield a mixed snapshot.
   const [sess, loc] = await Promise.all([
     chrome.storage.session.get("consent"),
-    chrome.storage.local.get(["denyOrigins", "shareReadOnly", "shareTtlMs", "shareTtlSetAt", "originMode", "lockToDomain", "allowCdp", "cdpAlways", "cdpConsole", "wakeBrowser"]),
+    chrome.storage.local.get(["denyOrigins", "shareReadOnly", "shareTtlMs", "shareTtlSetAt", "originMode", "lockToDomain", "allowCdp", "cdpAlways", "cdpConsole", "wakeBrowser", "silentMode"]),
   ]);
   const s = sess.consent ?? { tier: "none", allow: {} };
   const { shareReadOnly = false, shareTtlMs = 0 } = loc;
@@ -341,7 +356,8 @@ export async function getState() {
     // CDP settings (PART 4) — all DEFAULT FALSE (storage.local, opt-in from the popup).
     // cdpConsole is only effective when allowCdp is true (ignored otherwise, same as cdpAlways).
     allowCdp: !!loc.allowCdp, cdpAlways: !!loc.cdpAlways, cdpConsole: !!loc.cdpConsole,
-    wakeBrowser: loc.wakeBrowser !== false, // default ON: bring a minimized/covered window forward for the call (wake.js)
+    wakeBrowser: loc.wakeBrowser !== false, // default ON: the DEFAULT for newly shared tabs ("agent may bring the window forward to wake the tab", wake.js)
+    silent: loc.silentMode === true, // master switch, default OFF: no agent raises a window or takes the focus while it is on
   };
 }
 // Persist the WHOLE consent record. Mutators always pass the full state they read (never a
@@ -359,6 +375,7 @@ function grant(tab) {
     host: hostOf(tab.url),
     caps: FULL_CAPS, // read-only is enforced globally in evaluate(), not per-entry
     sharedAt: Date.now(), // TTL and lock-to-domain are applied LIVE from global settings
+    // (no `wake`: a tab follows the default until the user flips its own switch, see setTabWake / wakeAllowed)
   };
 }
 
@@ -389,7 +406,7 @@ export function shareTab(tabId) {
 }
 // Global share defaults (apply to every tab, live — not per-tab). Persisted in storage.local.
 // Also carries the CDP opt-ins (allowCdp / cdpAlways / cdpConsole) — all DEFAULT FALSE.
-export function setShareOptions({ readOnly, ttlMs, lockToDomain, noAutoShareOpened, allowCdp, cdpAlways, cdpConsole, unshareOnGroupLeave, wakeBrowser } = {}) {
+export function setShareOptions({ readOnly, ttlMs, lockToDomain, noAutoShareOpened, allowCdp, cdpAlways, cdpConsole, unshareOnGroupLeave, wakeBrowser, silentMode } = {}) {
   return serial(async () => {
     const prev = await getState();
     const patch = {};
@@ -406,6 +423,7 @@ export function setShareOptions({ readOnly, ttlMs, lockToDomain, noAutoShareOpen
     if (cdpConsole !== undefined) patch.cdpConsole = !!cdpConsole;
     if (unshareOnGroupLeave !== undefined) patch.unshareOnGroupLeave = !!unshareOnGroupLeave;
     if (wakeBrowser !== undefined) patch.wakeBrowser = !!wakeBrowser;
+    if (silentMode !== undefined) patch.silentMode = !!silentMode;
     // Lock switched OFF: free the tabs paused on a related site, release those the user moved elsewhere.
     if (lockToDomain === false && prev.lockToDomain !== false && prev.tier === "tabs" && Object.keys(prev.allow).length) {
       const allow = releasePausedGrants(prev, await chrome.tabs.query({}), Date.now());
@@ -422,6 +440,19 @@ export function setShareOptions({ readOnly, ttlMs, lockToDomain, noAutoShareOpen
 }
 export function unshareTab(tabId) {
   return serial(async () => { const st = await getState(); delete st.allow[String(tabId)]; await saveConsent(st); keepAlive(tabId, false); return getState(); });
+}
+// The user flips one tab's "agent may bring the window forward to wake it" switch: from then on the tab keeps its own
+// setting whatever the default is. Only a tab that holds its own grant has one (in the "Everything" tier the default
+// applies). Returns whether something changed.
+export function setTabWake(tabId, on) {
+  return serial(async () => {
+    const st = await getState();
+    const e = st.allow[String(tabId)];
+    if (!e) return false;
+    e.wake = !!on;
+    await saveConsent(st);
+    return true;
+  });
 }
 export function revokeAll() {
   return serial(async () => { const was = Object.keys((await getState()).allow); await saveConsent({ tier: "none", allow: {}, tierSetAt: null }); for (const id of was) keepAlive(id, false); return getState(); });

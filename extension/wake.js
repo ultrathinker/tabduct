@@ -21,7 +21,7 @@ export const QUIET_TOOLS = new Set(["execute_script", "get_page_content", "get_d
 export const WAKE_TOOLS = new Set(["screenshot", "type", "click", "press_key", "get_page_content", "get_dom_snapshot"]);
 
 // Timing is configurable so the tests do not have to wait.
-export const timing = { idleMs: 2500, pollMs: 50, maxWaitMs: 800, settleMs: 150, probeMs: 1000 };
+export const timing = { idleMs: 2500, pollMs: 50, maxWaitMs: 800, settleMs: 150, probeMs: 1000, thawMs: 2000 };
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const awake = new Map(); // windowId -> { windowId, minimized, prevActive, busy, timer }
@@ -45,10 +45,21 @@ async function untilVisible(tabId) {
   await sleep(timing.settleMs); // let the page flush what it had queued while it was hidden
 }
 
+// A frozen page is thawed by Chrome itself once its tab is shown: wait for `tab.frozen` to go (the page cannot answer a probe before).
+async function untilThawed(tabId) {
+  for (let waited = 0; waited < timing.thawMs; waited += timing.pollMs) {
+    try { if ((await chrome.tabs.get(tabId)).frozen !== true) break; } catch { break; }
+    await sleep(timing.pollMs);
+  }
+  await sleep(timing.settleMs);
+}
+
 // Returns a handle for release(), or null when nothing had to be done.
 // `keep`: raise the window and leave it up (no minimizing afterwards, no tab switched back) - for a call that
 // timed out, where the user has to see and answer a dialog the page is waiting on.
-export async function wake(tabId, { keep = false } = {}) {
+// `force`: the page is frozen - it cannot say whether it is visible, so the window is brought forward without asking it,
+// and the call waits until Chrome has thawed the page.
+export async function wake(tabId, { keep = false, force = false } = {}) {
   let tab, win;
   try { tab = await chrome.tabs.get(tabId); win = await chrome.windows.get(tab.windowId); } catch { return null; }
   if (tab.discarded) {
@@ -65,7 +76,7 @@ export async function wake(tabId, { keep = false } = {}) {
     return held;
   }
   const minimized = win.state === "minimized" && !keep;
-  if (!minimized && !keep) {
+  if (!minimized && !keep && !force) {
     if (win.focused) return null; // the user is in this window: the page is visible
     if (tab.active && !(await isHidden(tabId))) return null; // visible next to what the user is doing
   }
@@ -75,7 +86,8 @@ export async function wake(tabId, { keep = false } = {}) {
     await chrome.tabs.update(tabId, { active: true });
   }
   await chrome.windows.update(win.id, { focused: true });
-  if (!keep) await untilVisible(tabId); // (a stuck page would not answer the probe)
+  if (force) await untilThawed(tabId);
+  else if (!keep) await untilVisible(tabId); // (a stuck page would not answer the probe)
   const rec = { windowId: win.id, minimized, prevActive, busy: 1, timer: null };
   awake.set(win.id, rec);
   return rec;

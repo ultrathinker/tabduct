@@ -51,6 +51,10 @@ export const ERR = {
   ORIGIN_DRIFT: "ORIGIN_DRIFT",
   ORIGIN_DENIED: "ORIGIN_DENIED",
   CAP_NOT_GRANTED: "CAP_NOT_GRANTED",
+  // Window etiquette: the user (per tab, or Silent mode) does not let the agent bring the browser to the front.
+  WAKE_NOT_ALLOWED: "WAKE_NOT_ALLOWED",
+  // The page is frozen by Chrome, cannot be thawed silently, and nothing may bring the window forward.
+  TAB_FROZEN: "TAB_FROZEN",
   // CDP eval (PART 4) — opt-in arbitrary-JS engine on strict-CSP sites.
   CDP_NOT_PERMITTED: "CDP_NOT_PERMITTED",
   // The loaded extension build lacks a feature the call needs (host refuses instead of

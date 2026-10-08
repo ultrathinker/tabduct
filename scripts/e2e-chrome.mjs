@@ -423,6 +423,52 @@ try {
   }
 
   // ======================================================================================================
+  console.log("— the popup's bell on each shared tab, and the Silent button (the background is faked; this checks the page itself)");
+  {
+    // The fake background is installed BEFORE the popup's own script runs, so its first render comes from it.
+    const { targetId } = await cdp("Target.createTarget", { url: "about:blank" });
+    const { sessionId } = await cdp("Target.attachToTarget", { targetId, flatten: true });
+    await cdp("Runtime.enable", {}, sessionId); await cdp("Page.enable", {}, sessionId);
+    await cdp("Page.addScriptToEvaluateOnNewDocument", { source: `window.__sent = []; window.__silent = false; window.__wake = { 11: true, 12: false };
+      chrome.runtime.sendMessage = async (m) => {
+        window.__sent.push(m);
+        if (m.cmd === "status") return { state: "connected" };
+        if (m.cmd === "sharing.setSilent") window.__silent = m.on === true;
+        if (m.cmd === "sharing.setWake") window.__wake[m.tabId] = m.on === true;
+        if (m.cmd === "peers.list") return { selfId: "me", instances: [] };
+        if (m.cmd.startsWith("sharing.") || m.cmd.startsWith("peers.")) return { tier: "tabs", sharedCount: 2, silent: window.__silent, tabs: [{ id: 11, title: "A tab", url: "https://a.example/", wake: window.__wake[11] }, { id: 12, title: "B tab", url: "https://b.example/", wake: window.__wake[12] }], wakeBrowser: true, label: "x" };
+        return { state: "connected" };
+      };` }, sessionId);
+    await cdp("Page.navigate", { url: `chrome-extension://${EXT}/popup.html` }, sessionId);
+    await sleep(1200);
+    const pe = async (expression) => (await cdp("Runtime.evaluate", { expression, awaitPromise: true, returnByValue: true }, sessionId)).result?.value;
+    const bells = async () => pe(`[...document.querySelectorAll("#shared .wk")].map((b) => b.textContent)`);
+    ok(JSON.stringify(await bells()) === JSON.stringify(["🔔", "🔕"]), "each shared tab has a bell left of its ✕: 🔔 where waking is allowed, 🔕 where it is not", await bells());
+    ok(await pe(`[...document.querySelectorAll("#shared li")].every((li) => li.querySelector(".wk")?.nextElementSibling?.classList.contains("x"))`) === true, "...and the bell sits right before the ✕");
+    if (process.env.E2E_SHOT_DIR) { // optional: look at the list (set E2E_SHOT_DIR to a folder)
+      await cdp("Emulation.setDeviceMetricsOverride", { width: 340, height: 420, deviceScaleFactor: 2, mobile: false }, sessionId);
+      await pe(`document.getElementById("silent").click(); 1`); await sleep(300);
+      writeFileSync(join(process.env.E2E_SHOT_DIR, "popup-silent-on.png"), Buffer.from((await cdp("Page.captureScreenshot", { format: "png" }, sessionId)).data, "base64"));
+      await pe(`document.getElementById("silent").click(); 1`); await sleep(300);
+      writeFileSync(join(process.env.E2E_SHOT_DIR, "popup-silent-off.png"), Buffer.from((await cdp("Page.captureScreenshot", { format: "png" }, sessionId)).data, "base64"));
+      await pe(`window.__sent.length = 0; 1`);
+    }
+    await pe(`document.querySelectorAll("#shared .wk")[1].click(); 1`); await sleep(250);
+    const setWake = (await pe(`window.__sent`)).find((m) => m.cmd === "sharing.setWake");
+    ok(setWake && setWake.tabId === 12 && setWake.on === true, "clicking a 🔕 asks the background to allow waking that tab", setWake);
+    ok(JSON.stringify(await bells()) === JSON.stringify(["🔔", "🔔"]), "...and the list is redrawn from the answer");
+    ok(await pe(`document.getElementById("silent").getAttribute("aria-pressed")`) === "false" && await pe(`document.getElementById("silentIc").textContent`) === "🔔", "the Silent button starts off");
+    await pe(`document.getElementById("silent").click(); 1`); await sleep(300);
+    const setSilent = (await pe(`window.__sent`)).find((m) => m.cmd === "sharing.setSilent");
+    ok(setSilent && setSilent.on === true, "pressing it asks the background for Silent mode in every browser", setSilent);
+    ok(await pe(`document.getElementById("silent").classList.contains("on")`) === true && await pe(`document.getElementById("silentIc").textContent`) === "🔕" && await pe(`document.getElementById("silentTxt").hidden`) === false, "...and it shows Silent mode as ON");
+    ok(await pe(`[...document.querySelectorAll("#shared li")].every((li) => li.classList.contains("silenced"))`) === true, "...and the bells are dimmed (their choices are kept)");
+    await pe(`document.getElementById("silent").click(); 1`); await sleep(300);
+    ok(await pe(`document.getElementById("silent").classList.contains("on")`) === false, "pressing it again turns Silent mode off");
+    await cdp("Target.closeTarget", { targetId });
+  }
+
+  // ======================================================================================================
   console.log("— restoring shares after an extension Reload (real storage and real tab ids)");
   // chrome.runtime.reload() can't be driven here: an extension installed through CDP isn't persisted
   // in the profile, so Chrome doesn't bring it back. A real Reload wipes storage.session and fires

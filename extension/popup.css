@@ -138,6 +138,15 @@ code { padding: 5px 8px; border: 1px solid var(--border); border-radius: 6px; fo
 .linkbtn:hover { color: var(--danger); background: color-mix(in srgb, var(--danger) 10%, transparent); }
 .linkbtn.warn { color: var(--danger); }
 .linkbtn-ic { font-size: 13px; }
+.silent-btn { display: inline-flex; align-items: center; gap: 4px; border: 1px solid transparent; background: transparent; color: var(--muted); cursor: pointer; font: inherit; font-size: 13px; line-height: 1; padding: 2px 5px; border-radius: 999px; }
+.silent-btn:hover { background: var(--border); }
+.silent-btn.on { background: #b45309; color: #fff; border-color: rgba(255, 255, 255, .4); font-size: 10px; font-weight: 700; letter-spacing: .3px; }
+.silent-btn.on:hover { background: #92400e; }
+.silent-btn.warn { outline: 2px solid var(--danger); outline-offset: 1px; }
+.wk { border: 0; background: transparent; cursor: pointer; font-size: 12px; line-height: 1; padding: 2px 3px; border-radius: 5px; }
+.wk:hover { background: var(--border); }
+.wk.off { opacity: .55; }
+.shared li.silenced .wk { opacity: .35; }
 .x { border: 0; background: transparent; color: var(--muted); cursor: pointer; font-size: 12px; padding: 2px 4px; }
 .x:hover { color: var(--danger); }
 

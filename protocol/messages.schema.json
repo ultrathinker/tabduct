@@ -17,11 +17,12 @@
     "notifications": ["notice"]
   },
   "events": ["permission_revoked", "permission_paused", "tab_removed"],
-  "internalInvokes": ["_td/snapshot", "_td/unshare", "_td/set_tier", "_td/revoke_all"],
+  "internalInvokes": ["_td/snapshot", "_td/unshare", "_td/set_tier", "_td/revoke_all", "_td/set_wake", "_td/set_silent"],
   "errorCodes": [
     "UNKNOWN_TOOL", "TAB_NOT_FOUND", "TIMEOUT", "CSP_BLOCKED", "SCRIPT_ERROR",
     "FRAME_TOO_LARGE", "VERSION_MISMATCH", "INVALID_ARGS", "INTERNAL",
     "NOT_SHARED", "ORIGIN_DRIFT", "ORIGIN_DENIED", "CAP_NOT_GRANTED",
+    "WAKE_NOT_ALLOWED", "TAB_FROZEN",
     "CDP_NOT_PERMITTED", "EXTENSION_OUTDATED",
     "AMBIGUOUS_INSTANCE", "INSTANCE_GONE"
   ]

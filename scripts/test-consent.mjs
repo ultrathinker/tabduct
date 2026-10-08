@@ -288,5 +288,17 @@ eq(originBlocked({ originMode: "block", denyOrigins: [normalizeDenyRule("*.\u043
   eq(code(evaluate({ ...st, lockToDomain: false }, { tool: "navigate", tabId: 5, host: null, destHost: "example.com", now: 2 })), "ALLOW", "lock off: a blank tab navigates freely");
 }
 
+// who may bring the window forward: Silent mode > the tab's own switch > the default (live)
+{
+  const { wakeAllowed, tabWake } = await import("../extension/consent.js");
+  const base = { tier: "tabs", wakeBrowser: true, silent: false, allow: { 5: { host: "a.com" }, 6: { host: "b.com", wake: false }, 7: { host: "c.com", wake: true } } };
+  eq([wakeAllowed(base, 5), wakeAllowed(base, 6), wakeAllowed(base, 7)], [true, false, true], "a tab follows the default until its own switch is flipped; flipped switches win");
+  eq([wakeAllowed({ ...base, wakeBrowser: false }, 5), wakeAllowed({ ...base, wakeBrowser: false }, 7)], [false, true], "the default is live for tabs without their own setting; a tab switched ON stays on");
+  eq([wakeAllowed({ ...base, silent: true }, 5), wakeAllowed({ ...base, silent: true }, 7)], [false, false], "Silent mode beats every tab, even one switched on");
+  eq([tabWake({ ...base, silent: true }, 7), tabWake({ ...base, silent: true }, 6)], [true, false], "...but the tab's own switch (what the popup shows) is kept while Silent mode is on");
+  eq([wakeAllowed({ ...base, tier: "all", allow: {} }, 5), wakeAllowed({ ...base, tier: "all", allow: {}, wakeBrowser: false }, 5)], [true, false], "the 'Everything' tier has no per-tab grants: the default decides");
+  eq(wakeAllowed({ tier: "tabs", allow: {} }, 9), true, "a state without the setting counts as the default (on)");
+}
+
 console.log(fails ? `\nCONSENT TESTS FAILED (${fails})` : "\nCONSENT TESTS PASSED");
 process.exit(fails ? 1 : 0);

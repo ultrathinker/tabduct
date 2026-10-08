@@ -226,7 +226,7 @@ async function gate(tool, args) {
   const DEST_DENIED = { allow: false, code: "ORIGIN_DENIED", message: "destination not allowed by consent policy" };
 
   if (CONSENT.CREATE.has(tool)) {
-    const d = { ...CONSENT.evaluate(state, { tool }) };
+    const d = { ...CONSENT.evaluate(state, { tool }), silent: state.silent };
     return d.allow && destBlocked ? DEST_DENIED : d;
   }
 
@@ -254,7 +254,13 @@ async function gate(tool, args) {
   // lock-to-domain is on and this is a per-tab share (null = a blank page). Undefined = not
   // pinned (lock off, or the "Everything" tier): the page tools then only apply the origin filter.
   const pin = state.lockToDomain && state.tier === "tabs" ? host : undefined;
-  const out = { ...d, tabId, host, pin, wake: state.wakeBrowser !== false, thaw: state.allowCdp === true };
+  // May the agent bring the window forward for this tab? (the tab's own setting, the default for tabs without one, and
+  // Silent mode over all of it.) Explicit requests to take the focus are held to the same rule as the automatic wake.
+  const wakeOk = CONSENT.wakeAllowed(state, tabId);
+  if (d.allow && !wakeOk && (tool === "activate_tab" || (tool === "screenshot" && args?.activate === true && !tab.active))) {
+    return { allow: false, tabId, code: "WAKE_NOT_ALLOWED", message: `bringing this tab to the front is turned off (${state.silent ? "Silent mode is on" : "the user disabled waking for this tab"} in the Tabduct popup): work with the tab where it is, or ask the user` };
+  }
+  const out = { ...d, tabId, host, pin, wake: wakeOk, thaw: state.allowCdp === true };
   if (tool === "execute_script" && d.allow) {
     const cd = CONSENT.cdpDecision(state, { engine: args?.engine });
     if (!cd.permitted) return { allow: false, code: cd.code, message: "CDP eval is not enabled (enable 'Allow CDP eval' in the popup, or switch engine to auto/scripting)" };
@@ -292,7 +298,7 @@ async function handleInvoke(msg) {
     if (CONSENT.ENUMERATE.has(tool)) {
       const state = await CONSENT.getState();
       const { label } = await getIdentity(); // surface the human label as a field, so the agent names this browser even in direct (non-hub) mode
-      const withLabel = (t) => ({ ...tabInfo(t), instanceLabel: label });
+      const withLabel = (t) => ({ ...tabInfo(t), ...(CONSENT.wakeAllowed(state, t.id) ? {} : { wakeAllowed: false }), instanceLabel: label });
       const q = (tool === "list_tabs" && args?.currentWindowOnly) ? { lastFocusedWindow: true } : {};
       const all = await chrome.tabs.query(q);
       const visible = CONSENT.visibleTabIds(state, all, Date.now());
@@ -318,7 +324,10 @@ async function handleInvoke(msg) {
     if (!decision.allow) { reply(id, false, { code: decision.code, message: decision.message }); flashDenied(decision.tabId); return; }
 
     // Reuse the exact tab the gate authorized (prevents active-tab TOCTOU).
-    const callArgs = decision.tabId == null ? args : { ...args, tabId: decision.tabId };
+    let callArgs = decision.tabId == null ? args : { ...args, tabId: decision.tabId };
+    // Silent mode: a new ACTIVE tab takes the window's focus, so the tab opens in the background instead.
+    const silentOpen = tool === "open_tab" && decision.silent === true && callArgs.active !== false;
+    if (silentOpen) callArgs = { ...callArgs, active: false };
     // The pin (see gate) rides along to EVERY tool, not a hand-kept list: a tool someone adds
     // later can't silently lose lock-to-domain by being left out. Handlers that act inside a
     // page probe the document and judge it against it (handlers/index.js, pinFrame). `_pin` is
@@ -334,10 +343,17 @@ async function handleInvoke(msg) {
     // A frozen page answers nothing: thaw it first, silently (no window involved). Only after the gate said yes.
     // The debugger stays on the thawed tab until the call is over (released in `finally`): a page the debugger lets go of freezes again.
     const t0 = Date.now();
-    const thaw = decision.thaw && QUIET_TOOLS.has(tool) && decision.tabId != null ? await thawIfFrozen(decision.tabId) : null;
-    // A hidden window/tab (minimized, covered, background) is brought forward for the call when the
-    // user left "Wake the browser" on and the caller did not ask for quiet; wake.js puts it back afterwards.
-    const woken = decision.wake && !quiet && WAKE_TOOLS.has(tool) && decision.tabId != null ? await wakeTab(decision.tabId) : null;
+    const inPage = QUIET_TOOLS.has(tool) && decision.tabId != null;
+    const thaw = decision.thaw && inPage ? await thawIfFrozen(decision.tabId) : null;
+    // Still frozen after the silent thaw (or it was not allowed)? A frozen page answers nothing. If nothing may bring
+    // the window forward (a quiet call, waking turned off for the tab, Silent mode), say so at once instead of
+    // waiting out the deadline; otherwise the window is brought forward below and Chrome thaws the page itself.
+    const frozen = inPage && thaw !== "thawed" && thaw !== "not-frozen" && await isFrozenTab(decision.tabId);
+    const mayRaise = decision.wake === true && !quiet && decision.tabId != null;
+    if (frozen && !mayRaise) { reply(id, false, { code: "TAB_FROZEN", message: frozenMessage({ quiet, wakeOk: decision.wake === true, thawAllowed: decision.thaw === true, thaw, trace: thawTraceOf(decision.tabId) }) }); releaseThaw(decision.tabId); return; }
+    // A hidden window/tab (minimized, covered, background) is brought forward for the call when the tab allows it
+    // and the caller did not ask for quiet; wake.js puts it back afterwards. A frozen page is always brought forward.
+    const woken = mayRaise && (WAKE_TOOLS.has(tool) || frozen) ? await wakeTab(decision.tabId, { force: frozen }) : null;
     let result;
     try { result = await withCallDeadline(tool, callArgs, handler(callArgs), Date.now() - t0); }
     catch (e) {
@@ -345,7 +361,8 @@ async function handleInvoke(msg) {
       // Bring the window forward and leave it there so the user can see and answer it.
       if (e?.stuck) e.message += await freezeNote(decision.tabId, thaw, decision.thaw);
       if (e?.stuck && quiet) e.message += " (quiet: the window was not raised)";
-      else if (e?.stuck && decision.wake && decision.tabId != null) { try { releaseTab(await wakeTab(decision.tabId, { keep: true })); } catch {} }
+      else if (e?.stuck && !decision.wake) e.message += " (the window was not raised: waking is turned off for this tab, or Silent mode is on)";
+      else if (e?.stuck && decision.tabId != null) { try { releaseTab(await wakeTab(decision.tabId, { keep: true })); } catch {} }
       throw e;
     }
     finally { releaseTab(woken); if (decision.tabId != null) releaseThaw(decision.tabId); }
@@ -356,10 +373,20 @@ async function handleInvoke(msg) {
       if (noAutoShareOpened === false) await CONSENT.autoShareCreated(result);
     }
     scheduleBadges();
-    reply(id, true, result);
+    reply(id, true, silentOpen && result && typeof result === "object" ? { ...result, note: "Silent mode is on: the tab was opened in the background" } : result);
   } catch (e) {
     reply(id, false, { code: e?.code || "SCRIPT_ERROR", message: e?.message ?? String(e) });
   }
+}
+
+async function isFrozenTab(tabId) { try { return (await chrome.tabs.get(tabId)).frozen === true; } catch { return false; } }
+
+// TAB_FROZEN: the page is frozen by Chrome, could not be thawed silently, and nothing may bring the window forward.
+function frozenMessage({ quiet, wakeOk, thawAllowed, thaw, trace }) {
+  const tried = thawAllowed ? `The silent thaw ended: ${thaw ?? "not tried"}${trace ? ` (${trace})` : ""}.` : "A silent thaw needs 'Allow CDP eval' in the Tabduct popup.";
+  const next = wakeOk && quiet ? "Repeat the call without quiet:true to wake it (the browser window is brought forward), or leave it."
+    : "The user has turned waking off for this tab (or Silent mode is on): ask them to open the tab or to allow waking in the Tabduct popup.";
+  return `this tab is frozen by Chrome (hidden for a long time) and does not answer. ${tried} ${next}`.trim();
 }
 
 // What a hung call can tell its caller about freezing: Chrome freezes a long-hidden page, and a frozen page answers nothing.
@@ -381,11 +408,27 @@ async function handleControlInvoke(id, tool, args) {
       const s = await sharingStatus();
       // In "all" tier every tab is implicitly shared; send no per-tab list (the popup
       // shows a single "Sharing all tabs" row from `tier`), just the count.
-      reply(id, true, { tier: s.tier, sharedCount: s.sharedCount, tabs: s.tier === "all" ? [] : s.tabs, activeTabId: s.activeTabId, label: s.label });
+      reply(id, true, { tier: s.tier, sharedCount: s.sharedCount, tabs: s.tier === "all" ? [] : s.tabs, activeTabId: s.activeTabId, label: s.label, silent: s.silent });
       return;
     }
     if (tool === "_td/unshare") {
       if (typeof args?.tabId === "number") { await CONSENT.unshareTab(args.tabId); scheduleBadges(); chrome.runtime.sendMessage({ evt: "sharing" }).catch(() => {}); }
+      reply(id, true, { ok: true });
+      return;
+    }
+    // The popup of ANOTHER browser flips a tab's "may be woken" switch or Silent mode here. Unlike the ops above these can
+    // also switch things ON: they only decide whether an agent may raise the window, never what it may read or do.
+    if (tool === "_td/set_wake") {
+      if (typeof args?.tabId !== "number" || typeof args?.on !== "boolean") { reply(id, false, { code: "INVALID_ARGS", message: "_td/set_wake needs a numeric tabId and a boolean on" }); return; }
+      await CONSENT.setTabWake(args.tabId, args.on);
+      chrome.runtime.sendMessage({ evt: "sharing" }).catch(() => {});
+      reply(id, true, { ok: true });
+      return;
+    }
+    if (tool === "_td/set_silent") {
+      if (typeof args?.on !== "boolean") { reply(id, false, { code: "INVALID_ARGS", message: "_td/set_silent needs a boolean on" }); return; }
+      await CONSENT.setShareOptions({ silentMode: args.on });
+      scheduleBadges(); chrome.runtime.sendMessage({ evt: "sharing" }).catch(() => {});
       reply(id, true, { ok: true });
       return;
     }
@@ -427,6 +470,7 @@ function tabInfo(t) { return { id: t.id, title: t.title, url: t.url, active: t.a
 
 let badgeTimer = null;
 let lastBadge = new Map(); // tabId -> shared? (diff to avoid redundant setBadgeText)
+let lastSilent = null; // Silent mode as last painted on the toolbar icon
 function scheduleBadges() { clearTimeout(badgeTimer); badgeTimer = setTimeout(refreshBadges, 150); }
 
 // Right-click-on-a-tab menu item. Shown ONLY when connected AND not in
@@ -515,6 +559,15 @@ async function refreshBadges() {
       if (lastBadge.get(t.id) !== kind) await setTabIcon(t.id, kind);
     }
     lastBadge = next;
+    // Silent mode: a reminder on the toolbar icon (the switch itself is in the popup).
+    if (lastSilent !== st.silent) {
+      lastSilent = st.silent;
+      try {
+        await chrome.action.setBadgeText({ text: st.silent ? "mute" : "" });
+        if (st.silent) { await chrome.action.setBadgeBackgroundColor({ color: "#6b7280" }); chrome.action.setBadgeTextColor?.({ color: "#ffffff" }); }
+        await chrome.action.setTitle({ title: st.silent ? "Tabduct - Silent mode is on: agents will not bring any window forward" : "Tabduct" });
+      } catch {}
+    }
     applyTabGroup(sharedIds, all).catch(() => {});
     reconcileCdpConsole(sharedIds).catch(() => {}); // best-effort; never blocks badges
   } catch {}
@@ -646,7 +699,7 @@ function flashDenied(tabId) {
 async function sharingStatus() {
   const st = await CONSENT.getState();
   const all = await chrome.tabs.query({});
-  const shared = CONSENT.visibleTabIds(st, all, Date.now()).map((t) => ({ id: t.id, title: t.title, url: t.url, favIconUrl: t.favIconUrl }));
+  const shared = CONSENT.visibleTabIds(st, all, Date.now()).map((t) => ({ id: t.id, title: t.title, url: t.url, favIconUrl: t.favIconUrl, wake: CONSENT.tabWake(st, t.id) }));
   // Grants that are alive but paused because the tab left its shared origin (lock-to-domain):
   // shown greyed in the popup so a dormant grant is never invisible.
   const paused = CONSENT.pausedTabIds(st, all, Date.now()).map((t) => ({ id: t.id, title: t.title, url: t.url, favIconUrl: t.favIconUrl, sharedHost: st.allow[String(t.id)]?.host ?? null }));
@@ -654,7 +707,7 @@ async function sharingStatus() {
   const { useTabGroup, noAutoShareOpened, unshareOnGroupLeave } = await chrome.storage.local.get(["useTabGroup", "noAutoShareOpened", "unshareOnGroupLeave"]);
   const { label } = await getIdentity(); // ensures + returns the auto default label
   const allShared = st.tier === "all" ? all.filter((t) => !CONSENT.originBlocked(st, CONSENT.hostOf(t.url))).length : shared.length;
-  return { tier: st.tier, denyOrigins: st.denyOrigins, originMode: st.originMode, sharedCount: allShared, tabs: shared, paused, activeTabId: active?.id, label, useTabGroup: useTabGroup !== false, unshareOnGroupLeave: unshareOnGroupLeave === true, readOnly: st.readOnly, ttlMs: st.ttlMs, lockToDomain: st.lockToDomain, noAutoShareOpened: noAutoShareOpened !== false, allowCdp: st.allowCdp, cdpAlways: st.cdpAlways, cdpConsole: st.cdpConsole, wakeBrowser: st.wakeBrowser, extensionVersion: EXT_VERSION };
+  return { tier: st.tier, denyOrigins: st.denyOrigins, originMode: st.originMode, sharedCount: allShared, tabs: shared, paused, activeTabId: active?.id, label, useTabGroup: useTabGroup !== false, unshareOnGroupLeave: unshareOnGroupLeave === true, readOnly: st.readOnly, ttlMs: st.ttlMs, lockToDomain: st.lockToDomain, noAutoShareOpened: noAutoShareOpened !== false, allowCdp: st.allowCdp, cdpAlways: st.cdpAlways, cdpConsole: st.cdpConsole, wakeBrowser: st.wakeBrowser, silent: st.silent, extensionVersion: EXT_VERSION };
 }
 
 // Cross-instance view for the popup: ask our host to fetch the hub's /control
@@ -667,6 +720,10 @@ async function peersList() {
 }
 async function peersUnshare(instanceId, tabId) {
   try { await request("peerUnshare", { instanceId, tabId }, 8000); } catch {}
+  return await peersList();
+}
+async function peersSetWake(instanceId, tabId, on) {
+  try { await request("peerSetWake", { instanceId, tabId, on }, 8000); } catch {}
   return await peersList();
 }
 async function peersStopAll(instanceId) {
@@ -850,7 +907,7 @@ chrome.runtime.onMessage.addListener((req, _sender, sendResponse) => {
       case "sharing.unshare": await CONSENT.unshareTab(req.tabId); scheduleBadges(); sendResponse(await sharingStatus()); break;
       case "sharing.tier": await CONSENT.setTier(req.tier); if (req.tier !== "tabs") await cleanupTabGroups(); updateContextMenu(); scheduleBadges(); sendResponse(await sharingStatus()); break;
       case "sharing.setOptions": {
-        await CONSENT.setShareOptions({ readOnly: req.readOnly, ttlMs: req.ttlMs, lockToDomain: req.lockToDomain, noAutoShareOpened: req.noAutoShareOpened, allowCdp: req.allowCdp, cdpAlways: req.cdpAlways, cdpConsole: req.cdpConsole, unshareOnGroupLeave: req.unshareOnGroupLeave, wakeBrowser: req.wakeBrowser });
+        await CONSENT.setShareOptions({ readOnly: req.readOnly, ttlMs: req.ttlMs, lockToDomain: req.lockToDomain, noAutoShareOpened: req.noAutoShareOpened, allowCdp: req.allowCdp, cdpAlways: req.cdpAlways, cdpConsole: req.cdpConsole, unshareOnGroupLeave: req.unshareOnGroupLeave, wakeBrowser: req.wakeBrowser, silentMode: req.silentMode });
         if (req.allowCdp !== undefined || req.cdpConsole !== undefined) cdpUserCancelled.clear(); // a deliberate settings change re-arms capture on tabs whose banner the user dismissed
         // allowCdp OFF = CDP fully off → release every held session immediately.
         // Other CDP-flag changes (cdpAlways/cdpConsole on OR off) are reconciled by
@@ -873,6 +930,18 @@ chrome.runtime.onMessage.addListener((req, _sender, sendResponse) => {
           scheduleBadges();
         }
         sendResponse(await sharingStatus());
+        break;
+      }
+      case "sharing.setWake": await CONSENT.setTabWake(req.tabId, req.on === true); sendResponse(await sharingStatus()); break;
+      case "sharing.setSilent": {
+        // Silent mode is for every browser behind the hub: set it here, then ask the others. A browser that could not be
+        // reached is reported, so the popup does not claim a silence that is not there.
+        await CONSENT.setShareOptions({ silentMode: req.on === true });
+        scheduleBadges();
+        let peersReachable = true, peersError = null;
+        try { await request("peerSetSilent", { on: req.on === true }, 8000); } catch (e) { peersReachable = false; peersError = e?.message ?? String(e); }
+        chrome.runtime.sendMessage({ evt: "sharing" }).catch(() => {});
+        sendResponse({ ...(await sharingStatus()), peersReachable, peersError });
         break;
       }
       case "sharing.setOriginMode": await chrome.storage.local.set({ originMode: req.mode === "allow" ? "allow" : "block" }); scheduleBadges(); sendResponse(await sharingStatus()); break;
@@ -907,6 +976,7 @@ chrome.runtime.onMessage.addListener((req, _sender, sendResponse) => {
       // Cross-instance list (other browsers behind the same hub) + remote unshare.
       case "peers.list": sendResponse(await peersList()); break;
       case "peers.unshare": sendResponse(await peersUnshare(req.instanceId, req.tabId)); break;
+      case "peers.setWake": sendResponse(await peersSetWake(req.instanceId, req.tabId, req.on === true)); break;
       case "peers.stopAll": sendResponse(await peersStopAll(req.instanceId)); break;
       case "hub.restart": {
         try { const r = await request("hubRestart", {}, 25000); sendResponse({ ok: true, hubUp: r?.hubUp !== false }); }

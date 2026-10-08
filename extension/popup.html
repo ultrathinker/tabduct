@@ -13,6 +13,7 @@
       <div class="hdr-right">
         <span id="fullChip" class="cdp-chip cdp-chip-dev" hidden title="FULL ACCESS preset is active: the agent may navigate shared tabs anywhere, act (not just read), never auto-expires, and may use trusted (debugger-level) input. The blocked-origins list still applies to everything. Open Settings and press 'Safe defaults' to go back.">FULL</span>
         <span id="cdpChip" class="cdp-chip" hidden title="CDP mode is ENABLED (the 'Allow CDP eval' toggle is on) — this is a capability indicator, not live usage. Nothing is attached until an eval actually needs CDP; Chrome's yellow 'this tab is being debugged' banner is the real-time signal that CDP is running right now. Turn the toggle off to hide this chip.">CDP</span>
+        <button id="silent" class="silent-btn" title="Silent mode is off: an agent may bring a browser window forward to wake a tab (where the tab allows it). Click to turn Silent mode on - no agent then raises any window or takes the focus, in any browser, until you turn it off." aria-pressed="false" aria-label="Silent mode"><span id="silentIc">🔔</span><span id="silentTxt" hidden>Silent</span></button>
         <span id="dot" class="dot" data-state="disconnected" title="stopped" role="button" tabindex="0"></span>
         <button id="gear" class="icon-btn" title="Settings" aria-label="Settings">⚙</button>
       </div>
@@ -151,8 +152,8 @@
             </label>
             <label class="tg">
               <input type="checkbox" id="wakeBrowser" checked />
-              Wake the browser when a shared tab is asleep
-              <span class="help" title="On by default. A minimized window, a window covered by others or a background tab does not draw, shows no focus and cannot be screenshotted, so screenshots, typing, clicks, key presses and page reads come back stale or ignored. With this on, the extension brings that window forward for the call (a minimized one is restored, then minimized again a few seconds after the last call, and Windows gives the focus back to the app you were in). A window you are working in is never touched. Turn off if you do not want the browser to pop up; the agent is then told the tab is in the background. A tab Chrome unloaded to save memory is never woken (that would reload the page).">?</span>
+              Let the agent wake a tab by bringing the browser forward (default for newly shared tabs)
+              <span class="help" title="On by default, and it is only the starting value: each shared tab has its own bell (🔔 / 🔕) next to its ✕ in the main list, and the Silent button in the header switches waking off for every tab at once. A minimized window, a window covered by others, a background tab or a tab Chrome has frozen does not draw or answer, so screenshots, typing, clicks, key presses and page reads come back stale, ignored or never come back. Where waking is allowed the extension brings that window forward for the call (a minimized one is restored, then minimized again a few seconds after the last call, and Windows gives the focus back to the app you were in). A window you are working in is never touched. An agent that does not want to disturb you can ask for a quiet call; it then never raises anything. A tab Chrome unloaded to save memory is never woken (that would reload the page).">?</span>
             </label>
           </section>
 

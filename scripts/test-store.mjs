@@ -143,5 +143,28 @@ await C.shareTab(1);
 await C.revokeAll();
 eq(chrome.storage.local.d.allowMirror.allow, {}, "revokeAll empties the mirror too");
 
+// ---- the per-tab "may be woken" switch and Silent mode --------------------------------------
+resetChrome([{ id: 1, url: "https://a.com/" }, { id: 2, url: "https://b.com/" }]);
+await C.shareTab(1); await C.shareTab(2);
+let ws = await C.getState();
+eq([ws.silent, ws.wakeBrowser, ws.allow["1"].wake], [false, true, undefined], "a new share has no switch of its own: it follows the default (on), Silent mode is off");
+eq(await C.setTabWake(1, false), true, "setTabWake flips one tab");
+ws = await C.getState();
+eq([C.wakeAllowed(ws, 1), C.wakeAllowed(ws, 2)], [false, true], "...only that tab");
+await C.setShareOptions({ wakeBrowser: false });
+ws = await C.getState();
+eq([C.wakeAllowed(ws, 1), C.wakeAllowed(ws, 2)], [false, false], "the default off: tabs without a switch of their own follow it");
+await C.setTabWake(2, true);
+eq([C.wakeAllowed(await C.getState(), 2)], [true], "...a tab switched on keeps it whatever the default is");
+await C.setShareOptions({ wakeBrowser: true, silentMode: true });
+ws = await C.getState();
+eq([ws.silent, C.wakeAllowed(ws, 2), C.tabWake(ws, 2)], [true, false, true], "Silent mode: nothing is woken, the tab's own switch is kept");
+eq(await C.setTabWake(99, true), false, "a tab that is not shared has no switch");
+eq(chrome.storage.local.d.allowMirror.allow["1"].wake, false, "the switch is mirrored, so it survives an extension Reload");
+await C.setShareOptions({ silentMode: false });
+eq((await C.getState()).silent, false, "Silent mode off again");
+await C.setTier("all");
+eq([C.wakeAllowed(await C.getState(), 1)], [true], "in the 'Everything' tier the default decides again (no per-tab grants)");
+
 console.log(fails ? `\nSTORE TESTS FAILED (${fails})` : "\nSTORE TESTS PASSED");
 process.exit(fails ? 1 : 0);

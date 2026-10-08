@@ -59,7 +59,7 @@
 2. Host's MCP handler generates an `id`, sends over stdio:
    `{ type:"invoke", id, payload:{ tool:"execute_script", args } }`.
 3. Extension `background.js` receives it, checks consent (`gate`), wakes the window if
-   it is asleep and the user left "Wake the browser" on, then runs
+   it is asleep and the user allows waking that tab, then runs
    `chrome.scripting.executeScript` in the target tab, captures the result.
 4. Extension replies: `{ replyTo:id, ok:true, result }`.
 5. Host resolves the pending promise, returns `result` as the MCP tool result.
@@ -106,9 +106,9 @@ The extension background is an MV3 service worker and can be evicted.
 A minimized window, a window covered by others or a background tab is "hidden" to
 Chrome: the page stops drawing, reports no focus and cannot be screenshotted (DOM reads
 and input still work, but the page is stale). Chrome offers no way to render a hidden
-page, so with *Wake the browser* on (default) `extension/wake.js` brings the window
+page, where waking is allowed (below) `extension/wake.js` brings the window
 forward for `screenshot`, `type`, `click`, `press_key`, `get_page_content` and
-`get_dom_snapshot`, and puts it back about 2.5 s after the last call (a minimized window
+`get_dom_snapshot` (and for any page tool when the page is frozen), and puts it back about 2.5 s after the last call (a minimized window
 is minimized again; a covered one stays on top, an extension cannot lower a window). A
 window the user is working in is never touched, and a tab Chrome unloaded to save memory
 is never woken (that would reload the page). Shared tabs are marked non-discardable
@@ -124,8 +124,24 @@ The debugger stays attached to the thawed tab for the call and a short linger af
 `tab.frozen` stays false for a moment (`watchThaw`), and keeps a trace of what each did. A hung call's
 `TIMEOUT` reports the freeze, the thaw outcome and that trace (`freezeNote`); the thaw's time counts
 against the call's budget.
+Chrome 154 does not let the debugger thaw every kind of freeze (one Chrome applied by itself was not
+thawed; one applied from `chrome://discards` was), so a frozen page that stays frozen is
+brought forward like a hidden one (as a click on its tab would): `wake(tabId, { force: true })` raises the window without asking the page
+(it cannot answer) and waits for `tab.frozen` to go. If nothing may raise the window, the call fails at once
+with `TAB_FROZEN` (the thaw trace and what to do) instead of waiting out the deadline.
 And a call may carry `quiet:true` (feature `quiet`): the window is then never raised, not even
 after a timeout, and a call that cannot be answered without it fails with an explanation.
+
+**Who may wake a tab** (`consent.wakeAllowed`, resolved in the gate and handed on as `decision.wake`):
+Silent mode (`silentMode` in storage.local, switched from the popup's header button, fanned out to every
+browser through the hub's `setSilent` op) beats everything; then the tab's own switch (`allow[tabId].wake`,
+written only when the user flips it: `setTabWake`, popup bell, or `_td/set_wake` from another browser's
+popup); every other tab and the "Everything" tier follow the default (`wakeBrowser`, on, live). The same rule
+covers the explicit requests to take the focus: `activate_tab` and `screenshot` with `activate:true` are
+refused with `WAKE_NOT_ALLOWED`, and in Silent mode `open_tab` opens in the background. `list_tabs` reports
+`wakeAllowed:false` and `frozen:true`. Unlike the other `_td/*` control ops (which only ever reduce what is
+shared), `_td/set_wake` and `_td/set_silent` can switch things on, because they decide only whether a window
+may be raised, never what an agent may read or do.
 A call the page does not answer within 18 s ends with `TIMEOUT` (typically a "Leave site?"
 dialog); unless quiet, the window is raised and left up so the user can answer it.
 
