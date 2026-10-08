@@ -4,6 +4,16 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims for
 [Semantic Versioning](https://semver.org/) once it reaches 1.0.
 
+## [1.7.1] — 2026-10-08
+
+### Fixed
+- **A tab frozen by Chrome itself was not rescued by the silent thaw of 1.7.0.** A scheduled agent's `quiet:true` call to such a tab still ended with
+  `TIMEOUT` (reproduced). The thaw worked on a tab frozen by hand, but the debugger was detached right after it. Chrome does not freeze a page a
+  DevTools session is inspecting, so the likely cause is that the page froze again once the session ended. The debugger now stays attached to the thawed
+  tab for the whole call and 20 s after it (and is dropped at once on revoke, tab close or Stop).
+- A call that still hangs now says why. The `TIMEOUT` text names a frozen tab and what the silent thaw did (`thawed`, `still-frozen`, `failed`), or that
+  it needs *Allow CDP eval*; the hint also lists a frozen tab among the reasons a page does not answer. `list_tabs` shows `frozen: true` for a frozen tab.
+
 ## [1.7.0] — 2026-10-08
 
 ### Added

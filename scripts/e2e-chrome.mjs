@@ -388,8 +388,11 @@ try {
     ok(hung === "HANGS", "...and a scripting call to it hangs (the failure the agents saw)", hung);
     const th = await sw(`return await H.thawIfFrozen(${ft});`);
     ok(th === "thawed", "thawIfFrozen thaws it through the debugger", th);
+    ok(await sw(`return (await chrome.debugger.getTargets()).some((t) => t.tabId === ${ft} && t.attached);`) === true, "...and the debugger stays attached (a page it lets go of may freeze again)");
     const after = await sw(`const p = chrome.scripting.executeScript({ target: { tabId: ${ft} }, func: () => document.title }).then((r) => r[0].result); return await Promise.race([p, new Promise((r) => setTimeout(() => r("HANGS"), 4000))]);`);
     ok(after === "Shop", "...and the page answers again", after);
+    await sw(`await H.detachCdpTab(${ft}); return 1;`);
+    ok(await sw(`return (await chrome.debugger.getTargets()).some((t) => t.tabId === ${ft} && t.attached);`) === false, "a revoke / close drops the held debugger at once");
   }
 
   // ======================================================================================================

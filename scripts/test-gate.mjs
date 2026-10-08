@@ -333,7 +333,8 @@ eq(groupAction({ ...base, tier: "all", inOurGroup: true, shared: false }), null,
 
 // ---- quiet:true never raises the window; a frozen page is thawed first ------------------------------------------
 {
-  const { callDeadline } = await import("../extension/handlers/index.js");
+  const { callDeadline, thawLinger, thawWait } = await import("../extension/handlers/index.js");
+  thawLinger.ms = 40; Object.assign(thawWait, { polls: 2, pollMs: 10 });
   await C.revokeAll(); await C.setShareOptions({ lockToDomain: false, allowCdp: false });
   TABS = [{ id: 1, url: "https://claude.ai/directory/manage", active: true, windowId: 1, title: "Dir" }];
   await C.shareTab(1);
@@ -373,12 +374,28 @@ eq(groupAction({ ...base, tier: "all", inOurGroup: true, shared: false }), null,
   await C.setShareOptions({ allowCdp: true });
   TABS[0].frozen = true;
   eq(code(await call(P4, "get_page_content", { tabId: 1, quiet: true })), "ok", "a frozen tab: the read works");
-  eq(DBG, ["attach", "Page.setWebLifecycleState:active", "detach"], "...after a silent thaw through the debugger");
+  eq(DBG, ["attach", "Page.setWebLifecycleState:active"], "...after a silent thaw through the debugger, which stays attached (a page it lets go of freezes again)");
   eq(WINLOG, [], "...without touching the window");
+  await sleep(150);
+  eq(DBG, ["attach", "Page.setWebLifecycleState:active", "detach"], "...and lets go a little after the call");
   DBG.length = 0; TABS[0].frozen = true;
   await C.setShareOptions({ allowCdp: false });
   await call(P4, "get_page_content", { tabId: 1, quiet: true });
   eq(DBG.length, 0, "without the CDP opt-in nothing attaches (no silent thaw; falls back to the usual wake)");
+
+  // a call that still hangs says WHY: the tab is frozen, and what the thaw did
+  callDeadline.ms = 80;
+  const real2 = chrome.scripting.executeScript;
+  chrome.scripting.executeScript = (d) => (d.func?.name === "probeFrame" ? real2(d) : new Promise(() => {}));
+  const noCdp = await call(P4, "get_page_content", { tabId: 1, quiet: true });
+  eq([noCdp?.error?.code, /frozen this tab/.test(noCdp?.error?.message || ""), /Allow CDP eval/.test(noCdp?.error?.message || "")], ["TIMEOUT", true, true], "frozen tab, no CDP opt-in: the timeout names the freeze and the setting that would thaw it");
+  await C.setShareOptions({ allowCdp: true });
+  TABS[0].frozen = true;
+  chrome.debugger.sendCommand = async (_t, m) => { DBG.push(m); return {}; }; // the thaw does not take effect
+  const stays = await call(P4, "get_page_content", { tabId: 1, quiet: true });
+  eq([stays?.error?.code, /silent thaw ended: still-frozen/.test(stays?.error?.message || "")], ["TIMEOUT", true], "frozen tab, thaw did not take effect: the timeout reports 'still-frozen'");
+  chrome.scripting.executeScript = real2; callDeadline.ms = 18000;
+  await sleep(150);
   chrome.debugger = had.debugger; chrome.permissions.contains = had.contains; delete TABS[0].frozen;
 }
 

@@ -379,17 +379,27 @@ injected = {};
 
 // ---- a frozen page is thawed through the debugger, without touching the window ----------------------------
 {
-  const { thawIfFrozen, thawWait } = await import("../extension/handlers/index.js");
-  Object.assign(thawWait, { polls: 3, pollMs: 10 });
+  const { thawIfFrozen, releaseThaw, detachCdpTab, thawWait, thawLinger } = await import("../extension/handlers/index.js");
+  Object.assign(thawWait, { polls: 3, pollMs: 10 }); thawLinger.ms = 40;
+  const sleepMs = (ms) => new Promise((r) => setTimeout(r, ms));
   page({ 0: probe("https://a.com") }); CDP = [];
   PAGE.tabs[1] = { id: 1, url: "https://a.com/", active: true, windowId: 1, frozen: true };
   eq(await thawIfFrozen(1), "thawed", "a frozen tab is thawed");
-  eq(CDP.map((c) => c.method), ["attach", "Page.setWebLifecycleState", "detach"], "...with one debugger round trip (attach, thaw, detach)");
+  eq(CDP.map((c) => c.method), ["attach", "Page.setWebLifecycleState"], "...and the debugger STAYS attached (a page it lets go of freezes again)");
   eq(CDP.find((c) => c.method === "Page.setWebLifecycleState")?.params, { state: "active" }, "...asking for the 'active' lifecycle state");
+  releaseThaw(1);
+  await sleepMs(10);
+  eq(CDP.some((c) => c.method === "detach"), false, "when the call is over the debugger lingers a little (the next call usually follows)");
+  await sleepMs(80);
+  eq(CDP.map((c) => c.method), ["attach", "Page.setWebLifecycleState", "detach"], "...and goes after the linger");
   CDP = [];
   eq([await thawIfFrozen(1), CDP.length], ["not-frozen", 0], "a tab that is not frozen is left alone (the debugger is never attached)");
+  releaseThaw(1); // nothing held: a no-op
   PAGE.tabs[1].frozen = true; PAGE.keepFrozen = true;
   eq(await thawIfFrozen(1), "still-frozen", "a thaw that does not take effect is reported, not hidden");
+  CDP = [];
+  await detachCdpTab(1);
+  eq(CDP.map((c) => c.method), ["detach"], "...and a revoke / tab close drops the hold at once");
   PAGE.keepFrozen = false; PAGE.tabs[1].frozen = true;
   const had = chrome.permissions.contains; chrome.permissions.contains = async () => false;
   eq(await thawIfFrozen(1), "failed", "without the debugger permission the thaw is simply not possible");

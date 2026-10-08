@@ -790,7 +790,7 @@ export const evalDeadline = { ms: 17000, queueMs: 8000 }; // a script's own run 
 export const callDeadline = { ms: 18000 }; // any tool call (wait_for: its own wait plus 3 s)
 
 // What a hung call usually means. A page that is waiting for the user cannot answer anything.
-const BLOCKED_HINT = "A page that is waiting for the user cannot answer: a 'Leave site?' prompt after a reload or a navigation, an alert or a print dialog. Look at the browser window (with 'Wake the browser' on it is brought forward), answer the dialog there and retry.";
+const BLOCKED_HINT = "A page that is waiting for the user cannot answer: a 'Leave site?' prompt after a reload or a navigation, an alert or a print dialog, or a tab Chrome has frozen after a long time in the background. Look at the browser window (with 'Wake the browser' on it is brought forward), answer the dialog there and retry.";
 const stuck = (code, message) => Object.assign(err(code, message), { stuck: true }); // `stuck`: the caller of the tool may raise the window
 
 export function withCallDeadline(tool, args, work) {
@@ -884,12 +884,30 @@ async function cdpEvalNow(tabId, code, callArgs, pin, { hold } = {}) {
 // scripting call and every CDP evaluation to it hangs until it is thawed. `tab.frozen` says so, and the
 // debugger can thaw it without touching the window (Page.setWebLifecycleState "active"; verified in a real
 // Chrome, window stays minimized). Needs the debugger opt-in ("Allow CDP eval"). Returns what happened.
+//
+// The debugger stays attached after the thaw (until the call is over plus `thawLinger`): Chrome does not freeze
+// a page a DevTools session is inspecting. 1.7.0 detached right after the thaw, and a tab frozen by Chrome itself
+// (not by hand) still hung; the likely reason is that the page froze again once the session ended.
 export const thawWait = { polls: 10, pollMs: 100 }; // mutable for the tests
+export const thawLinger = { ms: 20000 }; // how long the debugger stays on a thawed tab after its last call
+const thawHold = new Map(); // tabId -> linger timer (null while a call is using the tab)
+function holdThaw(tabId) { clearTimeout(thawHold.get(tabId)); thawHold.set(tabId, null); }
+async function dropThaw(tabId) {
+  clearTimeout(thawHold.get(tabId));
+  thawHold.delete(tabId);
+  if (!cdpHeld(tabId)) { try { await chrome.debugger.detach({ tabId }); } catch {} }
+}
+// The call is over: the debugger stays a little longer (the next call usually follows), then goes.
+export function releaseThaw(tabId) {
+  if (!thawHold.has(tabId)) return;
+  clearTimeout(thawHold.get(tabId));
+  thawHold.set(tabId, setTimeout(() => { dropThaw(tabId); }, thawLinger.ms));
+}
 export async function thawIfFrozen(tabId) {
   let tab; try { tab = await chrome.tabs.get(tabId); } catch { return "no-tab"; }
   if (tab.frozen !== true) return "not-frozen";
-  try { await cdpWith(tabId, {}, (send) => send("Page.setWebLifecycleState", { state: "active" })); }
-  catch { return "failed"; }
+  try { await cdpWith(tabId, {}, async (send) => { holdThaw(tabId); await send("Page.setWebLifecycleState", { state: "active" }); }); }
+  catch { await dropThaw(tabId); return "failed"; }
   for (let i = 0; i < thawWait.polls; i++) {
     try { if ((await chrome.tabs.get(tabId)).frozen !== true) return "thawed"; } catch { return "no-tab"; }
     await new Promise((r) => setTimeout(r, thawWait.pollMs));
@@ -1152,12 +1170,13 @@ async function pressKey(args) {
 // A tab is "held" attached if EITHER cdpEval force mode (cdpAttached) OR console
 // capture (cdpConsoleTabs) still needs the debugger session. Used to gate detach
 // so one CDP user never detaches another's session out from under it.
-function cdpHeld(tabId) { return cdpAttached.has(tabId) || cdpConsoleTabs.has(tabId) || (cdpInFlight.get(tabId) || 0) > 0; }
+function cdpHeld(tabId) { return cdpAttached.has(tabId) || cdpConsoleTabs.has(tabId) || thawHold.has(tabId) || (cdpInFlight.get(tabId) || 0) > 0; }
 
 // Detach one tab + forget it (tab close, consent revoke, ORIGIN_DRIFT, onDetach).
 // Only actually detaches when no CDP user still holds the tab; always forgets it.
 export async function detachCdpTab(tabId) {
   cdpAttached.delete(tabId);
+  clearTimeout(thawHold.get(tabId)); thawHold.delete(tabId);
   cdpConsoleTabs.delete(tabId);
   cdpLogs.delete(tabId);
   cdpContexts.delete(tabId);
@@ -1177,8 +1196,10 @@ export async function reconcileCdpForce(keepIds, forceOn) {
 }
 // Detach every held tab (disconnect, allowCdp disabled). Clears BOTH hold sets.
 export async function detachAllCdp() {
-  const ids = new Set([...cdpAttached, ...cdpConsoleTabs]);
+  const ids = new Set([...cdpAttached, ...cdpConsoleTabs, ...thawHold.keys()]);
   for (const id of ids) { try { await chrome.debugger.detach({ tabId: id }); } catch {} }
+  for (const t of thawHold.values()) clearTimeout(t);
+  thawHold.clear();
   cdpAttached.clear();
   cdpConsoleTabs.clear();
   cdpLogs.clear();

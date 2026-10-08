@@ -4,7 +4,7 @@
 // invoke chokepoint with per-tab CONSENT enforcement (Feature B), shared-tab
 // badges, the share hotkey, and popup messaging. See PROTOCOL.md + consent.js.
 
-import { HANDLERS, withCallDeadline, thawIfFrozen, detachCdpTab, detachAllCdp, startCdpConsole, stopCdpConsole, stopAllCdpConsole, reconcileCdpForce, cdpConsoleTabs, cdpUserCancelled } from "./handlers/index.js";
+import { HANDLERS, withCallDeadline, thawIfFrozen, releaseThaw, detachCdpTab, detachAllCdp, startCdpConsole, stopCdpConsole, stopAllCdpConsole, reconcileCdpForce, cdpConsoleTabs, cdpUserCancelled } from "./handlers/index.js";
 import * as CONSENT from "./consent.js";
 import { GroupMask, groupAction } from "./groupsync.js";
 import { WAKE_TOOLS, QUIET_TOOLS, wake as wakeTab, release as releaseTab } from "./wake.js";
@@ -332,7 +332,8 @@ async function handleInvoke(msg) {
       if (decision._cdpAlways != null) callArgs._cdpAlways = decision._cdpAlways;
     }
     // A frozen page answers nothing: thaw it first, silently (no window involved). Only after the gate said yes.
-    if (decision.thaw && QUIET_TOOLS.has(tool) && decision.tabId != null) await thawIfFrozen(decision.tabId);
+    // The debugger stays on the thawed tab until the call is over (released in `finally`): a page the debugger lets go of freezes again.
+    const thaw = decision.thaw && QUIET_TOOLS.has(tool) && decision.tabId != null ? await thawIfFrozen(decision.tabId) : null;
     // A hidden window/tab (minimized, covered, background) is brought forward for the call when the
     // user left "Wake the browser" on and the caller did not ask for quiet; wake.js puts it back afterwards.
     const woken = decision.wake && !quiet && WAKE_TOOLS.has(tool) && decision.tabId != null ? await wakeTab(decision.tabId) : null;
@@ -341,11 +342,12 @@ async function handleInvoke(msg) {
     catch (e) {
       // The page did not answer: most likely it is waiting for the user (a "Leave site?" prompt, an alert).
       // Bring the window forward and leave it there so the user can see and answer it.
+      if (e?.stuck) e.message += await freezeNote(decision.tabId, thaw, decision.thaw);
       if (e?.stuck && quiet) e.message += " (quiet: the window was not raised)";
       else if (e?.stuck && decision.wake && decision.tabId != null) { try { releaseTab(await wakeTab(decision.tabId, { keep: true })); } catch {} }
       throw e;
     }
-    finally { releaseTab(woken); }
+    finally { releaseTab(woken); if (decision.tabId != null) releaseThaw(decision.tabId); }
     // open_tab auto-share is OPT-IN (off by default): only re-share the new tab
     // when the user explicitly disabled the "don't auto-share opened tabs" guard.
     if (tool === "open_tab" && result?.id != null) {
@@ -357,6 +359,16 @@ async function handleInvoke(msg) {
   } catch (e) {
     reply(id, false, { code: e?.code || "SCRIPT_ERROR", message: e?.message ?? String(e) });
   }
+}
+
+// What a hung call can tell its caller about freezing: Chrome freezes a long-hidden page, and a frozen page answers nothing.
+async function freezeNote(tabId, thaw, thawAllowed) {
+  let frozen = false;
+  try { frozen = tabId != null && (await chrome.tabs.get(tabId)).frozen === true; } catch {}
+  if (frozen && thaw === "not-frozen") thaw = null; // it froze again after the check
+  if (frozen) return ` Chrome has frozen this tab (hidden for a long time)${thawAllowed ? `; the silent thaw ended: ${thaw ?? "not tried"}` : "; the silent thaw needs 'Allow CDP eval' in the extension, otherwise a call without quiet raises the window to wake it"}.`;
+  if (thaw && thaw !== "not-frozen") return ` The tab had been frozen by Chrome; the silent thaw ended: ${thaw}.`;
+  return "";
 }
 
 // Cross-instance control ops (hub /control → this instance). Read-only snapshot or
@@ -406,7 +418,7 @@ async function handleControlInvoke(id, tool, args) {
   }
 }
 
-function tabInfo(t) { return { id: t.id, title: t.title, url: t.url, active: t.active, windowId: t.windowId, status: t.status }; }
+function tabInfo(t) { return { id: t.id, title: t.title, url: t.url, active: t.active, windowId: t.windowId, status: t.status, ...(t.frozen === true ? { frozen: true } : {}) }; }
 
 // ---------------------------------------------------------------------------
 // Shared-tab badges + denied flash
