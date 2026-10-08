@@ -411,8 +411,11 @@ try {
       writeFileSync(join(process.env.E2E_SHOT_DIR, "stop-dialog.png"), Buffer.from((await cdp("Page.captureScreenshot", { format: "png" }, sessionId)).data, "base64"));
     }
     ok(await pe(`["stopRestart","stopHere","stopAll","stopCancel"].every((id) => document.getElementById(id))`) === true, "...with restart / this browser / all browsers / cancel");
+    ok(await pe(`["stopRestart","stopHere","stopAll"].map((id) => { const c = getComputedStyle(document.getElementById(id)); return c.backgroundColor + "|" + c.color + "|" + c.borderTopColor; }).filter((v, i, a) => a.indexOf(v) === i).length`) === 1, "the three buttons look alike (same background, text and border: no colour pushes one forward)");
+    ok(await pe(`parseFloat(getComputedStyle(document.body).minHeight) >= document.querySelector("#stopDialog .dialog").offsetHeight + 28`) === true, "a short popup grows while the dialog is open, so all three buttons fit");
     await pe(`document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" })); 1`); await sleep(100);
     ok(await pe(`document.getElementById("stopDialog").hidden`) === true && (await pe(`window.__calls.length`)) === 1, "Escape cancels, nothing sent");
+    ok(await pe(`getComputedStyle(document.body).minHeight`) === "0px", "...and the popup goes back to its own height");
     await open(); await pe(`document.getElementById("stopHere").click()`); await sleep(250);
     ok((await pe(`window.__calls`)).includes("disconnect") && await pe(`document.getElementById("stopDialog").hidden`) === true, "'this browser only' sends disconnect and closes");
     await pe(`window.__calls.length = 0; 1`); await open(); await pe(`document.getElementById("stopAll").click()`); await sleep(300);
@@ -446,8 +449,9 @@ try {
     ok(JSON.stringify(await bells()) === JSON.stringify(["🔔", "🔕"]), "each shared tab has a bell left of its ✕: 🔔 where waking is allowed, 🔕 where it is not", await bells());
     ok(await pe(`[...document.querySelectorAll("#shared li")].every((li) => li.querySelector(".wk")?.nextElementSibling?.classList.contains("x"))`) === true, "...and the bell sits right before the ✕");
     if (process.env.E2E_SHOT_DIR) { // optional: look at the list (set E2E_SHOT_DIR to a folder)
-      await cdp("Emulation.setDeviceMetricsOverride", { width: 340, height: 420, deviceScaleFactor: 2, mobile: false }, sessionId);
+      await cdp("Emulation.setDeviceMetricsOverride", { width: 390, height: 420, deviceScaleFactor: 2, mobile: false }, sessionId);
       await pe(`document.getElementById("silent").click(); 1`); await sleep(300);
+      await pe(`document.getElementById("fullChip").hidden = false; document.getElementById("cdpChip").hidden = false; 1`); // every header chip at once: the widest the header gets
       writeFileSync(join(process.env.E2E_SHOT_DIR, "popup-silent-on.png"), Buffer.from((await cdp("Page.captureScreenshot", { format: "png" }, sessionId)).data, "base64"));
       await pe(`document.getElementById("silent").click(); 1`); await sleep(300);
       writeFileSync(join(process.env.E2E_SHOT_DIR, "popup-silent-off.png"), Buffer.from((await cdp("Page.captureScreenshot", { format: "png" }, sessionId)).data, "base64"));

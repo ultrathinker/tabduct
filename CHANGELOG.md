@@ -4,6 +4,14 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims for
 [Semantic Versioning](https://semver.org/) once it reaches 1.0.
 
+## [1.8.1] — 2026-10-08
+
+### Changed
+- **The popup is 30% wider** (300 → 390 px) and its header never wraps: with the *FULL*, *CDP* and *Silent* chips, the connection dot and the gear
+  everything stays on one line, and "3 tabs" no longer breaks into two lines.
+- **The three buttons of the stop dialog (the green dot) look alike**: the same neutral outline, no blue, no red. And while the dialog is open the
+  popup keeps at least 350 px of height, so a short popup (not connected yet) shows all three buttons and Cancel instead of cutting them off.
+
 ## [1.8.0] — 2026-10-08
 
 ### Added

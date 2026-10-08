@@ -14,11 +14,11 @@
    element never hides (bit us on .cdp-chip and .creds). Force hidden to win. */
 [hidden] { display: none !important; }
 html, body { overflow-x: hidden; } /* kill only sideways spurious scroll; allow the popup to grow/scroll vertically */
-body { width: 300px; margin: 0; padding: 12px; font: 13px/1.4 system-ui, -apple-system, Segoe UI, sans-serif; background: var(--bg); color: var(--fg); }
+body { width: 390px; margin: 0; padding: 12px; font: 13px/1.4 system-ui, -apple-system, Segoe UI, sans-serif; background: var(--bg); color: var(--fg); }
 header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
 h1 { font-size: 15px; margin: 0; letter-spacing: .2px; }
-.hdr-left { display: flex; align-items: center; gap: 8px; }
-.hdr-right { display: flex; align-items: center; gap: 10px; }
+.hdr-left { display: flex; align-items: center; gap: 8px; flex: 0 0 auto; white-space: nowrap; }
+.hdr-right { display: flex; align-items: center; gap: 8px; flex: 0 0 auto; white-space: nowrap; }
 .icon-btn { background: transparent; border: 0; color: var(--muted); cursor: pointer; font-size: 16px; line-height: 1; padding: 3px 5px; border-radius: 6px; }
 .icon-btn:hover { color: var(--fg); background: var(--border); }
 .settings-hd { gap: 8px; justify-content: flex-start; }
@@ -30,7 +30,7 @@ h1 { font-size: 15px; margin: 0; letter-spacing: .2px; }
 .card:last-child { margin-bottom: 0; } /* avoid a spurious 10px overflow at the popup bottom */
 .row { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
 .muted { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .4px; }
-.pill { display: inline-flex; align-items: center; gap: 5px; background: var(--claude); color: #fff; border-radius: 999px; padding: 2px 7px; font-size: 11px; font-weight: 600; }
+.pill { white-space: nowrap; display: inline-flex; align-items: center; gap: 5px; background: var(--claude); color: #fff; border-radius: 999px; padding: 2px 7px; font-size: 11px; font-weight: 600; }
 .pill-x { display: inline-flex; align-items: center; justify-content: center; width: 14px; height: 14px; padding: 0; border: 0; border-radius: 50%; background: rgba(255, 255, 255, .28); color: #fff; font-size: 9px; line-height: 1; cursor: pointer; }
 .pill-x:hover { background: rgba(255, 255, 255, .5); }
 
@@ -55,6 +55,10 @@ input[type="text"] { flex: 1; min-width: 0; }
 .dialog { width: 100%; background: var(--bg); border: 1px solid var(--border); border-radius: 12px; padding: 14px; box-shadow: 0 8px 28px rgba(0,0,0,.35); }
 .dialog h2 { margin: 0 0 6px; font-size: 15px; }
 .dialog .btn { margin-top: 8px; }
+/* The overlay is as tall as the popup, and a popup with little in it (not connected yet) is short: while the dialog is open the popup
+   keeps room for all three buttons, the cancel link and a message line. */
+body.stop-open { min-height: 350px; }
+.dialog .btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 .dialog .btn.danger { margin-top: 8px; }
 .btn.ghost { background: transparent; color: var(--fg); border: 1px solid var(--border); }
 .btn.ghost:hover { background: var(--border); }

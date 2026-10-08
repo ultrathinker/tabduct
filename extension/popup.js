@@ -53,6 +53,7 @@ function renderConn(s) {
 // Stopping asks first: leaving ONE browser, restarting the hub for all, or stopping everything.
 function stopDialog(show) {
   $("stopDialog").hidden = !show;
+  document.body.classList.toggle("stop-open", show);
   if (show) { $("stopMsg").hidden = true; for (const id of ["stopRestart", "stopHere", "stopAll", "stopCancel"]) $(id).disabled = false; $("stopRestart").focus(); }
 }
 function stopBusy(text) { for (const id of ["stopRestart", "stopHere", "stopAll"]) $(id).disabled = true; $("stopMsg").hidden = false; $("stopMsg").textContent = text; }
