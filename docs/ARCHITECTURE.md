@@ -119,8 +119,11 @@ Energy Saver) runs nothing, so scripting and CDP calls to it hang; the extension
 `tab.frozen` and thaws it before the call through the debugger (`Page.setWebLifecycleState`
 "active", `thawIfFrozen`), with no window involved; this needs the *Allow CDP eval* opt-in.
 The debugger stays attached to the thawed tab for the call and a short linger after it (`thawHold`,
-`releaseThaw`): a page nobody inspects can freeze again. A hung call's `TIMEOUT` reports the freeze
-and the thaw outcome (`freezeNote`).
+`releaseThaw`): a page nobody inspects can freeze again. `thawIfFrozen` tries three ways in turn
+(`THAW_STEPS`: "active"; "frozen" then "active"; `Page.enable` then "active"), counts a try only when
+`tab.frozen` stays false for a moment (`watchThaw`), and keeps a trace of what each did. A hung call's
+`TIMEOUT` reports the freeze, the thaw outcome and that trace (`freezeNote`); the thaw's time counts
+against the call's budget.
 And a call may carry `quiet:true` (feature `quiet`): the window is then never raised, not even
 after a timeout, and a call that cannot be answered without it fails with an explanation.
 A call the page does not answer within 18 s ends with `TIMEOUT` (typically a "Leave site?"

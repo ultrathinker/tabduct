@@ -394,6 +394,7 @@ eq(groupAction({ ...base, tier: "all", inOurGroup: true, shared: false }), null,
   chrome.debugger.sendCommand = async (_t, m) => { DBG.push(m); return {}; }; // the thaw does not take effect
   const stays = await call(P4, "get_page_content", { tabId: 1, quiet: true });
   eq([stays?.error?.code, /silent thaw ended: still-frozen/.test(stays?.error?.message || "")], ["TIMEOUT", true], "frozen tab, thaw did not take effect: the timeout reports 'still-frozen'");
+  eq(/\(active: still frozen after \d+ ms; frozen, then active: still frozen after \d+ ms; Page\.enable, then active: still frozen after \d+ ms\)/.test(stays?.error?.message || ""), true, "...with what each way of thawing did, so the cause can be read off the error", stays?.error?.message);
   chrome.scripting.executeScript = real2; callDeadline.ms = 18000;
   await sleep(150);
   chrome.debugger = had.debugger; chrome.permissions.contains = had.contains; delete TABS[0].frozen;

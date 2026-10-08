@@ -4,6 +4,19 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims for
 [Semantic Versioning](https://semver.org/) once it reaches 1.0.
 
+## [1.7.2] — 2026-10-08
+
+### Changed
+- **The silent thaw tries three ways, one after another, until the tab stays thawed:** `Page.setWebLifecycleState` "active"; "frozen" and then
+  "active" (Chrome may ignore a lone "active" for a page it froze itself); `Page.enable` and then "active". A try counts only when `tab.frozen`
+  stays false for 200 ms, so a page Chrome freezes again at once is not reported as thawed.
+- **What each try did is written into the `TIMEOUT` text of a call that still hangs**, for example
+  `(active: still frozen after 1000 ms; frozen, then active: thawed at 100 ms, frozen again at 300 ms; ...)`. Reason: in 1.7.1 the thaw reported
+  `still-frozen` on a tab Chrome had frozen by itself, although the same command thaws a tab frozen from `chrome://discards`; the trace shows which
+  of "Chrome ignores the command" and "Chrome freezes the page again" it is.
+- The time a thaw and a wake take now counts against the 18 s of the call, so a hung call still ends with this extension's explanation and not with the
+  hub's bare `TIMEOUT` at 20 s.
+
 ## [1.7.1] — 2026-10-08
 
 ### Fixed

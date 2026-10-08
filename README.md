@@ -151,8 +151,8 @@ presentation. The rules, also written into the tool descriptions:
 (Tabduct marks shared tabs non-discardable) and, with Energy Saver on, *freezes* one that has been hidden and silent for more than five minutes: a
 frozen page runs nothing, so every call to it hangs. Tabduct sees `tab.frozen` and thaws the page through the debugger (`Page.setWebLifecycleState`),
 which needs *Allow CDP eval* on, and keeps the debugger attached to that tab for the call and 20 s after it (Chrome does not freeze a page that is being
-inspected); without the setting, the usual wake (raising the window) is the fallback unless the call is `quiet`. If a call still hangs, the `TIMEOUT` text
-says whether the tab is frozen and what the thaw did, and `list_tabs` shows `frozen: true`. Chrome has no extension
+inspected) and tries up to three ways of thawing in turn; without the setting, the usual wake (raising the window) is the fallback unless the call is
+`quiet`. If a call still hangs, the `TIMEOUT` text says whether the tab is frozen and what each way of thawing did, and `list_tabs` shows `frozen: true`. Chrome has no extension
 API for its "Always keep these sites active" list, so Tabduct does not touch it.
 
 ## Security & consent

@@ -30,14 +30,23 @@ const treeOf = () => {
   return PAGE.tree || { frame: { id: "F0", loaderId: PAGE.loader || "L1", url: top.url, securityOrigin: top.origin },
     childFrames: Object.entries(PAGE.frames).filter(([f]) => f !== "0").map(([f, r]) => ({ frame: { id: `F${f}`, url: r.url, securityOrigin: r.origin } })) };
 };
-function cdpReply(method) {
+function cdpReply(method, params) {
   if (method === "Runtime.enable") {
     const top = PAGE.frames[0] || probe("null", { url: "about:blank" });
     for (const c of PAGE.contexts || [{ id: 7, uniqueId: "u7", origin: top.origin, auxData: { frameId: "F0", isDefault: true } }]) emit("Runtime.executionContextCreated", { context: c });
     return {};
   }
   if (method === "Page.getFrameTree") { const t = treeOf(); if (PAGE.onTree) PAGE.onTree(); return { frameTree: t }; }
-  if (method === "Page.setWebLifecycleState") { if (PAGE.tabs[1] && !PAGE.keepFrozen) PAGE.tabs[1].frozen = false; return {}; }
+  if (method === "Page.setWebLifecycleState") {
+    // PAGE.keepFrozen: never thaws. PAGE.needToggle: "active" only counts after a "frozen" was set first.
+    // PAGE.refreeze: thaws, then Chrome freezes the page again 25 ms later.
+    if (params?.state === "frozen") PAGE.sawFrozen = true;
+    if (params?.state === "active" && PAGE.tabs[1] && !PAGE.keepFrozen && (!PAGE.needToggle || PAGE.sawFrozen)) {
+      PAGE.tabs[1].frozen = false;
+      if (PAGE.refreeze) setTimeout(() => { PAGE.tabs[1].frozen = true; }, 25);
+    }
+    return {};
+  }
   if (method === "Runtime.evaluate") { if (PAGE.evalHang) return new Promise((_, rej) => HANGS.push(rej)); if (PAGE.evalError) throw new Error(PAGE.evalError); return { result: { value: PAGE.evalValue ?? 42 } }; }
   return {};
 }
@@ -379,8 +388,8 @@ injected = {};
 
 // ---- a frozen page is thawed through the debugger, without touching the window ----------------------------
 {
-  const { thawIfFrozen, releaseThaw, detachCdpTab, thawWait, thawLinger } = await import("../extension/handlers/index.js");
-  Object.assign(thawWait, { polls: 3, pollMs: 10 }); thawLinger.ms = 40;
+  const { thawIfFrozen, thawTraceOf, releaseThaw, detachCdpTab, thawWait, thawLinger } = await import("../extension/handlers/index.js");
+  Object.assign(thawWait, { polls: 3, pollMs: 10, settleMs: 20 }); thawLinger.ms = 40;
   const sleepMs = (ms) => new Promise((r) => setTimeout(r, ms));
   page({ 0: probe("https://a.com") }); CDP = [];
   PAGE.tabs[1] = { id: 1, url: "https://a.com/", active: true, windowId: 1, frozen: true };
@@ -395,12 +404,33 @@ injected = {};
   CDP = [];
   eq([await thawIfFrozen(1), CDP.length], ["not-frozen", 0], "a tab that is not frozen is left alone (the debugger is never attached)");
   releaseThaw(1); // nothing held: a no-op
-  PAGE.tabs[1].frozen = true; PAGE.keepFrozen = true;
+  PAGE.tabs[1].frozen = true; PAGE.keepFrozen = true; CDP = [];
   eq(await thawIfFrozen(1), "still-frozen", "a thaw that does not take effect is reported, not hidden");
+  eq(CDP.map((c) => c.method + (c.params?.state ? ":" + c.params.state : "")),
+    ["attach", "Page.setWebLifecycleState:active", "attach", "Page.setWebLifecycleState:frozen", "Page.setWebLifecycleState:active", "attach", "Page.enable", "Page.setWebLifecycleState:active"],
+    "...after every way was tried: 'active', 'frozen' then 'active', Page.enable then 'active'");
+  const trace = thawTraceOf(1);
+  eq([/^active: still frozen after/.test(trace), /frozen, then active: still frozen after/.test(trace), /Page\.enable, then active: still frozen after/.test(trace)], [true, true, true], "...and the trace says what each try did", trace);
   CDP = [];
   await detachCdpTab(1);
-  eq(CDP.map((c) => c.method), ["detach"], "...and a revoke / tab close drops the hold at once");
-  PAGE.keepFrozen = false; PAGE.tabs[1].frozen = true;
+  eq([CDP.map((c) => c.method), thawTraceOf(1)], [["detach"], ""], "...and a revoke / tab close drops the hold (and the trace) at once");
+
+  // Chrome ignored a lone 'active' for a page it froze itself: 'frozen' first, then 'active', works
+  page({ 0: probe("https://a.com") }); PAGE.tabs[1] = { id: 1, url: "https://a.com/", active: true, windowId: 1, frozen: true }; PAGE.needToggle = true;
+  eq(await thawIfFrozen(1), "thawed", "a page that ignores a lone 'active' is thawed by 'frozen', then 'active'");
+  eq(/^active: still frozen after .*frozen, then active: thawed at/.test(thawTraceOf(1)), true, "...and the trace names the way that worked", thawTraceOf(1));
+  await detachCdpTab(1);
+
+  // thawed, then frozen again by Chrome: not a success
+  page({ 0: probe("https://a.com") }); PAGE.tabs[1] = { id: 1, url: "https://a.com/", active: true, windowId: 1, frozen: true }; PAGE.refreeze = true;
+  Object.assign(thawWait, { polls: 8, pollMs: 10, settleMs: 60 });
+  eq(await thawIfFrozen(1), "still-frozen", "a page Chrome freezes again within moments is reported as still frozen");
+  eq(/thawed at \d+ ms, frozen again at \d+ ms/.test(thawTraceOf(1)), true, "...and the trace says it was thawed and frozen again", thawTraceOf(1));
+  PAGE.refreeze = false; await sleepMs(60);
+  Object.assign(thawWait, { polls: 3, pollMs: 10, settleMs: 20 });
+  await detachCdpTab(1);
+
+  page({ 0: probe("https://a.com") }); PAGE.tabs[1] = { id: 1, url: "https://a.com/", active: true, windowId: 1, frozen: true };
   const had = chrome.permissions.contains; chrome.permissions.contains = async () => false;
   eq(await thawIfFrozen(1), "failed", "without the debugger permission the thaw is simply not possible");
   chrome.permissions.contains = had;

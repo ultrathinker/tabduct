@@ -793,10 +793,11 @@ export const callDeadline = { ms: 18000 }; // any tool call (wait_for: its own w
 const BLOCKED_HINT = "A page that is waiting for the user cannot answer: a 'Leave site?' prompt after a reload or a navigation, an alert or a print dialog, or a tab Chrome has frozen after a long time in the background. Look at the browser window (with 'Wake the browser' on it is brought forward), answer the dialog there and retry.";
 const stuck = (code, message) => Object.assign(err(code, message), { stuck: true }); // `stuck`: the caller of the tool may raise the window
 
-export function withCallDeadline(tool, args, work) {
+// `usedMs`: time the call has already spent (a thaw before it) - the budget is for the whole call, so the agent still gets OUR answer.
+export function withCallDeadline(tool, args, work, usedMs = 0) {
   const ms = tool === "wait_for" ? Math.min(Number(args?.timeoutMs) > 0 ? Number(args.timeoutMs) : 10000, 25000) + 3000 : callDeadline.ms;
   let timer;
-  const guard = new Promise((_, reject) => { timer = setTimeout(() => reject(stuck("TIMEOUT", `the page did not answer ${tool} within ${Math.round(ms / 1000)} s. ${BLOCKED_HINT}`)), ms); });
+  const guard = new Promise((_, reject) => { timer = setTimeout(() => reject(stuck("TIMEOUT", `the page did not answer ${tool} within ${Math.round(ms / 1000)} s. ${BLOCKED_HINT}`)), Math.max(Math.min(1000, ms), ms - usedMs)); });
   work.catch(() => {}); // when the guard wins, the late outcome of the abandoned call is not an unhandled rejection
   return Promise.race([work, guard]).finally(() => clearTimeout(timer));
 }
@@ -888,7 +889,32 @@ async function cdpEvalNow(tabId, code, callArgs, pin, { hold } = {}) {
 // The debugger stays attached after the thaw (until the call is over plus `thawLinger`): Chrome does not freeze
 // a page a DevTools session is inspecting. 1.7.0 detached right after the thaw, and a tab frozen by Chrome itself
 // (not by hand) still hung; the likely reason is that the page froze again once the session ended.
-export const thawWait = { polls: 10, pollMs: 100 }; // mutable for the tests
+//
+// 1.7.1 showed (on a tab Chrome had frozen by itself) that the thaw can fail while the very same command works on a
+// tab frozen from chrome://discards. So several ways are tried in turn, and what each one did is kept as a short
+// trace that goes into the error text of a call that still hangs. That trace is how the cause gets found.
+export const thawWait = { polls: 10, pollMs: 100, settleMs: 200 }; // mutable for the tests: how long to watch a try, and how long "thawed" must hold
+const thawTrace = new Map(); // tabId -> what the last thaw did, step by step
+export const thawTraceOf = (tabId) => thawTrace.get(tabId) ?? "";
+const THAW_STEPS = [
+  ["active", async (send) => { await send("Page.setWebLifecycleState", { state: "active" }); }],
+  // Chrome ignores "active" for a page it does not think was set to "frozen" through this command: set it, then lift it.
+  ["frozen, then active", async (send) => { await send("Page.setWebLifecycleState", { state: "frozen" }); await send("Page.setWebLifecycleState", { state: "active" }); }],
+  ["Page.enable, then active", async (send) => { await send("Page.enable"); await send("Page.setWebLifecycleState", { state: "active" }); }],
+];
+// Watches `tab.frozen` after one try: thawed (and stayed so for settleMs), frozen again, or no change.
+async function watchThaw(tabId) {
+  const t0 = Date.now(); let thawedAt = null;
+  for (let i = 0; i < thawWait.polls; i++) {
+    let frozen; try { frozen = (await chrome.tabs.get(tabId)).frozen === true; } catch { return { gone: true, text: "the tab is gone" }; }
+    const ms = Date.now() - t0;
+    if (!frozen && thawedAt == null) thawedAt = ms;
+    else if (frozen && thawedAt != null) return { ok: false, text: `thawed at ${thawedAt} ms, frozen again at ${ms} ms` };
+    if (thawedAt != null && ms - thawedAt >= thawWait.settleMs) return { ok: true, text: `thawed at ${thawedAt} ms` };
+    await new Promise((r) => setTimeout(r, thawWait.pollMs));
+  }
+  return thawedAt != null ? { ok: true, text: `thawed at ${thawedAt} ms` } : { ok: false, text: `still frozen after ${Date.now() - t0} ms` };
+}
 export const thawLinger = { ms: 20000 }; // how long the debugger stays on a thawed tab after its last call
 const thawHold = new Map(); // tabId -> linger timer (null while a call is using the tab)
 function holdThaw(tabId) { clearTimeout(thawHold.get(tabId)); thawHold.set(tabId, null); }
@@ -905,12 +931,22 @@ export function releaseThaw(tabId) {
 }
 export async function thawIfFrozen(tabId) {
   let tab; try { tab = await chrome.tabs.get(tabId); } catch { return "no-tab"; }
+  thawTrace.delete(tabId);
   if (tab.frozen !== true) return "not-frozen";
-  try { await cdpWith(tabId, {}, async (send) => { holdThaw(tabId); await send("Page.setWebLifecycleState", { state: "active" }); }); }
-  catch { await dropThaw(tabId); return "failed"; }
-  for (let i = 0; i < thawWait.polls; i++) {
-    try { if ((await chrome.tabs.get(tabId)).frozen !== true) return "thawed"; } catch { return "no-tab"; }
-    await new Promise((r) => setTimeout(r, thawWait.pollMs));
+  const trace = [];
+  for (const [i, [name, run]] of THAW_STEPS.entries()) {
+    try { await cdpWith(tabId, {}, async (send) => { holdThaw(tabId); await run(send); }); }
+    catch (e) {
+      trace.push(`${name}: ${e?.message ?? e}`);
+      thawTrace.set(tabId, trace.join("; "));
+      if (i === 0) { await dropThaw(tabId); return "failed"; }
+      break; // a later try could not even run: the earlier ones are already in the trace
+    }
+    const w = await watchThaw(tabId);
+    trace.push(`${name}: ${w.text}`);
+    thawTrace.set(tabId, trace.join("; "));
+    if (w.gone) return "no-tab";
+    if (w.ok) return "thawed";
   }
   return "still-frozen";
 }
@@ -1176,7 +1212,7 @@ function cdpHeld(tabId) { return cdpAttached.has(tabId) || cdpConsoleTabs.has(ta
 // Only actually detaches when no CDP user still holds the tab; always forgets it.
 export async function detachCdpTab(tabId) {
   cdpAttached.delete(tabId);
-  clearTimeout(thawHold.get(tabId)); thawHold.delete(tabId);
+  clearTimeout(thawHold.get(tabId)); thawHold.delete(tabId); thawTrace.delete(tabId);
   cdpConsoleTabs.delete(tabId);
   cdpLogs.delete(tabId);
   cdpContexts.delete(tabId);

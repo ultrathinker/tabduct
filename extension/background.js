@@ -4,7 +4,7 @@
 // invoke chokepoint with per-tab CONSENT enforcement (Feature B), shared-tab
 // badges, the share hotkey, and popup messaging. See PROTOCOL.md + consent.js.
 
-import { HANDLERS, withCallDeadline, thawIfFrozen, releaseThaw, detachCdpTab, detachAllCdp, startCdpConsole, stopCdpConsole, stopAllCdpConsole, reconcileCdpForce, cdpConsoleTabs, cdpUserCancelled } from "./handlers/index.js";
+import { HANDLERS, withCallDeadline, thawIfFrozen, thawTraceOf, releaseThaw, detachCdpTab, detachAllCdp, startCdpConsole, stopCdpConsole, stopAllCdpConsole, reconcileCdpForce, cdpConsoleTabs, cdpUserCancelled } from "./handlers/index.js";
 import * as CONSENT from "./consent.js";
 import { GroupMask, groupAction } from "./groupsync.js";
 import { WAKE_TOOLS, QUIET_TOOLS, wake as wakeTab, release as releaseTab } from "./wake.js";
@@ -333,12 +333,13 @@ async function handleInvoke(msg) {
     }
     // A frozen page answers nothing: thaw it first, silently (no window involved). Only after the gate said yes.
     // The debugger stays on the thawed tab until the call is over (released in `finally`): a page the debugger lets go of freezes again.
+    const t0 = Date.now();
     const thaw = decision.thaw && QUIET_TOOLS.has(tool) && decision.tabId != null ? await thawIfFrozen(decision.tabId) : null;
     // A hidden window/tab (minimized, covered, background) is brought forward for the call when the
     // user left "Wake the browser" on and the caller did not ask for quiet; wake.js puts it back afterwards.
     const woken = decision.wake && !quiet && WAKE_TOOLS.has(tool) && decision.tabId != null ? await wakeTab(decision.tabId) : null;
     let result;
-    try { result = await withCallDeadline(tool, callArgs, handler(callArgs)); }
+    try { result = await withCallDeadline(tool, callArgs, handler(callArgs), Date.now() - t0); }
     catch (e) {
       // The page did not answer: most likely it is waiting for the user (a "Leave site?" prompt, an alert).
       // Bring the window forward and leave it there so the user can see and answer it.
@@ -366,8 +367,9 @@ async function freezeNote(tabId, thaw, thawAllowed) {
   let frozen = false;
   try { frozen = tabId != null && (await chrome.tabs.get(tabId)).frozen === true; } catch {}
   if (frozen && thaw === "not-frozen") thaw = null; // it froze again after the check
-  if (frozen) return ` Chrome has frozen this tab (hidden for a long time)${thawAllowed ? `; the silent thaw ended: ${thaw ?? "not tried"}` : "; the silent thaw needs 'Allow CDP eval' in the extension, otherwise a call without quiet raises the window to wake it"}.`;
-  if (thaw && thaw !== "not-frozen") return ` The tab had been frozen by Chrome; the silent thaw ended: ${thaw}.`;
+  const how = thaw && thaw !== "not-frozen" && thawTraceOf(tabId) ? ` (${thawTraceOf(tabId)})` : ""; // what each way of thawing did
+  if (frozen) return ` Chrome has frozen this tab (hidden for a long time)${thawAllowed ? `; the silent thaw ended: ${thaw ?? "not tried"}${how}` : "; the silent thaw needs 'Allow CDP eval' in the extension, otherwise a call without quiet raises the window to wake it"}.`;
+  if (thaw && thaw !== "not-frozen") return ` The tab had been frozen by Chrome; the silent thaw ended: ${thaw}${how}.`;
   return "";
 }
 
