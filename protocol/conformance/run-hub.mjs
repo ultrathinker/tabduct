@@ -161,6 +161,10 @@ const call = (name, args, sid, token) => rpc({ jsonrpc: "2.0", id: Math.floor(Ma
   ok(!/EXTENSION_OUTDATED/.test(fine.json?.result?.content?.[0]?.text || "") && C.invokes.includes("list_frames"), "an instance that reports the feature gets the call");
   const outdated3 = await call("wait_for", { instanceId: "C", text: "done" }, sid, tAgent);
   ok(outdated3.json?.result?.isError && /EXTENSION_OUTDATED/.test(outdated3.json.result.content[0].text) && /wait-text/.test(outdated3.json.result.content[0].text) && !C.invokes.includes("wait_for"), "wait_for with `text` on a build without the 'wait-text' feature → EXTENSION_OUTDATED, not forwarded");
+  const outdated4 = await call("get_page_content", { instanceId: "C", tabId: 1, quiet: true }, sid, tAgent);
+  ok(outdated4.json?.result?.isError && /EXTENSION_OUTDATED/.test(outdated4.json.result.content[0].text) && /quiet/.test(outdated4.json.result.content[0].text) && !C.invokes.includes("get_page_content"), "quiet:true on a build without the 'quiet' feature → EXTENSION_OUTDATED (an old build would raise the window), not forwarded");
+  const quietOff = await call("get_page_content", { instanceId: "C", tabId: 1, quiet: false }, sid, tAgent);
+  ok(!/EXTENSION_OUTDATED/.test(quietOff.json?.result?.content?.[0]?.text || ""), "...quiet:false needs no feature");
   const instsC = toolResult(await call("list_instances", {}, sid, tAgent));
   ok(instsC.instances.find((i) => i.instanceId === "C")?.extensionVersion === "1.6.0", "list_instances shows the reported extension version");
 

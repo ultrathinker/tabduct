@@ -131,6 +131,28 @@ Only arbitrary-string `execute_script` is blocked by a page's CSP; for that, opt
 **CDP mode** (see below). Unshared tabs are **completely invisible** — the agent
 can't even read their title.
 
+## Using Tabduct without disturbing the user (rules for agents)
+
+Tabduct works with the user's real browser, so an agent that raises the window interrupts a game, a call or a
+presentation. The rules, also written into the tool descriptions:
+
+1. **Read in the background.** `get_page_content`, `execute_script`, `get_dom_snapshot`, `list_frames`, console and network reads work on a
+   minimized window or a background tab. Prefer them. A screenshot needs a drawn page: use it only when text will not do.
+2. **For polling and scheduled checks pass `quiet: true`.** The call never brings the window forward, never activates a tab;
+   when the page cannot answer without that you get an error that says so, and you can report it instead of interrupting the user.
+3. **Without `quiet`**, and with the user's *Wake the browser* setting on, `screenshot`, `type`, `click`, `press_key`, `get_page_content` and
+   `get_dom_snapshot` may bring a minimized or covered window forward and put it back afterwards. `activate_tab`, `screenshot` with
+   `activate:true` and `open_tab` with `active:true` always take the user's focus: last resort only.
+4. **A page Chrome has frozen is thawed silently** (see below) before the call, so a long-hidden tab is not a reason to raise anything.
+   A call the page does not answer ends with `TIMEOUT` after 18 s: look for a dialog ("Leave site?") instead of retrying blindly, and do not call
+   `location.reload()` from `execute_script` on a tab the user has been using.
+
+**Why a tab stops answering.** Chrome slows timers in a hidden tab (once a second, once a minute after 5 minutes), can unload it from memory
+(Tabduct marks shared tabs non-discardable) and, with Energy Saver on, *freezes* one that has been hidden and silent for more than five minutes: a
+frozen page runs nothing, so every call to it hangs. Tabduct sees `tab.frozen` and thaws the page through the debugger (`Page.setWebLifecycleState`),
+which needs *Allow CDP eval* on; without it, the usual wake (raising the window) is the fallback unless the call is `quiet`. Chrome has no extension
+API for its "Always keep these sites active" list, so Tabduct does not touch it.
+
 ## Security & consent
 
 The endpoint is **token-authenticated** — not merely bound to localhost (which

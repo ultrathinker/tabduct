@@ -22,7 +22,7 @@
     },
     {
       "name": "open_tab",
-      "description": "Open a new tab, optionally at a URL. Returns the new tab.",
+      "description": "Open a new tab, optionally at a URL. Returns the new tab. Window etiquette: a tab opened with active:true takes the user's focus; pass active:false unless they need to see it.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -34,7 +34,7 @@
     },
     {
       "name": "activate_tab",
-      "description": "Bring a tab (and its window) to the foreground.",
+      "description": "Bring a tab (and its window) to the foreground. Window etiquette: this brings the tab and its window to the front and takes focus from whatever the user is doing (a game, a call). Use it only as a last resort, when the page cannot be read or driven in the background.",
       "inputSchema": {
         "type": "object",
         "properties": { "tabId": { "type": "integer" } },
@@ -68,10 +68,11 @@
     },
     {
       "name": "get_page_content",
-      "description": "Read a tab's content: visible innerText, logical textContent, rendered HTML, or full outerHTML.",
+      "description": "Read a tab's content: visible innerText, logical textContent, rendered HTML, or full outerHTML. Window etiquette: with the user's 'Wake the browser' setting on, this call may bring their browser window to the front when the page is asleep, which interrupts them; for polling and scheduled checks pass quiet:true and prefer get_page_content or execute_script. Raise the window only as a last resort.",
       "inputSchema": {
         "type": "object",
         "properties": {
+          "quiet": { "type": "boolean", "default": false, "x-requires": "quiet", "description": "If true, this call NEVER brings the user's browser window to the front (and screenshot's activate is refused): when the page cannot answer without that, you get an error saying so instead. Use it for background polling and scheduled checks, so you do not interrupt the user (a full-screen game, a call, a presentation). Default false: with the user's 'Wake the browser' setting on, a call may raise a minimized or covered window." },
           "tabId": { "type": "integer", "description": "Target tab; omit for active tab." },
           "frameId": { "type": "integer", "minimum": 0, "x-requires": "frames", "description": "Act inside this frame of the tab (frameId from list_frames or get_dom_snapshot) — e.g. an embedded, cross-origin form. Omit (or 0) for the page itself." },
           "format": { "type": "string", "enum": ["text", "textContent", "html", "outerHTML"], "default": "text", "description": "'text' = visible innerText; 'textContent' = logical DOM text." },
@@ -82,11 +83,12 @@
     },
     {
       "name": "execute_script",
-      "description": "Run JavaScript in a tab and return the (JSON-serializable) result. Keystone tool: read AND modify the page. NOTE: your code must `return` its result (the wrapper is a statement body). Do not call location.reload() or navigate from here on a tab the user has been working in (use the navigate tool): the browser may ask 'Leave site?', and a page waiting for that answer cannot respond to any call until the user answers it. On strict-CSP sites, MAIN-world eval may be blocked (see error code CSP_BLOCKED); the roadmap fix is chrome.userScripts. See ROADMAP.md.",
+      "description": "Run JavaScript in a tab and return the (JSON-serializable) result. Keystone tool: read AND modify the page. NOTE: your code must `return` its result (the wrapper is a statement body). Do not call location.reload() or navigate from here on a tab the user has been working in (use the navigate tool): the browser may ask 'Leave site?', and a page waiting for that answer cannot respond to any call until the user answers it. On strict-CSP sites, MAIN-world eval may be blocked (see error code CSP_BLOCKED); the roadmap fix is chrome.userScripts. See ROADMAP.md. Window etiquette: with the user's 'Wake the browser' setting on, this call may bring their browser window to the front when the page is asleep, which interrupts them; for polling and scheduled checks pass quiet:true and prefer get_page_content or execute_script. Raise the window only as a last resort.",
       "inputSchema": {
         "type": "object",
         "properties": {
           "code": { "type": "string", "description": "JS source; must `return` the value to hand back. Runs in the page (MAIN) world. Result is capped at 8MB (truncated flag set if exceeded)." },
+          "quiet": { "type": "boolean", "default": false, "x-requires": "quiet", "description": "If true, this call NEVER brings the user's browser window to the front (and screenshot's activate is refused): when the page cannot answer without that, you get an error saying so instead. Use it for background polling and scheduled checks, so you do not interrupt the user (a full-screen game, a call, a presentation). Default false: with the user's 'Wake the browser' setting on, a call may raise a minimized or covered window." },
           "tabId": { "type": "integer", "description": "Target tab; omit for active tab." },
           "frameId": { "type": "integer", "minimum": 0, "x-requires": "frames", "description": "Act inside this frame of the tab (frameId from list_frames or get_dom_snapshot) — e.g. an embedded, cross-origin form. Omit (or 0) for the page itself." },
           "args": { "type": "array", "items": {}, "description": "Optional JSON-serializable args exposed as `args` to the code.", "default": [] },
@@ -98,10 +100,11 @@
     },
     {
       "name": "screenshot",
-      "description": "Capture the VISIBLE area of a tab as an image (returned to the agent as an MCP image). To capture a specific part of a long page, first scroll it into view: pass `selector` (scroll an element into view) or `scrollTo` (scroll to a Y offset), then it captures the resulting viewport. (Whole-page/full-length capture is intentionally not supported — it is unreliable on modern virtualized/infinite pages; scroll-and-shoot instead.) Only the ACTIVE tab of a window can be captured; pass a background tabId with activate=true to bring it forward first.",
+      "description": "Capture the VISIBLE area of a tab as an image (returned to the agent as an MCP image). To capture a specific part of a long page, first scroll it into view: pass `selector` (scroll an element into view) or `scrollTo` (scroll to a Y offset), then it captures the resulting viewport. (Whole-page/full-length capture is intentionally not supported — it is unreliable on modern virtualized/infinite pages; scroll-and-shoot instead.) Only the ACTIVE tab of a window can be captured; pass a background tabId with activate=true to bring it forward first. Window etiquette: with the user's 'Wake the browser' setting on, this call may bring their browser window to the front when the page is asleep, which interrupts them; for polling and scheduled checks pass quiet:true and prefer get_page_content or execute_script. Raise the window only as a last resort.",
       "inputSchema": {
         "type": "object",
         "properties": {
+          "quiet": { "type": "boolean", "default": false, "x-requires": "quiet", "description": "If true, this call NEVER brings the user's browser window to the front (and screenshot's activate is refused): when the page cannot answer without that, you get an error saying so instead. Use it for background polling and scheduled checks, so you do not interrupt the user (a full-screen game, a call, a presentation). Default false: with the user's 'Wake the browser' setting on, a call may raise a minimized or covered window." },
           "tabId": { "type": "integer", "description": "Target tab; omit for active tab." },
           "activate": { "type": "boolean", "default": false, "description": "If the tab is not active, activate it before capturing (side effect: changes focus)." },
           "selector": { "type": "string", "description": "Scroll this element into view before capturing the viewport." },
@@ -114,10 +117,11 @@
     },
     {
       "name": "wait_for",
-      "description": "Wait until a condition is met in a shared tab (a CSS selector appears, the page's visible text contains a substring, the URL contains a substring, or the page reaches a load state), bounded by a timeout. At least one of selector/text/urlContains/loadState is required; it resolves as soon as ANY of the given conditions holds. CSP-safe: uses injected functions, never string eval (so it works on strict-CSP sites).",
+      "description": "Wait until a condition is met in a shared tab (a CSS selector appears, the page's visible text contains a substring, the URL contains a substring, or the page reaches a load state), bounded by a timeout. At least one of selector/text/urlContains/loadState is required; it resolves as soon as ANY of the given conditions holds. CSP-safe: uses injected functions, never string eval (so it works on strict-CSP sites). Window etiquette: with the user's 'Wake the browser' setting on, this call may bring their browser window to the front when the page is asleep, which interrupts them; for polling and scheduled checks pass quiet:true and prefer get_page_content or execute_script. Raise the window only as a last resort.",
       "inputSchema": {
         "type": "object",
         "properties": {
+          "quiet": { "type": "boolean", "default": false, "x-requires": "quiet", "description": "If true, this call NEVER brings the user's browser window to the front (and screenshot's activate is refused): when the page cannot answer without that, you get an error saying so instead. Use it for background polling and scheduled checks, so you do not interrupt the user (a full-screen game, a call, a presentation). Default false: with the user's 'Wake the browser' setting on, a call may raise a minimized or covered window." },
           "tabId": { "type": "integer", "description": "Target tab; omit for active tab." },
           "frameId": { "type": "integer", "minimum": 0, "x-requires": "frames", "description": "Act inside this frame of the tab (frameId from list_frames or get_dom_snapshot) — e.g. an embedded, cross-origin form. Omit (or 0) for the page itself." },
           "selector": { "type": "string", "description": "CSS selector that must match an element before resolving." },
@@ -131,10 +135,11 @@
     },
     {
       "name": "click",
-      "description": "Click an element in a shared tab by CSS selector. CSP-safe: injects a function (page CSP blocks string eval, not extension-injected functions). With trusted:true the click is a real, browser-generated mouse click (CDP Input) — needed by controls that ignore scripted clicks (many custom dropdowns/menus, canvas UIs); it requires the user to have enabled 'Allow CDP eval', is refused if the element is covered by something else at its centre (in any ancestor document too), can't locate elements inside cross-origin frames (use type / press_key there), and is refused while the page contains (even hidden) a frame of a site excluded by the user's origin filter.",
+      "description": "Click an element in a shared tab by CSS selector. CSP-safe: injects a function (page CSP blocks string eval, not extension-injected functions). With trusted:true the click is a real, browser-generated mouse click (CDP Input) — needed by controls that ignore scripted clicks (many custom dropdowns/menus, canvas UIs); it requires the user to have enabled 'Allow CDP eval', is refused if the element is covered by something else at its centre (in any ancestor document too), can't locate elements inside cross-origin frames (use type / press_key there), and is refused while the page contains (even hidden) a frame of a site excluded by the user's origin filter. Window etiquette: with the user's 'Wake the browser' setting on, this call may bring their browser window to the front when the page is asleep, which interrupts them; for polling and scheduled checks pass quiet:true and prefer get_page_content or execute_script. Raise the window only as a last resort.",
       "inputSchema": {
         "type": "object",
         "properties": {
+          "quiet": { "type": "boolean", "default": false, "x-requires": "quiet", "description": "If true, this call NEVER brings the user's browser window to the front (and screenshot's activate is refused): when the page cannot answer without that, you get an error saying so instead. Use it for background polling and scheduled checks, so you do not interrupt the user (a full-screen game, a call, a presentation). Default false: with the user's 'Wake the browser' setting on, a call may raise a minimized or covered window." },
           "tabId": { "type": "integer", "description": "Target tab; omit for active tab." },
           "frameId": { "type": "integer", "minimum": 0, "x-requires": "frames", "description": "Act inside this frame of the tab (frameId from list_frames or get_dom_snapshot) — e.g. an embedded, cross-origin form. Omit (or 0) for the page itself." },
           "selector": { "type": "string", "description": "CSS selector of the element to click." },
@@ -146,10 +151,11 @@
     },
     {
       "name": "type",
-      "description": "Type text into an input/textarea/select/contenteditable element in a shared tab by CSS selector (a <select> picks the option by value or visible text). Dispatches input/change events so frameworks (React/Vue) notice the change. CSP-safe (injected function). With trusted:true the text is inserted by the browser itself (CDP Input.insertText): use it for terminals (xterm.js, e.g. AWS CloudShell) and rich/canvas editors that ignore scripted input; there `selector` is optional (omit it to type into whatever is focused, e.g. after a trusted click), and the target must be focusable (for xterm.js: its helper textarea, `.xterm-helper-textarea`). Works inside cross-origin frames. Needs 'Allow CDP eval'; refused while the page contains (even hidden) a frame of a site excluded by the origin filter; with a frameId and no selector that frame must hold the keyboard focus. Newlines are inserted as text, not as Enter: use press_key for that.",
+      "description": "Type text into an input/textarea/select/contenteditable element in a shared tab by CSS selector (a <select> picks the option by value or visible text). Dispatches input/change events so frameworks (React/Vue) notice the change. CSP-safe (injected function). With trusted:true the text is inserted by the browser itself (CDP Input.insertText): use it for terminals (xterm.js, e.g. AWS CloudShell) and rich/canvas editors that ignore scripted input; there `selector` is optional (omit it to type into whatever is focused, e.g. after a trusted click), and the target must be focusable (for xterm.js: its helper textarea, `.xterm-helper-textarea`). Works inside cross-origin frames. Needs 'Allow CDP eval'; refused while the page contains (even hidden) a frame of a site excluded by the origin filter; with a frameId and no selector that frame must hold the keyboard focus. Newlines are inserted as text, not as Enter: use press_key for that. Window etiquette: with the user's 'Wake the browser' setting on, this call may bring their browser window to the front when the page is asleep, which interrupts them; for polling and scheduled checks pass quiet:true and prefer get_page_content or execute_script. Raise the window only as a last resort.",
       "inputSchema": {
         "type": "object",
         "properties": {
+          "quiet": { "type": "boolean", "default": false, "x-requires": "quiet", "description": "If true, this call NEVER brings the user's browser window to the front (and screenshot's activate is refused): when the page cannot answer without that, you get an error saying so instead. Use it for background polling and scheduled checks, so you do not interrupt the user (a full-screen game, a call, a presentation). Default false: with the user's 'Wake the browser' setting on, a call may raise a minimized or covered window." },
           "tabId": { "type": "integer", "description": "Target tab; omit for active tab." },
           "frameId": { "type": "integer", "minimum": 0, "x-requires": "frames", "description": "Act inside this frame of the tab (frameId from list_frames or get_dom_snapshot) — e.g. an embedded, cross-origin form. Omit (or 0) for the page itself." },
           "selector": { "type": "string", "description": "CSS selector of the element to type into (optional only with trusted:true: then the currently focused element is used)." },
@@ -164,10 +170,11 @@
     {
       "name": "press_key",
       "x-requires": "cdp-input",
-      "description": "Press a key (with optional modifiers) as REAL browser-level keyboard input (CDP Input.dispatchKeyEvent, isTrusted) in a shared tab: Enter to run a command in a terminal (xterm.js / AWS CloudShell), Tab, Escape, arrows, Ctrl+C, Ctrl+A... The key goes to the focused element (pass `selector` to focus one first); it works inside cross-origin frames (pass the frameId, or just focus the element). Needs the user to have enabled 'Allow CDP eval' (and read-only off); refused while the page contains (even hidden) a frame of a site excluded by the user's origin filter. With a frameId and no selector, that frame must already hold the keyboard focus. Paste shortcuts (Ctrl/Cmd+V, Shift+Insert) are refused because they would read the user's clipboard. To enter text use type with trusted:true.",
+      "description": "Press a key (with optional modifiers) as REAL browser-level keyboard input (CDP Input.dispatchKeyEvent, isTrusted) in a shared tab: Enter to run a command in a terminal (xterm.js / AWS CloudShell), Tab, Escape, arrows, Ctrl+C, Ctrl+A... The key goes to the focused element (pass `selector` to focus one first); it works inside cross-origin frames (pass the frameId, or just focus the element). Needs the user to have enabled 'Allow CDP eval' (and read-only off); refused while the page contains (even hidden) a frame of a site excluded by the user's origin filter. With a frameId and no selector, that frame must already hold the keyboard focus. Paste shortcuts (Ctrl/Cmd+V, Shift+Insert) are refused because they would read the user's clipboard. To enter text use type with trusted:true. Window etiquette: with the user's 'Wake the browser' setting on, this call may bring their browser window to the front when the page is asleep, which interrupts them; for polling and scheduled checks pass quiet:true and prefer get_page_content or execute_script. Raise the window only as a last resort.",
       "inputSchema": {
         "type": "object",
         "properties": {
+          "quiet": { "type": "boolean", "default": false, "x-requires": "quiet", "description": "If true, this call NEVER brings the user's browser window to the front (and screenshot's activate is refused): when the page cannot answer without that, you get an error saying so instead. Use it for background polling and scheduled checks, so you do not interrupt the user (a full-screen game, a call, a presentation). Default false: with the user's 'Wake the browser' setting on, a call may raise a minimized or covered window." },
           "tabId": { "type": "integer", "description": "Target tab; omit for active tab." },
           "frameId": { "type": "integer", "minimum": 0, "x-requires": "frames", "description": "Act inside this frame of the tab (frameId from list_frames or get_dom_snapshot) — e.g. an embedded, cross-origin form. Omit (or 0) for the page itself." },
           "key": { "type": "string", "minLength": 1, "maxLength": 20, "description": "Enter, Tab, Escape, Backspace, Delete, Space, ArrowUp, ArrowDown, ArrowLeft, ArrowRight, Home, End, PageUp, PageDown, F1-F12, or a single character such as c." },
@@ -181,10 +188,11 @@
     },
     {
       "name": "get_dom_snapshot",
-      "description": "Return a compact text outline of a shared tab's visible interactive/structural elements (a/button/input/textarea/select/[role]/headings/nav/form etc.), each with a label and a reasonably stable CSS selector — enough to choose click/type targets on strict-CSP sites without arbitrary JS. On the page itself it also outlines every visible embedded frame (iframe) under a `--- frame N ---` header — including cross-origin ones such as embedded sign-up/payment/contact forms; pass that frameId to click/type/etc. to act inside it. CSP-safe (injected function).",
+      "description": "Return a compact text outline of a shared tab's visible interactive/structural elements (a/button/input/textarea/select/[role]/headings/nav/form etc.), each with a label and a reasonably stable CSS selector — enough to choose click/type targets on strict-CSP sites without arbitrary JS. On the page itself it also outlines every visible embedded frame (iframe) under a `--- frame N ---` header — including cross-origin ones such as embedded sign-up/payment/contact forms; pass that frameId to click/type/etc. to act inside it. CSP-safe (injected function). Window etiquette: with the user's 'Wake the browser' setting on, this call may bring their browser window to the front when the page is asleep, which interrupts them; for polling and scheduled checks pass quiet:true and prefer get_page_content or execute_script. Raise the window only as a last resort.",
       "inputSchema": {
         "type": "object",
         "properties": {
+          "quiet": { "type": "boolean", "default": false, "x-requires": "quiet", "description": "If true, this call NEVER brings the user's browser window to the front (and screenshot's activate is refused): when the page cannot answer without that, you get an error saying so instead. Use it for background polling and scheduled checks, so you do not interrupt the user (a full-screen game, a call, a presentation). Default false: with the user's 'Wake the browser' setting on, a call may raise a minimized or covered window." },
           "tabId": { "type": "integer", "description": "Target tab; omit for active tab." },
           "frameId": { "type": "integer", "minimum": 0, "x-requires": "frames", "description": "Act inside this frame of the tab (frameId from list_frames or get_dom_snapshot) — e.g. an embedded, cross-origin form. Omit (or 0) for the page itself." },
           "maxChars": { "type": "integer", "minimum": 0, "maximum": 200000, "default": 40000, "description": "Truncate the outline to this many chars (default 40000, also used for 0; hard cap 200000)." }
@@ -195,10 +203,11 @@
     {
       "name": "list_frames",
       "x-requires": "frames",
-      "description": "List the frames of a shared tab: the page itself (frameId 0) and every iframe inside it, nested ones included (frameId, url, title, nesting depth, viewport size). Page content inside an iframe — often a cross-origin embedded form or widget — is invisible to the page-level tools; pass a frameId from here to get_dom_snapshot/get_page_content/click/type/wait_for/execute_script/get_console_logs to work inside it. Frames whose own site is excluded by the user's origin filter are not listed.",
+      "description": "List the frames of a shared tab: the page itself (frameId 0) and every iframe inside it, nested ones included (frameId, url, title, nesting depth, viewport size). Page content inside an iframe — often a cross-origin embedded form or widget — is invisible to the page-level tools; pass a frameId from here to get_dom_snapshot/get_page_content/click/type/wait_for/execute_script/get_console_logs to work inside it. Frames whose own site is excluded by the user's origin filter are not listed. Window etiquette: with the user's 'Wake the browser' setting on, this call may bring their browser window to the front when the page is asleep, which interrupts them; for polling and scheduled checks pass quiet:true and prefer get_page_content or execute_script. Raise the window only as a last resort.",
       "inputSchema": {
         "type": "object",
         "properties": {
+          "quiet": { "type": "boolean", "default": false, "x-requires": "quiet", "description": "If true, this call NEVER brings the user's browser window to the front (and screenshot's activate is refused): when the page cannot answer without that, you get an error saying so instead. Use it for background polling and scheduled checks, so you do not interrupt the user (a full-screen game, a call, a presentation). Default false: with the user's 'Wake the browser' setting on, a call may raise a minimized or covered window." },
           "tabId": { "type": "integer", "description": "Target tab; omit for active tab." }
         },
         "additionalProperties": false
@@ -206,10 +215,11 @@
     },
     {
       "name": "get_console_logs",
-      "description": "Return console logs captured from a shared tab (log/info/warn/error/debug). When the user has enabled 'Capture full console & errors via CDP' (developer mode), this returns the FULL CDP-captured picture: console.* calls, uncaught exceptions, and browser Log entries (network/CSP/deprecation), recorded continuously from the moment the tab was shared — including errors emitted before you asked. Otherwise it falls back to best-effort injected console capture: installed on the FIRST call (so logs emitted before that call may be missing) and reset when the page navigates. The capture source is reported in the result's `source` field ('cdp' or 'inject'). CSP-safe: neither path uses string eval.",
+      "description": "Return console logs captured from a shared tab (log/info/warn/error/debug). When the user has enabled 'Capture full console & errors via CDP' (developer mode), this returns the FULL CDP-captured picture: console.* calls, uncaught exceptions, and browser Log entries (network/CSP/deprecation), recorded continuously from the moment the tab was shared — including errors emitted before you asked. Otherwise it falls back to best-effort injected console capture: installed on the FIRST call (so logs emitted before that call may be missing) and reset when the page navigates. The capture source is reported in the result's `source` field ('cdp' or 'inject'). CSP-safe: neither path uses string eval. Window etiquette: with the user's 'Wake the browser' setting on, this call may bring their browser window to the front when the page is asleep, which interrupts them; for polling and scheduled checks pass quiet:true and prefer get_page_content or execute_script. Raise the window only as a last resort.",
       "inputSchema": {
         "type": "object",
         "properties": {
+          "quiet": { "type": "boolean", "default": false, "x-requires": "quiet", "description": "If true, this call NEVER brings the user's browser window to the front (and screenshot's activate is refused): when the page cannot answer without that, you get an error saying so instead. Use it for background polling and scheduled checks, so you do not interrupt the user (a full-screen game, a call, a presentation). Default false: with the user's 'Wake the browser' setting on, a call may raise a minimized or covered window." },
           "tabId": { "type": "integer", "description": "Target tab; omit for active tab." },
           "frameId": { "type": "integer", "minimum": 0, "x-requires": "frames", "description": "Act inside this frame of the tab (frameId from list_frames or get_dom_snapshot) — e.g. an embedded, cross-origin form. Omit (or 0) for the page itself." },
           "clear": { "type": "boolean", "default": false, "description": "Clear the captured buffer after returning it." }
@@ -219,10 +229,11 @@
     },
     {
       "name": "list_network_requests",
-      "description": "List network requests captured from a shared tab (method, url, status, resource type, size, duration). Requires the user to have enabled 'Capture console, errors & network via CDP' (developer mode) — otherwise returns an empty list with source:'off' and a hint. Recorded continuously from the moment the tab was shared. Results are newest-last; pass a returned requestId to get_network_request for headers and the response body. CSP-safe (CDP).",
+      "description": "List network requests captured from a shared tab (method, url, status, resource type, size, duration). Requires the user to have enabled 'Capture console, errors & network via CDP' (developer mode) — otherwise returns an empty list with source:'off' and a hint. Recorded continuously from the moment the tab was shared. Results are newest-last; pass a returned requestId to get_network_request for headers and the response body. CSP-safe (CDP). Window etiquette: with the user's 'Wake the browser' setting on, this call may bring their browser window to the front when the page is asleep, which interrupts them; for polling and scheduled checks pass quiet:true and prefer get_page_content or execute_script. Raise the window only as a last resort.",
       "inputSchema": {
         "type": "object",
         "properties": {
+          "quiet": { "type": "boolean", "default": false, "x-requires": "quiet", "description": "If true, this call NEVER brings the user's browser window to the front (and screenshot's activate is refused): when the page cannot answer without that, you get an error saying so instead. Use it for background polling and scheduled checks, so you do not interrupt the user (a full-screen game, a call, a presentation). Default false: with the user's 'Wake the browser' setting on, a call may raise a minimized or covered window." },
           "tabId": { "type": "integer", "description": "Target tab; omit for active tab." },
           "urlContains": { "type": "string", "description": "Only requests whose URL contains this substring." },
           "method": { "type": "string", "description": "Filter by HTTP method (GET/POST/…), case-insensitive." },
@@ -236,10 +247,11 @@
     },
     {
       "name": "get_network_request",
-      "description": "Return full detail for ONE captured network request by its requestId (from list_network_requests): request/response headers, status, timing, remote IP, and (optionally) the response body. Requires network capture to be enabled and the tab still attached. The body may be base64 for binary responses and is size-capped; it can be unavailable if Chrome has already evicted it from its buffer. SECURITY: headers and bodies may contain credentials (Authorization, Cookie, Set-Cookie, tokens) — treat the result as secret and never echo it to an untrusted destination.",
+      "description": "Return full detail for ONE captured network request by its requestId (from list_network_requests): request/response headers, status, timing, remote IP, and (optionally) the response body. Requires network capture to be enabled and the tab still attached. The body may be base64 for binary responses and is size-capped; it can be unavailable if Chrome has already evicted it from its buffer. SECURITY: headers and bodies may contain credentials (Authorization, Cookie, Set-Cookie, tokens) — treat the result as secret and never echo it to an untrusted destination. Window etiquette: with the user's 'Wake the browser' setting on, this call may bring their browser window to the front when the page is asleep, which interrupts them; for polling and scheduled checks pass quiet:true and prefer get_page_content or execute_script. Raise the window only as a last resort.",
       "inputSchema": {
         "type": "object",
         "properties": {
+          "quiet": { "type": "boolean", "default": false, "x-requires": "quiet", "description": "If true, this call NEVER brings the user's browser window to the front (and screenshot's activate is refused): when the page cannot answer without that, you get an error saying so instead. Use it for background polling and scheduled checks, so you do not interrupt the user (a full-screen game, a call, a presentation). Default false: with the user's 'Wake the browser' setting on, a call may raise a minimized or covered window." },
           "tabId": { "type": "integer", "description": "Target tab; omit for active tab." },
           "requestId": { "type": "string", "description": "The requestId from list_network_requests." },
           "includeBody": { "type": "boolean", "default": true, "description": "Also fetch the response body (may fail if the body is no longer buffered)." },

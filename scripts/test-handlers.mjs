@@ -37,6 +37,7 @@ function cdpReply(method) {
     return {};
   }
   if (method === "Page.getFrameTree") { const t = treeOf(); if (PAGE.onTree) PAGE.onTree(); return { frameTree: t }; }
+  if (method === "Page.setWebLifecycleState") { if (PAGE.tabs[1] && !PAGE.keepFrozen) PAGE.tabs[1].frozen = false; return {}; }
   if (method === "Runtime.evaluate") { if (PAGE.evalHang) return new Promise((_, rej) => HANGS.push(rej)); if (PAGE.evalError) throw new Error(PAGE.evalError); return { result: { value: PAGE.evalValue ?? 42 } }; }
   return {};
 }
@@ -375,6 +376,26 @@ eq((await run(() => HANDLERS.type({ tabId: 1, frameId: 3, selector: "#e", text: 
 injected = { focus: { ok: true, focused: true, hasFocus: false, tag: "textarea" }, hasFocusLater: false };
 eq(/background or minimized/.test((await run(() => HANDLERS.type({ tabId: 1, frameId: 3, selector: "#e", text: "x", trusted: true, _trusted: true }))).ok?.warning ?? ""), true, "type: the warning stays when the page never reports focus");
 injected = {};
+
+// ---- a frozen page is thawed through the debugger, without touching the window ----------------------------
+{
+  const { thawIfFrozen, thawWait } = await import("../extension/handlers/index.js");
+  Object.assign(thawWait, { polls: 3, pollMs: 10 });
+  page({ 0: probe("https://a.com") }); CDP = [];
+  PAGE.tabs[1] = { id: 1, url: "https://a.com/", active: true, windowId: 1, frozen: true };
+  eq(await thawIfFrozen(1), "thawed", "a frozen tab is thawed");
+  eq(CDP.map((c) => c.method), ["attach", "Page.setWebLifecycleState", "detach"], "...with one debugger round trip (attach, thaw, detach)");
+  eq(CDP.find((c) => c.method === "Page.setWebLifecycleState")?.params, { state: "active" }, "...asking for the 'active' lifecycle state");
+  CDP = [];
+  eq([await thawIfFrozen(1), CDP.length], ["not-frozen", 0], "a tab that is not frozen is left alone (the debugger is never attached)");
+  PAGE.tabs[1].frozen = true; PAGE.keepFrozen = true;
+  eq(await thawIfFrozen(1), "still-frozen", "a thaw that does not take effect is reported, not hidden");
+  PAGE.keepFrozen = false; PAGE.tabs[1].frozen = true;
+  const had = chrome.permissions.contains; chrome.permissions.contains = async () => false;
+  eq(await thawIfFrozen(1), "failed", "without the debugger permission the thaw is simply not possible");
+  chrome.permissions.contains = had;
+  eq(await thawIfFrozen(999), "not-frozen", "an unknown tab id answers from the default tab (not frozen) without error");
+}
 
 // ---- a script that never finishes must not block the tab's later evals --------------------------------
 {

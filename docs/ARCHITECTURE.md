@@ -114,6 +114,15 @@ window the user is working in is never touched, and a tab Chrome unloaded to sav
 is never woken (that would reload the page). Shared tabs are marked non-discardable
 while shared.
 
+Two more cases. A page Chrome has *frozen* (hidden and silent for a long time, mostly under
+Energy Saver) runs nothing, so scripting and CDP calls to it hang; the extension sees
+`tab.frozen` and thaws it before the call through the debugger (`Page.setWebLifecycleState`
+"active", `thawIfFrozen`), with no window involved; this needs the *Allow CDP eval* opt-in.
+And a call may carry `quiet:true` (feature `quiet`): the window is then never raised, not even
+after a timeout, and a call that cannot be answered without it fails with an explanation.
+A call the page does not answer within 18 s ends with `TIMEOUT` (typically a "Leave site?"
+dialog); unless quiet, the window is raised and left up so the user can answer it.
+
 ## execute_script & page CSP
 
 Arbitrary-string eval via `chrome.scripting.executeScript` is blocked by a page's

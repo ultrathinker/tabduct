@@ -87,7 +87,7 @@ const code = (r) => (r?.ok ? "ok" : r?.error?.code);
 TABS = [{ id: 1, url: "https://console.aws.amazon.com/home", active: true, windowId: 1, title: "AWS" }];
 const { port: P1, open, st } = await connect();
 eq(st.state, "connected", "connect: the fake host's reply connects");
-eq([open.payload.extensionVersion, open.payload.features, open.payload.hub], ["9.9.9", ["frames", "pinned-docs", "cdp-input", "wait-text"], true], "open carries extensionVersion + features");
+eq([open.payload.extensionVersion, open.payload.features, open.payload.hub], ["9.9.9", ["frames", "pinned-docs", "cdp-input", "wait-text", "quiet"], true], "open carries extensionVersion + features");
 eq(open.payload.port, 0, "open asks for an ephemeral port (no lastPort reuse)");
 
 // ---- lock on: pins, drift pauses, navigate pre-check -------------------------------------
@@ -329,6 +329,57 @@ eq(groupAction({ ...base, tier: "all", inOurGroup: true, shared: false }), null,
   await sleep(300);
   eq([WINLOG.filter((p) => p.focused).length >= 1, WINLOG.some((p) => p.state === "minimized")], [true, false], "...the window was brought forward and is NOT minimized again, so the user can answer the dialog");
   callDeadline.ms = 18000; WINSTATE = "normal";
+}
+
+// ---- quiet:true never raises the window; a frozen page is thawed first ------------------------------------------
+{
+  const { callDeadline } = await import("../extension/handlers/index.js");
+  await C.revokeAll(); await C.setShareOptions({ lockToDomain: false, allowCdp: false });
+  TABS = [{ id: 1, url: "https://claude.ai/directory/manage", active: true, windowId: 1, title: "Dir" }];
+  await C.shareTab(1);
+  await popup({ cmd: "disconnect" }); // (the block above left a live connection; a fresh one gives a fresh fake port)
+  const { port: P4 } = await connect();
+
+  WINSTATE = "minimized"; WINLOG = [];
+  eq(code(await call(P4, "get_page_content", { tabId: 1 })), "ok", "(setup) without quiet a minimized window is raised for a read");
+  await sleep(80);
+  eq(WINLOG.some((p) => p.focused), true, "...yes: the window was brought forward");
+
+  WINLOG = [];
+  eq(code(await call(P4, "get_page_content", { tabId: 1, quiet: true })), "ok", "quiet:true: the read still works");
+  await sleep(80);
+  eq(WINLOG, [], "...and the window is not touched at all");
+
+  const sc = await call(P4, "screenshot", { tabId: 1, quiet: true, activate: true });
+  eq([sc?.ok, sc?.error?.code], [false, "INVALID_ARGS"], "quiet + activate contradict each other: refused");
+
+  callDeadline.ms = 80;
+  const real = chrome.scripting.executeScript;
+  chrome.scripting.executeScript = (d) => (d.func?.name === "probeFrame" ? real(d) : new Promise(() => {}));
+  WINLOG = [];
+  const stuck = await call(P4, "get_page_content", { tabId: 1, quiet: true });
+  chrome.scripting.executeScript = real;
+  eq([stuck?.error?.code, /quiet: the window was not raised/.test(stuck?.error?.message || "")], ["TIMEOUT", true], "quiet + a page that never answers: TIMEOUT that says the window was not raised");
+  await sleep(100);
+  eq(WINLOG, [], "...and the window really stayed down");
+  callDeadline.ms = 18000;
+
+  // a frozen page (hidden for hours) is thawed through the debugger before the call, window untouched
+  WINSTATE = "normal"; WINLOG = [];
+  const DBG = [];
+  const had = { debugger: chrome.debugger, contains: chrome.permissions.contains };
+  chrome.permissions.contains = async () => true;
+  chrome.debugger = { onEvent: { addListener() {} }, onDetach: { addListener() {} }, async attach() { DBG.push("attach"); }, async detach() { DBG.push("detach"); }, async sendCommand(_t, m, p) { DBG.push(m + (p?.state ? ":" + p.state : "")); if (m === "Page.setWebLifecycleState") TABS[0].frozen = false; return {}; } };
+  await C.setShareOptions({ allowCdp: true });
+  TABS[0].frozen = true;
+  eq(code(await call(P4, "get_page_content", { tabId: 1, quiet: true })), "ok", "a frozen tab: the read works");
+  eq(DBG, ["attach", "Page.setWebLifecycleState:active", "detach"], "...after a silent thaw through the debugger");
+  eq(WINLOG, [], "...without touching the window");
+  DBG.length = 0; TABS[0].frozen = true;
+  await C.setShareOptions({ allowCdp: false });
+  await call(P4, "get_page_content", { tabId: 1, quiet: true });
+  eq(DBG.length, 0, "without the CDP opt-in nothing attaches (no silent thaw; falls back to the usual wake)");
+  chrome.debugger = had.debugger; chrome.permissions.contains = had.contains; delete TABS[0].frozen;
 }
 
 console.log(fails ? `\nGATE TESTS FAILED (${fails})` : "\nGATE TESTS PASSED");

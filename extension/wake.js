@@ -15,6 +15,9 @@
 // minimized window is minimized again and a covered one is left on top.
 // Never touches a discarded tab: activating it would reload the page and lose its state.
 
+// Tools that act inside a page and so accept `quiet:true` ("never raise the user's window for this call") and
+// get a silent thaw of a frozen page. Not the tab-management tools (open/close/activate/navigate/list).
+export const QUIET_TOOLS = new Set(["execute_script", "get_page_content", "get_dom_snapshot", "list_frames", "screenshot", "click", "type", "press_key", "wait_for", "get_console_logs", "list_network_requests", "get_network_request"]);
 export const WAKE_TOOLS = new Set(["screenshot", "type", "click", "press_key", "get_page_content", "get_dom_snapshot"]);
 
 // Timing is configurable so the tests do not have to wait.

@@ -4,10 +4,10 @@
 // invoke chokepoint with per-tab CONSENT enforcement (Feature B), shared-tab
 // badges, the share hotkey, and popup messaging. See PROTOCOL.md + consent.js.
 
-import { HANDLERS, withCallDeadline, detachCdpTab, detachAllCdp, startCdpConsole, stopCdpConsole, stopAllCdpConsole, reconcileCdpForce, cdpConsoleTabs, cdpUserCancelled } from "./handlers/index.js";
+import { HANDLERS, withCallDeadline, thawIfFrozen, detachCdpTab, detachAllCdp, startCdpConsole, stopCdpConsole, stopAllCdpConsole, reconcileCdpForce, cdpConsoleTabs, cdpUserCancelled } from "./handlers/index.js";
 import * as CONSENT from "./consent.js";
 import { GroupMask, groupAction } from "./groupsync.js";
-import { WAKE_TOOLS, wake as wakeTab, release as releaseTab } from "./wake.js";
+import { WAKE_TOOLS, QUIET_TOOLS, wake as wakeTab, release as releaseTab } from "./wake.js";
 
 const HOST_NAME = "com.tabduct.host";
 const DEFAULT_PORT = 0; // 0 = ephemeral: the host picks a free port (no manual port config)
@@ -19,7 +19,7 @@ const OPEN_TIMEOUT_MS = 20000;
 // What this build can do beyond the base protocol. Sent in `open`; the host refuses calls that
 // need a feature an older extension build doesn't have (instead of silently running them
 // elsewhere — e.g. a frameId ignored by a build that predates frames).
-const FEATURES = ["frames", "pinned-docs", "cdp-input", "wait-text"];
+const FEATURES = ["frames", "pinned-docs", "cdp-input", "wait-text", "quiet"];
 const EXT_VERSION = chrome.runtime.getManifest().version;
 
 // Is a shared hub already listening on this machine? (any HTTP response = up; connection
@@ -254,7 +254,7 @@ async function gate(tool, args) {
   // lock-to-domain is on and this is a per-tab share (null = a blank page). Undefined = not
   // pinned (lock off, or the "Everything" tier): the page tools then only apply the origin filter.
   const pin = state.lockToDomain && state.tier === "tabs" ? host : undefined;
-  const out = { ...d, tabId, host, pin, wake: state.wakeBrowser !== false };
+  const out = { ...d, tabId, host, pin, wake: state.wakeBrowser !== false, thaw: state.allowCdp === true };
   if (tool === "execute_script" && d.allow) {
     const cd = CONSENT.cdpDecision(state, { engine: args?.engine });
     if (!cd.permitted) return { allow: false, code: cd.code, message: "CDP eval is not enabled (enable 'Allow CDP eval' in the popup, or switch engine to auto/scripting)" };
@@ -309,6 +309,11 @@ async function handleInvoke(msg) {
     const handler = HANDLERS[tool];
     if (!handler) { reply(id, false, { code: "UNKNOWN_TOOL", message: `Unknown tool: ${tool}` }); return; }
 
+    // `quiet`: the caller asks that its user's window is NEVER raised for this call (scheduled checks while the
+    // user plays or presents). A screenshot of a background tab that asks to be activated contradicts that.
+    const quiet = args.quiet === true && QUIET_TOOLS.has(tool);
+    if (quiet && args.activate === true) { reply(id, false, { code: "INVALID_ARGS", message: "quiet and activate contradict each other: activating a tab raises the window" }); return; }
+
     const decision = await gate(tool, args);
     if (!decision.allow) { reply(id, false, { code: decision.code, message: decision.message }); flashDenied(decision.tabId); return; }
 
@@ -326,15 +331,18 @@ async function handleInvoke(msg) {
       if (decision._allowCdp != null) callArgs._allowCdp = decision._allowCdp;
       if (decision._cdpAlways != null) callArgs._cdpAlways = decision._cdpAlways;
     }
+    // A frozen page answers nothing: thaw it first, silently (no window involved). Only after the gate said yes.
+    if (decision.thaw && QUIET_TOOLS.has(tool) && decision.tabId != null) await thawIfFrozen(decision.tabId);
     // A hidden window/tab (minimized, covered, background) is brought forward for the call when the
-    // user left "Wake the browser" on; wake.js puts it back afterwards. Only after the gate said yes.
-    const woken = decision.wake && WAKE_TOOLS.has(tool) && decision.tabId != null ? await wakeTab(decision.tabId) : null;
+    // user left "Wake the browser" on and the caller did not ask for quiet; wake.js puts it back afterwards.
+    const woken = decision.wake && !quiet && WAKE_TOOLS.has(tool) && decision.tabId != null ? await wakeTab(decision.tabId) : null;
     let result;
     try { result = await withCallDeadline(tool, callArgs, handler(callArgs)); }
     catch (e) {
       // The page did not answer: most likely it is waiting for the user (a "Leave site?" prompt, an alert).
       // Bring the window forward and leave it there so the user can see and answer it.
-      if (e?.stuck && decision.wake && decision.tabId != null) { try { releaseTab(await wakeTab(decision.tabId, { keep: true })); } catch {} }
+      if (e?.stuck && quiet) e.message += " (quiet: the window was not raised)";
+      else if (e?.stuck && decision.wake && decision.tabId != null) { try { releaseTab(await wakeTab(decision.tabId, { keep: true })); } catch {} }
       throw e;
     }
     finally { releaseTab(woken); }

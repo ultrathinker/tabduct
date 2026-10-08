@@ -4,6 +4,20 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims for
 [Semantic Versioning](https://semver.org/) once it reaches 1.0.
 
+## [1.7.0] — 2026-10-08
+
+### Added
+- **`quiet: true` on the page tools** (`execute_script`, `get_page_content`, `get_dom_snapshot`, `list_frames`, `screenshot`, `click`, `type`,
+  `press_key`, `wait_for`, console and network reads; new feature `quiet`, so an old extension build is refused with `EXTENSION_OUTDATED`
+  instead of raising the window anyway). The call never brings the user's window forward, not even after a timeout; `screenshot` with
+  `activate:true` is refused as contradictory. For scheduled checks and polling while the user plays or presents.
+- **Silent thaw of a frozen page.** Chrome freezes a tab that has been hidden and silent for a long time (Energy Saver, Chrome 133+); a frozen
+  page runs nothing, so every call to it hung (reproduced: scripting and CDP calls hang, `chrome.tabs.get` reports `frozen: true`). Before a page
+  tool runs, a frozen tab is now thawed through the debugger (`Page.setWebLifecycleState` "active": window stays untouched, verified in a real
+  Chrome). Needs *Allow CDP eval*; without it the usual wake is the fallback.
+- **Window etiquette in every tool description** that can raise the window (and in the README, "Using Tabduct without disturbing the user"):
+  read in the background, pass `quiet:true` for polling, raise the window only as a last resort.
+
 ## [1.6.6] — 2026-10-07
 
 ### Fixed

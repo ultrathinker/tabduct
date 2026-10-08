@@ -880,6 +880,23 @@ async function cdpEvalNow(tabId, code, callArgs, pin, { hold } = {}) {
   });
 }
 
+// A page Chrome has FROZEN (hidden and silent for a long time, mostly under Energy Saver) runs nothing: every
+// scripting call and every CDP evaluation to it hangs until it is thawed. `tab.frozen` says so, and the
+// debugger can thaw it without touching the window (Page.setWebLifecycleState "active"; verified in a real
+// Chrome, window stays minimized). Needs the debugger opt-in ("Allow CDP eval"). Returns what happened.
+export const thawWait = { polls: 10, pollMs: 100 }; // mutable for the tests
+export async function thawIfFrozen(tabId) {
+  let tab; try { tab = await chrome.tabs.get(tabId); } catch { return "no-tab"; }
+  if (tab.frozen !== true) return "not-frozen";
+  try { await cdpWith(tabId, {}, (send) => send("Page.setWebLifecycleState", { state: "active" })); }
+  catch { return "failed"; }
+  for (let i = 0; i < thawWait.polls; i++) {
+    try { if ((await chrome.tabs.get(tabId)).frozen !== true) return "thawed"; } catch { return "no-tab"; }
+    await new Promise((r) => setTimeout(r, thawWait.pollMs));
+  }
+  return "still-frozen";
+}
+
 // Run `fn(send)` with the debugger attached to the tab (attach is idempotent; the session is
 // detached afterwards unless force mode / console capture / another in-flight call holds it).
 // `send(method, params)` is chrome.debugger.sendCommand bound to the tab.

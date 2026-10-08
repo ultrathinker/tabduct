@@ -123,7 +123,7 @@ and `false` mean the default behaviour) unless the `features` the extension repo
 `open` include the feature. It answers `EXTENSION_OUTDATED` instead — nothing is run. A build
 that reports no `features` has none. The features in use: `frames` (`frameId`, `list_frames`),
 `pinned-docs` (reported by the extension, no tool argument depends on it yet), `cdp-input`
-(`trusted` input, `press_key`) and `wait-text` (`wait_for` with `text`).
+(`trusted` input, `press_key`), `wait-text` (`wait_for` with `text`) and `quiet` (the `quiet:true` argument of the page tools: never raise the window for this call; a build without it would raise it anyway, so it is refused).
 
 **Core loop:** MCP tool call arrives → host sends
 `{ type:"invoke", id, payload:{ tool, args } }` → extension runs it and replies

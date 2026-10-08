@@ -373,6 +373,26 @@ try {
   await setDeny([]);
 
   // ======================================================================================================
+  console.log("— a frozen page (what Chrome does to a long-hidden tab) is thawed silently");
+  {
+    await setDeny([]);
+    const ft = await sw(`return await openTab(${JSON.stringify(URL_A + "/?freeze-test")});`); // a URL no other test tab has
+    await sleep(800);
+    const tg = (await cdp("Target.getTargets")).targetInfos.find((t) => t.url === URL_A + "/?freeze-test");
+    const { sessionId } = await cdp("Target.attachToTarget", { targetId: tg.targetId, flatten: true });
+    await cdp("Page.setWebLifecycleState", { state: "frozen" }, sessionId);
+    await cdp("Target.detachFromTarget", { sessionId });
+    await sleep(500);
+    ok(await sw(`return (await chrome.tabs.get(${ft})).frozen === true;`) === true, "the tab reports frozen:true to the extension");
+    const hung = await sw(`const p = chrome.scripting.executeScript({ target: { tabId: ${ft} }, func: () => 1 }).then(() => "answered"); return await Promise.race([p, new Promise((r) => setTimeout(() => r("HANGS"), 2500))]);`);
+    ok(hung === "HANGS", "...and a scripting call to it hangs (the failure the agents saw)", hung);
+    const th = await sw(`return await H.thawIfFrozen(${ft});`);
+    ok(th === "thawed", "thawIfFrozen thaws it through the debugger", th);
+    const after = await sw(`const p = chrome.scripting.executeScript({ target: { tabId: ${ft} }, func: () => document.title }).then((r) => r[0].result); return await Promise.race([p, new Promise((r) => setTimeout(() => r("HANGS"), 4000))]);`);
+    ok(after === "Shop", "...and the page answers again", after);
+  }
+
+  // ======================================================================================================
   console.log("— the Stop dialog of the popup (the background is faked as 'connected'; this checks the page itself)");
   {
     const { targetId } = await cdp("Target.createTarget", { url: `chrome-extension://${EXT}/popup.html` });
