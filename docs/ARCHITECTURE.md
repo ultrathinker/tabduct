@@ -101,6 +101,26 @@ The extension background is an MV3 service worker and can be evicted.
   browser restores the endpoint without a manual reconnect. The popup reads
   state from storage, never from worker globals. See PROTOCOL.md §8.
 
+## One code base, two browser families
+
+`extension/` is the single code base. Chrome (and Edge, Brave, Opera, Vivaldi) loads the folder as it is. Firefox gets a build:
+`scripts/build-firefox.mjs` copies `extension/` into `dist/firefox` and patches the manifest from `firefox/manifest.patch.json`
+(a module event page instead of a service worker, the add-on id, no `key`, no `debugger` / `tabGroups` / `favicon` permissions); a permission
+added to the Chrome manifest therefore reaches Firefox unless the patch removes it. Nothing is forked: the host, hub, protocol, consent store
+(`consent.js`), wake logic and popup are the same bytes.
+
+What a browser offers is asked in one place, `extension/platform.js`, at call time: `hasDebugger()` (Chrome has `chrome.debugger`, Firefox does
+not), `hasTabGroups()`, `isFirefox()`. Where something is missing the feature is off, consistently: `withPlatform(state)` turns the CDP
+opt-ins off (the gate, the popup status and the CDP reconcile all read the state through it), the extension does not report the `cdp-input`
+feature in `open`, the gate answers a trusted-input or CDP call with `CDP_NOT_PERMITTED` and a message that names Firefox, and the popup
+hides the elements marked `data-needs="debugger"` / `data-needs="tabgroups"`. The `open` payload also carries `browser` (`"chromium"` or
+`"firefox"`); the host keeps it in the discovery entry, the hub shows it in `list_instances`, and a refusal for a missing feature is worded for
+that browser (a Firefox that lacks `cdp-input` is not "outdated", it can never do it; an outdated Firefox is told to reload at `about:debugging`).
+
+Native messaging: Firefox reads another registry key (`HKCU\Software\Mozilla\NativeMessagingHosts\<name>`) and another folder on macOS and
+Linux, and allows an add-on by `allowed_extensions` (its id) instead of `allowed_origins`; `hosts/node/src/register.js` writes that
+manifest to a file of its own (`com.tabduct.host.firefox.json` on Windows). The host process and the wire protocol are the same.
+
 ## Waking a sleeping tab
 
 A minimized window, a window covered by others or a background tab is "hidden" to

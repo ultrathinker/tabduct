@@ -4,6 +4,24 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims for
 [Semantic Versioning](https://semver.org/) once it reaches 1.0.
 
+## [1.9.0] — 2026-10-27
+
+### Added
+- **Firefox.** The extension code runs in Firefox 128+ (MV3) from the same code base: `npm run build:firefox` (and `build:firefox:xpi`) makes `dist/firefox` from
+  `extension/` and the manifest patch `firefox/manifest.patch.json`; `tabduct register --browser firefox` installs the native-messaging manifest (an `HKCU`
+  registry key on Windows, `allowed_extensions` with the add-on id). A Firefox and the Chrome profiles sit behind the same hub and endpoint; `list_instances`
+  shows `browser: "firefox"`. Chrome keeps loading `extension/` as before.
+  Status: the extension side is tested on a real Firefox 159 (e2e below); the native-messaging registration is covered by tests that write nothing and has not
+  yet been run against a real Firefox session with the hub.
+- **`extension/platform.js`** asks what the browser offers at call time. Firefox has no `chrome.debugger` and no tab-group API, so there the CDP features are off
+  (trusted input and `press_key`, `execute_script` with `engine: "cdp"`, CDP console/network capture, thawing): such a call is refused with `CDP_NOT_PERMITTED`
+  and a message that names Firefox; the extension does not report the `cdp-input` feature; the popup does not show the CDP and tab-group settings; the
+  default label is `Firefox-xxxx`. The host and the hub carry the `browser` field and word a missing-feature refusal for that browser (an outdated Firefox is
+  told to reload at `about:debugging`, not at `chrome://extensions`).
+- Tests: `scripts/test-firefox-build.mjs` (the build and the .xpi), `scripts/test-register.mjs`, Firefox cases in the gate and hub conformance tests, and the
+  opt-in `scripts/e2e-firefox.mjs` (`npm run test:e2e-firefox`): a separate headless Firefox with a throwaway profile loads the build and runs the tools on real
+  pages, the lock to the page's origin and the popup.
+
 ## [1.8.1] — 2026-10-08
 
 ### Changed

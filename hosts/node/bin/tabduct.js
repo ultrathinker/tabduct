@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Tabduct Node host — CLI.
-//   tabduct register [--browser chrome|edge|brave|chromium]
+//   tabduct register [--browser chrome|edge|brave|chromium|firefox]
 //   tabduct unregister [--browser ...]
 //   tabduct doctor      diagnose the setup
 //   tabduct run         run the native host directly (Chrome normally does this)
@@ -32,7 +32,7 @@ switch (cmd) {
     break;
   }
   case "doctor": {
-    const { extensionId } = await import("../src/register.js");
+    const { extensionId, geckoId } = await import("../src/register.js");
     const manifest = resolve(REPO, "extension/manifest.json");
     console.log("node        :", process.execPath, process.version);
     console.log("manifest    :", existsSync(manifest) ? "found" : "MISSING");
@@ -40,6 +40,7 @@ switch (cmd) {
       const m = JSON.parse(readFileSync(manifest, "utf8"));
       console.log("manifest.key:", m.key ? "present" : "MISSING (run scripts/gen-key.js)");
       if (m.key) console.log("extension id:", extensionId());
+      try { console.log("firefox id  :", geckoId()); } catch (e) { console.log("firefox id  : unreadable -", e.message); }
     } catch (e) { console.log("manifest    : unreadable —", e.message); }
     console.log("node_path   :", existsSync(resolve(HOST_DIR, "node_path.txt")) ? "pinned" : "not pinned (run `tabduct register`)");
     const launcher = resolve(HOST_DIR, process.platform === "win32" ? "run_host.bat" : "run_host.sh");
@@ -80,6 +81,6 @@ switch (cmd) {
     await import("../src/index.js");
     break;
   default:
-    console.error("usage: tabduct <register|unregister|doctor|run|instances|hub> [--browser chrome|edge|brave|chromium]");
+    console.error("usage: tabduct <register|unregister|doctor|run|instances|hub> [--browser chrome|edge|brave|chromium|firefox]");
     process.exit(1);
 }

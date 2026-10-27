@@ -23,6 +23,8 @@ Diagnose the host with `npm run doctor`.
 npm test        # consent/store/handler/wake/gate/host tests + host and hub conformance (pure JS, no browser)
 npm run test:e2e        # opt-in: end-to-end in a real, throwaway headless Chrome
 npm run test:e2e-wake   # opt-in: "Wake the browser" in a real headed Chrome (a window shows for a few seconds)
+npm run test:e2e-firefox   # opt-in: the Firefox build in a real, separate headless Firefox (Developer Edition, Nightly or ESR)
+npm run build:firefox   # dist/firefox from extension/ + firefox/manifest.patch.json (never edit a copy: change extension/ or the patch)
 ```
 
 All of them must stay green. If you change consent logic, add a case to

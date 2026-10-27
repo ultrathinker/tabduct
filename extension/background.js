@@ -7,6 +7,7 @@
 import { HANDLERS, withCallDeadline, thawIfFrozen, thawTraceOf, releaseThaw, detachCdpTab, detachAllCdp, startCdpConsole, stopCdpConsole, stopAllCdpConsole, reconcileCdpForce, cdpConsoleTabs, cdpUserCancelled } from "./handlers/index.js";
 import * as CONSENT from "./consent.js";
 import { GroupMask, groupAction } from "./groupsync.js";
+import { browserName, browserTitle, hasDebugger, hasTabGroups, withPlatform } from "./platform.js";
 import { WAKE_TOOLS, QUIET_TOOLS, wake as wakeTab, release as releaseTab } from "./wake.js";
 
 const HOST_NAME = "com.tabduct.host";
@@ -20,6 +21,8 @@ const OPEN_TIMEOUT_MS = 20000;
 // need a feature an older extension build doesn't have (instead of silently running them
 // elsewhere — e.g. a frameId ignored by a build that predates frames).
 const FEATURES = ["frames", "pinned-docs", "cdp-input", "wait-text", "quiet"];
+// What THIS browser can do: "cdp-input" (trusted input) needs the debugger API, which Firefox does not have.
+const features = () => FEATURES.filter((f) => f !== "cdp-input" || hasDebugger());
 const EXT_VERSION = chrome.runtime.getManifest().version;
 
 // Is a shared hub already listening on this machine? (any HTTP response = up; connection
@@ -65,7 +68,7 @@ async function getIdentity() {
   let instanceId = g.instanceId, token = g.token, label = g.instanceLabel;
   if (!instanceId) { instanceId = crypto.randomUUID(); patch.instanceId = instanceId; }
   if (!token) { token = crypto.randomUUID(); patch.token = token; }
-  if (!label) { label = `Chrome-${labelSuffix()}`; patch.instanceLabel = label; } // auto default when unset
+  if (!label) { label = `${browserTitle()}-${labelSuffix()}`; patch.instanceLabel = label; } // auto default when unset
   if (Object.keys(patch).length) await chrome.storage.local.set(patch);
   return { instanceId, label, token };
 }
@@ -104,7 +107,7 @@ function connect(port = DEFAULT_PORT) {
 
     try {
       // Hub is the ONLY agent-facing endpoint — always request it (the toggle is gone).
-      const res = await request("open", { port: usePort, token, protocolVersion: PROTOCOL_VERSION, instanceId, label, hub: true, extensionVersion: EXT_VERSION, features: FEATURES }, OPEN_TIMEOUT_MS);
+      const res = await request("open", { port: usePort, token, protocolVersion: PROTOCOL_VERSION, instanceId, label, hub: true, extensionVersion: EXT_VERSION, features: features(), browser: browserName() }, OPEN_TIMEOUT_MS);
       if (gen !== connGen) { // user hit Disconnect while we were handshaking → honor it
         try { thisPort.disconnect(); } catch {} if (hostPort === thisPort) hostPort = null; rejectAllPending("disconnected during connect");
         await setState({ state: "disconnected", error: null }); scheduleBadges(); return getConnState();
@@ -210,7 +213,7 @@ async function resolveActiveTabId() {
 // Decide whether a tab-targeting/create tool may run; handle sticky-origin revoke.
 const pausedNow = new Set(); // tabs we already reported as paused (one event per pause, not per refused call)
 async function gate(tool, args) {
-  const state = await CONSENT.getState();
+  const state = withPlatform(await CONSENT.getState());
   // Destination guard for tools carrying a target URL: only http(s), never a
   // denylisted/allow-list-blocked origin (and don't disclose which). Blocks file:/data:/javascript:.
   // The origin filter is judged only AFTER the call is authorized: asked first, ORIGIN_DENIED vs
@@ -263,7 +266,7 @@ async function gate(tool, args) {
   const out = { ...d, tabId, host, pin, wake: wakeOk, thaw: state.allowCdp === true };
   if (tool === "execute_script" && d.allow) {
     const cd = CONSENT.cdpDecision(state, { engine: args?.engine });
-    if (!cd.permitted) return { allow: false, code: cd.code, message: "CDP eval is not enabled (enable 'Allow CDP eval' in the popup, or switch engine to auto/scripting)" };
+    if (!cd.permitted) return { allow: false, code: cd.code, message: hasDebugger() ? "CDP eval is not enabled (enable 'Allow CDP eval' in the popup, or switch engine to auto/scripting)" : "CDP eval is not available in this browser (Firefox has no debugger API): use engine auto or scripting" };
     out._engine = cd.engine; // effective engine the handler must run
     out._allowCdp = state.allowCdp === true; // authorizes the auto CSP→CDP fallback
     out._cdpAlways = state.allowCdp === true && state.cdpAlways === true; // keep the tab attached (force mode)
@@ -273,7 +276,7 @@ async function gate(tool, args) {
   // and only for tools that allow it. The handlers re-check `_trusted` (set only here).
   if (d.allow && (tool === "press_key" || ((tool === "type" || tool === "click") && args?.trusted))) {
     const cd = CONSENT.cdpDecision(state, { engine: "cdp" });
-    if (!cd.permitted) return { allow: false, code: cd.code, message: "trusted input drives the page through the browser's debugger: turn on 'Allow CDP eval' in the Tabduct popup and turn read-only off" };
+    if (!cd.permitted) return { allow: false, code: cd.code, message: hasDebugger() ? "trusted input drives the page through the browser's debugger: turn on 'Allow CDP eval' in the Tabduct popup and turn read-only off" : "trusted (browser-level) input and press_key need the browser's debugger API, which Firefox does not have: they are not available in this browser" };
     out._trusted = true;
   }
   return out; // resolved ONCE — the handler reuses this exact tab + authorized host (no TOCTOU re-resolve)
@@ -589,7 +592,7 @@ function reconcileCdpConsole(sharedTabIds) {
   return cdpReconciling;
 }
 async function _reconcileCdp(sharedTabIds) {
-  const st = await CONSENT.getState();
+  const st = withPlatform(await CONSENT.getState());
   const connected = (await getConnState()).state === "connected";
   // Console capture: attach to shared tabs while on, stop everywhere otherwise.
   if (st.allowCdp && st.cdpConsole && connected) {
@@ -697,7 +700,7 @@ function flashDenied(tabId) {
 // Sharing status for the popup
 
 async function sharingStatus() {
-  const st = await CONSENT.getState();
+  const st = withPlatform(await CONSENT.getState());
   const all = await chrome.tabs.query({});
   const shared = CONSENT.visibleTabIds(st, all, Date.now()).map((t) => ({ id: t.id, title: t.title, url: t.url, favIconUrl: t.favIconUrl, wake: CONSENT.tabWake(st, t.id) }));
   // Grants that are alive but paused because the tab left its shared origin (lock-to-domain):
@@ -707,7 +710,7 @@ async function sharingStatus() {
   const { useTabGroup, noAutoShareOpened, unshareOnGroupLeave } = await chrome.storage.local.get(["useTabGroup", "noAutoShareOpened", "unshareOnGroupLeave"]);
   const { label } = await getIdentity(); // ensures + returns the auto default label
   const allShared = st.tier === "all" ? all.filter((t) => !CONSENT.originBlocked(st, CONSENT.hostOf(t.url))).length : shared.length;
-  return { tier: st.tier, denyOrigins: st.denyOrigins, originMode: st.originMode, sharedCount: allShared, tabs: shared, paused, activeTabId: active?.id, label, useTabGroup: useTabGroup !== false, unshareOnGroupLeave: unshareOnGroupLeave === true, readOnly: st.readOnly, ttlMs: st.ttlMs, lockToDomain: st.lockToDomain, noAutoShareOpened: noAutoShareOpened !== false, allowCdp: st.allowCdp, cdpAlways: st.cdpAlways, cdpConsole: st.cdpConsole, wakeBrowser: st.wakeBrowser, silent: st.silent, extensionVersion: EXT_VERSION };
+  return { tier: st.tier, denyOrigins: st.denyOrigins, originMode: st.originMode, sharedCount: allShared, tabs: shared, paused, activeTabId: active?.id, label, useTabGroup: useTabGroup !== false, unshareOnGroupLeave: unshareOnGroupLeave === true, readOnly: st.readOnly, ttlMs: st.ttlMs, lockToDomain: st.lockToDomain, noAutoShareOpened: noAutoShareOpened !== false, allowCdp: st.allowCdp, cdpAlways: st.cdpAlways, cdpConsole: st.cdpConsole, wakeBrowser: st.wakeBrowser, silent: st.silent, extensionVersion: EXT_VERSION, browser: browserName(), cdpAvailable: hasDebugger(), tabGroupsAvailable: hasTabGroups() };
 }
 
 // Cross-instance view for the popup: ask our host to fetch the hub's /control
@@ -961,7 +964,7 @@ chrome.runtime.onMessage.addListener((req, _sender, sendResponse) => {
       case "sharing.setDeny": await CONSENT.setDenyOrigins(req.list ?? []); scheduleBadges(); sendResponse(await sharingStatus()); break;
       case "sharing.setLabel": {
         const v = String(req.label || "").trim().slice(0, 40);
-        const label = v || `Chrome-${labelSuffix()}`;
+        const label = v || `${browserTitle()}-${labelSuffix()}`;
         await chrome.storage.local.set({ instanceLabel: label });
         // The hub reads labels from the discovery entry, which was written at `open`: tell the host,
         // or the agent keeps seeing the old name until the next Start.

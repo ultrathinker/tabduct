@@ -109,6 +109,9 @@ function renderSharing(s) {
   $("unshareOnGroupLeave").disabled = !s.useTabGroup;
   $("wakeBrowser").checked = s.wakeBrowser !== false;
   renderSilent(s);
+  // What this browser lacks is not offered: Firefox has no debugger API (CDP, trusted input) and cannot name a tab group.
+  for (const el of document.querySelectorAll('[data-needs="debugger"]')) el.hidden = s.cdpAvailable === false;
+  for (const el of document.querySelectorAll('[data-needs="tabgroups"]')) el.hidden = s.tabGroupsAvailable === false;
   $("readOnly").checked = !!s.readOnly;
   $("ttl").value = String(s.ttlMs || 0);
   $("lockToDomain").checked = s.lockToDomain !== false;
@@ -123,7 +126,7 @@ function renderSharing(s) {
   // (attaches only on demand); red when a developer-mode sub-option keeps the
   // debugger attached continuously. Each state carries its own explaining hint.
   // "Full access" preset indicator: shown while the flags it sets are all in place.
-  $("fullChip").hidden = !(s.lockToDomain === false && !s.readOnly && !(Number(s.ttlMs) > 0) && s.allowCdp === true);
+  $("fullChip").hidden = !(s.lockToDomain === false && !s.readOnly && !(Number(s.ttlMs) > 0) && (s.allowCdp === true || s.cdpAvailable === false));
   const cdpOn = !!s.allowCdp;
   const cdpDev = cdpOn && (!!s.cdpAlways || !!s.cdpConsole);
   const chip = $("cdpChip");

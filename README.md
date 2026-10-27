@@ -42,7 +42,7 @@ consent, on your machine only.**
 
 ## Quickstart
 
-Runs on **macOS, Linux, and Windows**, with **Chrome, Chromium, Edge, or Brave**. Requires **Node ≥ 18**.
+Runs on **macOS, Linux, and Windows**, with **Chrome, Chromium, Edge, or Brave** (and [Firefox](#firefox), with a few features less). Requires **Node ≥ 18**.
 
 ```bash
 git clone https://github.com/ultrathinker/tabduct.git && cd tabduct
@@ -185,6 +185,28 @@ the browser). All of these are in the popup:
 The full trust model and honest limitations are in [`SECURITY.md`](SECURITY.md) —
 which is also where to report a vulnerability (please don't open a public issue).
 
+## Firefox
+
+The same extension code runs in **Firefox 128+** (MV3). The Firefox build is made from `extension/` by a script and shares the host, the hub, the protocol, the
+consent store and the popup with the Chrome one; only a small manifest patch (`firefox/manifest.patch.json`) and `extension/platform.js` (what a browser offers)
+differ. A Firefox and any number of Chrome profiles sit behind the **same hub and the same MCP endpoint**; the agent sees the Firefox as one more instance
+(`list_instances` says `browser: "firefox"`).
+
+```bash
+npm run build:firefox        # dist/firefox/  (load it: about:debugging -> This Firefox -> Load Temporary Add-on -> manifest.json)
+npm run build:firefox:xpi    # also dist/tabduct-firefox-<version>.xpi
+node hosts/node/bin/tabduct.js register --browser firefox   # the native-messaging manifest for Firefox (an HKCU registry key on Windows)
+```
+
+An unsigned build installs in Firefox **Developer Edition, Nightly and ESR** (about:addons -> Install Add-on From File, with `xpinstall.signatures.required` off);
+a release Firefox needs it signed by addons.mozilla.org.
+
+**What Firefox does not have.** There is no `chrome.debugger` in Firefox, so everything built on the DevTools protocol is off there: trusted (browser-level) input
+and `press_key`, `execute_script` with `engine: "cdp"`, the full console/network capture, and thawing a frozen page. A call that needs it is refused with
+`CDP_NOT_PERMITTED` and a message that says so, the popup does not show those settings, and Firefox does not freeze tabs the way Chrome does. It cannot name or colour a
+tab group either, so the "⚡" group is not made. Everything else (reading pages, `execute_script` and clicks and typing as scripts, frames pinned by document,
+screenshots, waiting, the per-tab consent, the bell and Silent mode) works the same; `scripts/e2e-firefox.mjs` checks that on a real Firefox.
+
 ## Multiple browsers & profiles
 
 > This section describes the Node-host hub. The Python and .NET hosts expose one
@@ -231,17 +253,19 @@ New languages need no permission — implement [`protocol/PROTOCOL.md`](protocol
 ## Project layout
 
 ```
-extension/            MV3 extension (the fixed point): consent, sharing, popup, icons
+extension/            MV3 extension (the fixed point): consent, sharing, popup, icons; Chrome loads this folder as it is
+firefox/              what differs for Firefox (manifest patch); scripts/build-firefox.mjs makes dist/firefox from extension/ + this
 hosts/node/           reference host — CLI (register/doctor/run/instances/hub) + src/
 protocol/             PROTOCOL.md + JSON schemas + conformance runners
 docs/                 ARCHITECTURE, DESIGN-consent-and-multibrowser, ROADMAP
-scripts/              tests (consent, store, handlers, gate, wake, host; opt-in real-Chrome e2e), icon/key generators
+scripts/              tests (consent, store, handlers, gate, wake, Firefox build, registration, host; opt-in real-Chrome and real-Firefox e2e), build-firefox, icon/key generators
 ```
 
 Run the full test suite (pure JS, no browser needed): `npm test` — the consent, store,
 handler, wake, gate and host tests (mock chrome / fake host) + host conformance + hub
-conformance. Two opt-in runs use a real, throwaway Chrome: `npm run test:e2e` (headless)
-and `npm run test:e2e-wake` (opens a window for a few seconds).
+conformance. Opt-in runs use a real, throwaway browser: `npm run test:e2e` (headless Chrome),
+`npm run test:e2e-wake` (opens a Chrome window for a few seconds) and `npm run test:e2e-firefox` (a separate headless Firefox
+with a throwaway profile; your own Firefox is never touched).
 
 ## Status
 

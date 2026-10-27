@@ -140,12 +140,12 @@
               Don't auto-share tabs the agent opens
               <span class="help" title="When on (default), tabs the agent creates with open_tab are NOT shared automatically — you must share them yourself. Turn off to auto-share every tab the agent opens (sticky to its opening origin).">?</span>
             </label>
-            <label class="tg">
+            <label class="tg" data-needs="tabgroups">
               <input type="checkbox" id="tabGroup" />
               Mark shared tabs with a "⚡" tab group
               <span class="help" title="Puts your shared tabs into a coloured '⚡' tab group in the tab strip, so you can see at a glance which tabs the agent can access. May rearrange your tabs. Dragging a tab INTO the group shares it.">?</span>
             </label>
-            <label class="tg">
+            <label class="tg" data-needs="tabgroups">
               <input type="checkbox" id="unshareOnGroupLeave" />
               Unshare a tab when I take it out of the group
               <span class="help" title="Off by default. When on, dragging a shared tab out of the '⚡' group (or into another group) stops sharing it. Left off, moving tabs around never ends a share; use the ✕, the shortcut or the context menu to unshare.">?</span>
@@ -157,7 +157,7 @@
             </label>
           </section>
 
-          <section class="setcard">
+          <section class="setcard" data-needs="debugger">
             <div class="setrow"><span class="muted">Advanced</span><span class="help" title="CDP eval runs truly arbitrary JavaScript via the Chrome DevTools Protocol, bypassing a page's Content-Security-Policy. It is the fallback for execute_script on strict-CSP sites (GitHub, banks, most SaaS). It is OFF by default: you opt in per-browser, and Chrome shows a visible 'this tab is being debugged' banner on any tab it touches — that banner is your signal that the powerful path is in use. Consent (sharing + not read-only) still applies.">?</span></div>
             <label class="tg" style="margin-top: 0">
               <input type="checkbox" id="allowCdp" />

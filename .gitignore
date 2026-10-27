@@ -3,6 +3,9 @@ node_modules/
 npm-debug.log*
 *.tgz
 
+# Firefox build output (scripts/build-firefox.mjs)
+dist/
+
 # Python
 __pycache__/
 *.py[cod]
@@ -21,6 +24,7 @@ logs/
 *.log
 hosts/node/node_path.txt
 hosts/*/com.tabduct.host.json
+hosts/*/com.tabduct.host.firefox.json
 hosts/python/run_host.bat
 hosts/python/run_host.sh
 

@@ -55,6 +55,7 @@ globalThis.chrome = {
   alarms: { get: async () => ({}), create() {}, onAlarm: evs.alarm },
   windows: { update: async (id, p) => { WINLOG.push(p); }, get: async (id) => ({ id, state: WINSTATE, focused: false }) },
   permissions: { contains: async () => false, onAdded: ev() },
+  debugger: { onEvent: { addListener() {} }, onDetach: { addListener() {} }, async attach() {}, async detach() {}, async sendCommand() { return {}; } }, // a Chrome-like browser; the Firefox block at the end removes it
 };
 globalThis.fetch = async () => { throw new Error("no network in tests"); }; // hubReachable() → false
 
@@ -453,6 +454,34 @@ eq(groupAction({ ...base, tier: "all", inOurGroup: true, shared: false }), null,
   await sleep(150);
   WINSTATE = "normal";
   chrome.debugger = had.debugger; chrome.permissions.contains = had.contains; delete TABS[0].frozen;
+}
+
+// ---- Firefox: no debugger API, no tab-group API --------------------------------------------------------------
+{
+  const had = { debugger: chrome.debugger, getURL: chrome.runtime.getURL, tabGroups: chrome.tabGroups };
+  delete chrome.debugger; delete chrome.tabGroups;
+  chrome.runtime.getURL = (p) => `moz-extension://x/${p}`;
+  await chrome.storage.local.remove("instanceLabel");
+  await C.revokeAll();
+  TABS = [{ id: 1, url: "https://claude.ai/directory/manage", active: true, windowId: 1, title: "Dir" }];
+  await C.shareTab(1);
+  await C.setShareOptions({ allowCdp: true, cdpAlways: true, cdpConsole: true, lockToDomain: false }); // stored values from a Chrome profile
+  await popup({ cmd: "disconnect" });
+  const { port: PF, open: openF } = await connect();
+  eq([openF.payload.features, openF.payload.browser], [["frames", "pinned-docs", "wait-text", "quiet"], "firefox"], "Firefox: the extension reports no 'cdp-input' feature and says which browser it is");
+  eq(/^Firefox-[a-z]{4}$/.test(openF.payload.label), true, "...and the default label says Firefox, not Chrome", openF.payload.label);
+  const stF = await popup({ cmd: "sharing.status" });
+  eq([stF.browser, stF.cdpAvailable, stF.tabGroupsAvailable, stF.allowCdp, stF.cdpAlways, stF.cdpConsole], ["firefox", false, false, false, false, false], "the popup status: no CDP and no tab groups here, and the stored CDP opt-ins count as off");
+  const pk = await call(PF, "press_key", { tabId: 1, key: "Enter" });
+  eq([pk?.error?.code, /Firefox/.test(pk?.error?.message || "")], ["CDP_NOT_PERMITTED", true], "press_key: refused, and the message names Firefox instead of telling the user to turn a setting on");
+  const tc = await call(PF, "click", { tabId: 1, selector: "#b", trusted: true });
+  eq([tc?.error?.code, /Firefox/.test(tc?.error?.message || "")], ["CDP_NOT_PERMITTED", true], "click with trusted:true: refused the same way");
+  const ec = await call(PF, "execute_script", { tabId: 1, code: "return 1", engine: "cdp" });
+  eq([ec?.error?.code, /Firefox/.test(ec?.error?.message || "")], ["CDP_NOT_PERMITTED", true], "execute_script with engine cdp: refused, with the way out (auto or scripting)");
+  eq(code(await call(PF, "list_frames", { tabId: 1 })), "ok", "tools that need no debugger work as in Chrome (list_frames)");
+  eq(code(await call(PF, "get_page_content", { tabId: 1, quiet: true })), "ok", "...and so does a read, quiet or not");
+  chrome.debugger = had.debugger; chrome.runtime.getURL = had.getURL; chrome.tabGroups = had.tabGroups;
+  await C.setShareOptions({ allowCdp: false, cdpAlways: false, cdpConsole: false });
 }
 
 console.log(fails ? `\nGATE TESTS FAILED (${fails})` : "\nGATE TESTS PASSED");

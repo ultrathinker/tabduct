@@ -22,7 +22,7 @@ const nm = new NativeMessaging();
 const bridge = new Bridge(nm);
 // What the loaded extension build reported in `open`: its version and the optional features it
 // has. A call that needs a feature this build lacks is refused (tools.js), not forwarded.
-let extInfo = { version: null, features: new Set() };
+let extInfo = { version: null, features: new Set(), browser: null };
 const server = new McpHttpServer((s) => registerTools(s, bridge, () => extInfo));
 let currentInstance = null;
 let currentEntry = null; // what we published to the discovery dir (re-published on relabel)
@@ -127,7 +127,7 @@ function warnIfExtensionOutdated() {
   if (!disk) return; // not running from the repo checkout - nothing to compare with
   if (extInfo.version && cmpVersion(extInfo.version, disk) >= 0) return;
   const have = extInfo.version ? `v${extInfo.version}` : "an old build (it doesn't report its version)";
-  try { nm.send({ type: "notice", payload: { level: "warn", message: `This browser runs Tabduct ${have} but the code on disk is v${disk}: reload the extension at chrome://extensions so new features (and fixes) apply.` } }); } catch {}
+  try { nm.send({ type: "notice", payload: { level: "warn", message: `This browser runs Tabduct ${have} but the code on disk is v${disk}: reload the extension at ${extInfo.browser === "firefox" ? "about:debugging (This Firefox -> Tabduct -> Reload)" : "chrome://extensions"} so new features (and fixes) apply.` } }); } catch {}
 }
 
 // Call the hub's non-MCP /control endpoint (tControl-authed) on the extension's
@@ -190,8 +190,9 @@ async function handle(msg) {
         extInfo = {
           version: typeof payload?.extensionVersion === "string" ? payload.extensionVersion : null,
           features: new Set(Array.isArray(payload?.features) ? payload.features.filter((f) => typeof f === "string") : []),
+          browser: typeof payload?.browser === "string" ? payload.browser : null,
         };
-        currentEntry = { instanceId: currentInstance, label: payload?.label || "Chrome", port: bound, token, pid: process.pid, updatedAt: Date.now(), extensionVersion: extInfo.version, features: [...extInfo.features] };
+        currentEntry = { instanceId: currentInstance, label: payload?.label || "Chrome", port: bound, token, pid: process.pid, updatedAt: Date.now(), extensionVersion: extInfo.version, features: [...extInfo.features], ...(extInfo.browser ? { browser: extInfo.browser } : {}) };
         // Discovery is how the hub finds this instance (hub.js calls readAll()).
         // A silent failure here would make `hub mode` look "connected" while the
         // browser never appears behind the stable endpoint - so log loudly, and

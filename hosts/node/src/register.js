@@ -1,9 +1,12 @@
 // Tabduct Node host — native-messaging registration (PROTOCOL.md §9).
 //
-// Installs/removes the Chrome Native Messaging manifest (+ Windows registry key)
-// and templates an ABSOLUTE node path into the launcher so Chrome's minimal-env
-// spawn resolves the runtime. The extension id is computed from the manifest's
-// `key` (no separate id file to drift).
+// Installs/removes the Native Messaging manifest (+ Windows registry key) for
+// Chrome and the browsers built on it, and for Firefox, and templates an ABSOLUTE
+// node path into the launcher so the browser's minimal-env spawn resolves the
+// runtime. The Chrome extension id is computed from the manifest's `key`; the
+// Firefox add-on id is the one in firefox/manifest.patch.json (no separate id file
+// to drift in either case). Firefox looks for the manifest in other places and
+// allows an extension by `allowed_extensions` (its id) instead of `allowed_origins`.
 
 import { writeFileSync, readFileSync, existsSync, mkdirSync, rmSync, chmodSync } from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -17,6 +20,7 @@ const __dir = dirname(fileURLToPath(import.meta.url));
 const HOST_DIR = resolve(__dir, "..");
 const REPO = resolve(__dir, "../../..");
 const MANIFEST = resolve(REPO, "extension/manifest.json");
+const FIREFOX_PATCH = resolve(REPO, "firefox/manifest.patch.json");
 
 // Chrome id = sha256(SPKI DER) first 16 bytes, each nibble 0..f -> a..p.
 export function extensionId() {
@@ -25,6 +29,14 @@ export function extensionId() {
   const der = Buffer.from(m.key, "base64");
   const hex = createHash("sha256").update(der).digest("hex").slice(0, 32);
   return [...hex].map((c) => String.fromCharCode(97 + parseInt(c, 16))).join("");
+}
+
+// The add-on id the Firefox build carries (see scripts/build-firefox.mjs).
+export function geckoId() {
+  const p = JSON.parse(readFileSync(FIREFOX_PATCH, "utf8"));
+  const id = p?.set?.browser_specific_settings?.gecko?.id;
+  if (!id) throw new Error("firefox/manifest.patch.json has no browser_specific_settings.gecko.id");
+  return id;
 }
 
 function launcherPath() {
@@ -36,44 +48,51 @@ function writeNodePath() {
   writeFileSync(resolve(HOST_DIR, "node_path.txt"), process.execPath, "utf8");
 }
 
-// Per-OS/browser manifest directory (Chrome family). Returns null on Windows (registry-based).
-function manifestDir(browser) {
-  const home = homedir();
+// Per-OS/browser manifest directory. Returns null on Windows (registry-based).
+export function manifestDir(browser, platform = process.platform, home = homedir()) {
+  if (browser === "firefox") {
+    if (platform === "darwin") return resolve(home, "Library/Application Support/Mozilla/NativeMessagingHosts");
+    if (platform === "linux") return resolve(home, ".mozilla/native-messaging-hosts");
+    return null; // win32
+  }
   const chromeDirs = {
     darwin: { chrome: "Google/Chrome", chromium: "Chromium", edge: "Microsoft Edge", brave: "BraveSoftware/Brave-Browser" },
   };
-  if (process.platform === "darwin") {
+  if (platform === "darwin") {
     const sub = chromeDirs.darwin[browser] ?? chromeDirs.darwin.chrome;
     return resolve(home, "Library/Application Support", sub, "NativeMessagingHosts");
   }
-  if (process.platform === "linux") {
+  if (platform === "linux") {
     const sub = { chrome: "google-chrome", chromium: "chromium", brave: "BraveSoftware/Brave-Browser", edge: "microsoft-edge" }[browser] ?? "google-chrome";
     return resolve(home, ".config", sub, "NativeMessagingHosts");
   }
   return null; // win32
 }
 
-function windowsRegKey(browser) {
+export function windowsRegKey(browser) {
+  if (browser === "firefox") return `HKCU\\Software\\Mozilla\\NativeMessagingHosts\\${NATIVE_HOST_NAME}`;
   const vendor = { chrome: "Google\\Chrome", edge: "Microsoft\\Edge", brave: "BraveSoftware\\Brave-Browser", chromium: "Chromium" }[browser] ?? "Google\\Chrome";
   return `HKCU\\Software\\${vendor}\\NativeMessagingHosts\\${NATIVE_HOST_NAME}`;
 }
 
-function manifestBody() {
+export function manifestBody(browser = "chrome") {
   return JSON.stringify({
     name: NATIVE_HOST_NAME,
     description: "Tabduct native host",
     path: launcherPath(),
     type: "stdio",
-    allowed_origins: [`chrome-extension://${extensionId()}/`],
+    ...(browser === "firefox" ? { allowed_extensions: [geckoId()] } : { allowed_origins: [`chrome-extension://${extensionId()}/`] }),
   }, null, 2);
 }
+// On Windows each browser family reads the manifest file the registry names; Firefox gets a file of its own.
+const windowsManifestPath = (browser) => resolve(HOST_DIR, browser === "firefox" ? `${NATIVE_HOST_NAME}.firefox.json` : `${NATIVE_HOST_NAME}.json`);
 
 export function register(browser = "chrome") {
   writeNodePath();
-  const body = manifestBody();
+  const body = manifestBody(browser);
 
   if (process.platform === "win32") {
-    const manifestPath = resolve(HOST_DIR, `${NATIVE_HOST_NAME}.json`);
+    const manifestPath = windowsManifestPath(browser);
     writeFileSync(manifestPath, body, "utf8");
     try {
       execFileSync("reg", ["add", windowsRegKey(browser), "/ve", "/t", "REG_SZ", "/d", manifestPath, "/f"]);
@@ -93,7 +112,7 @@ export function register(browser = "chrome") {
 export function unregister(browser = "chrome") {
   if (process.platform === "win32") {
     try { execFileSync("reg", ["delete", windowsRegKey(browser), "/f"]); } catch {}
-    try { rmSync(resolve(HOST_DIR, `${NATIVE_HOST_NAME}.json`), { force: true }); } catch {}
+    try { rmSync(windowsManifestPath(browser), { force: true }); } catch {}
   } else {
     const dir = manifestDir(browser);
     try { rmSync(resolve(dir, `${NATIVE_HOST_NAME}.json`), { force: true }); } catch {}

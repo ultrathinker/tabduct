@@ -150,7 +150,7 @@ const call = (name, args, sid, token) => rpc({ jsonrpc: "2.0", id: Math.floor(Ma
   // the hub refuses a call that needs a feature the TARGET instance's build lacks, instead of
   // forwarding it to a host/extension that would run it somewhere else (frameId ignored -> top page).
   // A's fake extension reported no features (an old build); C's reports them.
-  const C = startInstance("C", "", { extensionVersion: "1.6.0", features: ["frames", "pinned-docs", "cdp-input"] });
+  const C = startInstance("C", "", { extensionVersion: "1.6.0", features: ["frames", "pinned-docs"], browser: "firefox" }); // a Firefox: no debugger API, so never 'cdp-input'
   ok((await C.open()).ok, "a third instance reporting its extension features is up");
   await sleep(3600); // the hub's poll connects it
   const outdated = await call("list_frames", { instanceId: "A" }, sid, tAgent);
@@ -167,7 +167,14 @@ const call = (name, args, sid, token) => rpc({ jsonrpc: "2.0", id: Math.floor(Ma
   ok(outdated4.json?.result?.isError && /EXTENSION_OUTDATED/.test(outdated4.json.result.content[0].text) && /quiet/.test(outdated4.json.result.content[0].text) && !C.invokes.includes("get_page_content"), "quiet:true on a build without the 'quiet' feature → EXTENSION_OUTDATED (an old build would raise the window), not forwarded");
   const quietOff = await call("get_page_content", { instanceId: "C", tabId: 1, quiet: false }, sid, tAgent);
   ok(!/EXTENSION_OUTDATED/.test(quietOff.json?.result?.content?.[0]?.text || ""), "...quiet:false needs no feature");
+  // Firefox has no debugger API: a call that needs trusted input is not "outdated", it is impossible there, and the message says so
+  const pkF = await call("press_key", { instanceId: "C", tabId: 1, key: "Enter" }, sid, tAgent);
+  const pkText = pkF.json?.result?.content?.[0]?.text || "";
+  ok(pkF.json?.result?.isError && /CDP_NOT_PERMITTED/.test(pkText) && /Firefox/.test(pkText) && !/EXTENSION_OUTDATED/.test(pkText) && !C.invokes.includes("press_key"), "press_key on a Firefox instance → CDP_NOT_PERMITTED naming Firefox, not forwarded, not 'outdated'");
+  const wtF = await call("wait_for", { instanceId: "C", text: "done" }, sid, tAgent);
+  ok(/about:debugging/.test(wtF.json?.result?.content?.[0]?.text || ""), "a Firefox build that really is outdated is told to reload at about:debugging, not chrome://extensions");
   const instsC = toolResult(await call("list_instances", {}, sid, tAgent));
+  ok(instsC.instances.find((i) => i.instanceId === "C")?.browser === "firefox" && instsC.instances.find((i) => i.instanceId === "B")?.browser === undefined, "list_instances shows which browser an instance is (only when it said so)");
   ok(instsC.instances.find((i) => i.instanceId === "C")?.extensionVersion === "1.6.0", "list_instances shows the reported extension version");
 
   // /control answers 502 when the browser refuses (it used to say ok)

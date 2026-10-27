@@ -16,7 +16,7 @@ import { ListToolsRequestSchema, CallToolRequestSchema } from "@modelcontextprot
 import { McpHttpServer } from "./mcp-server.js";
 import { readAll } from "./discovery.js";
 import { ensureSecrets, baseDir } from "./secrets.js";
-import { loadCatalog, requiredFeatures } from "./tools.js";
+import { loadCatalog, requiredFeatures, missingFeatureError } from "./tools.js";
 import { HUB_PORT, ERR, INVOKE_TIMEOUT_MS, invokeTimeoutMs } from "./constants.js";
 
 const CATALOG = loadCatalog();
@@ -137,7 +137,7 @@ class Hub {
       const { tools } = await client.listTools(undefined, { timeout: CONNECT_TIMEOUT_MS }); // shape check — drop impostor discovery entries
       if (!tools?.some((t) => t.name === "execute_script")) throw new Error("not a Tabduct instance");
       this.clients.set(e.instanceId, client);
-      this.meta.set(e.instanceId, { label: e.label, fp: Hub.fingerprint(e), extensionVersion: e.extensionVersion ?? null, features: Array.isArray(e.features) ? e.features : [] });
+      this.meta.set(e.instanceId, { label: e.label, fp: Hub.fingerprint(e), extensionVersion: e.extensionVersion ?? null, features: Array.isArray(e.features) ? e.features : [], browser: typeof e.browser === "string" ? e.browser : null });
       this.toolDefs.set(e.instanceId, tools);
     } catch (err) { try { await client.close(); } catch {} throw err; }
     return client;
@@ -157,7 +157,7 @@ class Hub {
         const m = this.meta.get(e.instanceId);
         if (this.clients.has(e.instanceId) && m && m.fp !== Hub.fingerprint(e)) await this._dropClient(e.instanceId); // host restarted under the same id
         if (!this.clients.has(e.instanceId)) { try { await this._connect(e); } catch { /* not ready/impostor; retried next poll */ } }
-        else if (m) { m.label = e.label; m.extensionVersion = e.extensionVersion ?? null; m.features = Array.isArray(e.features) ? e.features : m.features; } // a rename / reload shows up without reconnecting
+        else if (m) { m.label = e.label; m.extensionVersion = e.extensionVersion ?? null; m.features = Array.isArray(e.features) ? e.features : m.features; if (typeof e.browser === "string") m.browser = e.browser; } // a rename / reload shows up without reconnecting
       }
       if (this.clients.size > 0) this._armIdle();
     } finally { this._refreshing = false; }
@@ -199,7 +199,7 @@ class Hub {
       // /control channel — never the agent-facing MCP path. Refuse them here so an
       // agent holding tAgent can't snapshot or unshare across browsers.
       if (typeof name === "string" && name.startsWith("_td/")) return errResult(ERR.UNKNOWN_TOOL, `Unknown tool: ${name}`);
-      if (name === "list_instances") return textResult({ instances: [...this.meta].map(([instanceId, m]) => ({ instanceId, label: m.label, extensionVersion: m.extensionVersion ?? null, features: m.features ?? [] })) });
+      if (name === "list_instances") return textResult({ instances: [...this.meta].map(([instanceId, m]) => ({ instanceId, label: m.label, extensionVersion: m.extensionVersion ?? null, features: m.features ?? [], ...(m.browser ? { browser: m.browser } : {}) })) });
       if (name === "list_tabs") return await this._listTabsFanout(args);
       const { instanceId, forward } = this._resolveTarget(args);
       // The host in front of an instance may be an older build (it outlives a `git pull` just like
@@ -210,7 +210,7 @@ class Hub {
       if (m) {
         const have = new Set(m.features ?? []);
         const missing = [...requiredFeatures(name, forward)].filter((f) => !have.has(f));
-        if (missing.length) return errResult(ERR.EXTENSION_OUTDATED, `the Tabduct host or extension behind instance ${instanceId} (${m.extensionVersion ? `extension v${m.extensionVersion}` : "a build that predates version reporting"}) doesn't support: ${missing.join(", ")}. Nothing was run. Ask the user to restart the Tabduct host and reload the extension at chrome://extensions (Tabduct -> reload).`);
+        if (missing.length) { const e = missingFeatureError({ browser: m.browser, version: m.extensionVersion, missing, where: `the Tabduct host or extension behind instance ${instanceId}` }); return errResult(e.code, e.message); }
       }
       return await this._callInstance(instanceId, name, forward);
     } catch (e) {

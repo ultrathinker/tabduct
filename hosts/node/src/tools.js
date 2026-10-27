@@ -67,6 +67,17 @@ export function requiredFeatures(toolName, args) {
   return out;
 }
 
+// The refusal for a call that needs an extension feature the instance does not have. A build that is merely old must be
+// reloaded; Firefox has no debugger API, so "cdp-input" (trusted input) is something that browser can never do.
+export function missingFeatureError({ browser, version, missing, where }) {
+  const have = version ? `v${version}` : "a build that predates version reporting";
+  if (browser === "firefox" && missing.every((f) => f === "cdp-input")) {
+    return { code: "CDP_NOT_PERMITTED", message: `${where} runs in Firefox, which has no debugger API: trusted (browser-level) input and press_key are not available there. Nothing was run. Use the same tool without trusted:true (an ordinary script click or type), or a Chrome-based browser.` };
+  }
+  const reload = browser === "firefox" ? "reload the extension at about:debugging (This Firefox -> Tabduct -> Reload)" : "reload the extension at chrome://extensions (Tabduct -> reload)";
+  return { code: "EXTENSION_OUTDATED", message: `${where} (${have}) doesn't support: ${missing.join(", ")}. Nothing was run. Ask the user to ${reload}.` };
+}
+
 // Dotted numeric version compare: -1 / 0 / 1 (missing parts count as 0; junk counts as 0).
 export function cmpVersion(a, b) {
   const pa = String(a ?? "").split(".").map((x) => parseInt(x, 10) || 0), pb = String(b ?? "").split(".").map((x) => parseInt(x, 10) || 0);
@@ -113,7 +124,8 @@ export function registerTools(server, bridge, getExt) {
       if (ext) {
         const missing = [...requiredFeatures(name, args ?? {})].filter((f) => !ext.features.has(f));
         if (missing.length) {
-          return { isError: true, content: [{ type: "text", text: `EXTENSION_OUTDATED: the Tabduct extension loaded in this browser (${ext.version ? `v${ext.version}` : "a build that predates version reporting"}) doesn't support: ${missing.join(", ")}. Nothing was run. Ask the user to reload the extension at chrome://extensions (Tabduct -> reload).` }] };
+          const e = missingFeatureError({ browser: ext.browser, version: ext.version, missing, where: "the Tabduct extension loaded in this browser" });
+          return { isError: true, content: [{ type: "text", text: `${e.code}: ${e.message}` }] };
         }
       }
       const result = await bridge.invoke(name, args ?? {});
