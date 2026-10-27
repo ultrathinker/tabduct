@@ -8,6 +8,7 @@ import { HANDLERS, withCallDeadline, thawIfFrozen, thawTraceOf, releaseThaw, det
 import * as CONSENT from "./consent.js";
 import { GroupMask, groupAction } from "./groupsync.js";
 import { browserName, browserTitle, hasDebugger, hasTabGroups, withPlatform } from "./platform.js";
+import { applyTabMarks, markedTabIds, normalizeMode, defaultMode, stripMark } from "./tabmark.js";
 import { WAKE_TOOLS, QUIET_TOOLS, wake as wakeTab, release as releaseTab } from "./wake.js";
 
 const HOST_NAME = "com.tabduct.host";
@@ -466,7 +467,7 @@ async function handleControlInvoke(id, tool, args) {
   }
 }
 
-function tabInfo(t) { return { id: t.id, title: t.title, url: t.url, active: t.active, windowId: t.windowId, status: t.status, ...(t.frozen === true ? { frozen: true } : {}) }; }
+function tabInfo(t) { return { id: t.id, title: stripMark(t.title), url: t.url, active: t.active, windowId: t.windowId, status: t.status, ...(t.frozen === true ? { frozen: true } : {}) }; }
 
 // ---------------------------------------------------------------------------
 // Shared-tab badges + denied flash
@@ -572,6 +573,8 @@ async function refreshBadges() {
       } catch {}
     }
     applyTabGroup(sharedIds, all).catch(() => {});
+    const { tabMark } = await chrome.storage.local.get("tabMark");
+    applyTabMarks({ mode: normalizeMode(tabMark, hasTabGroups()), shared: sharedIds, tabs: all, tier: st.tier, connected, recheck: scheduleBadges }).catch(() => {});
     reconcileCdpConsole(sharedIds).catch(() => {}); // best-effort; never blocks badges
   } catch {}
 }
@@ -702,15 +705,15 @@ function flashDenied(tabId) {
 async function sharingStatus() {
   const st = withPlatform(await CONSENT.getState());
   const all = await chrome.tabs.query({});
-  const shared = CONSENT.visibleTabIds(st, all, Date.now()).map((t) => ({ id: t.id, title: t.title, url: t.url, favIconUrl: t.favIconUrl, wake: CONSENT.tabWake(st, t.id) }));
+  const shared = CONSENT.visibleTabIds(st, all, Date.now()).map((t) => ({ id: t.id, title: stripMark(t.title), url: t.url, favIconUrl: t.favIconUrl, wake: CONSENT.tabWake(st, t.id) }));
   // Grants that are alive but paused because the tab left its shared origin (lock-to-domain):
   // shown greyed in the popup so a dormant grant is never invisible.
   const paused = CONSENT.pausedTabIds(st, all, Date.now()).map((t) => ({ id: t.id, title: t.title, url: t.url, favIconUrl: t.favIconUrl, sharedHost: st.allow[String(t.id)]?.host ?? null }));
   const [active] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
-  const { useTabGroup, noAutoShareOpened, unshareOnGroupLeave } = await chrome.storage.local.get(["useTabGroup", "noAutoShareOpened", "unshareOnGroupLeave"]);
+  const { useTabGroup, noAutoShareOpened, unshareOnGroupLeave, tabMark } = await chrome.storage.local.get(["useTabGroup", "noAutoShareOpened", "unshareOnGroupLeave", "tabMark"]);
   const { label } = await getIdentity(); // ensures + returns the auto default label
   const allShared = st.tier === "all" ? all.filter((t) => !CONSENT.originBlocked(st, CONSENT.hostOf(t.url))).length : shared.length;
-  return { tier: st.tier, denyOrigins: st.denyOrigins, originMode: st.originMode, sharedCount: allShared, tabs: shared, paused, activeTabId: active?.id, label, useTabGroup: useTabGroup !== false, unshareOnGroupLeave: unshareOnGroupLeave === true, readOnly: st.readOnly, ttlMs: st.ttlMs, lockToDomain: st.lockToDomain, noAutoShareOpened: noAutoShareOpened !== false, allowCdp: st.allowCdp, cdpAlways: st.cdpAlways, cdpConsole: st.cdpConsole, wakeBrowser: st.wakeBrowser, silent: st.silent, extensionVersion: EXT_VERSION, browser: browserName(), cdpAvailable: hasDebugger(), tabGroupsAvailable: hasTabGroups() };
+  return { tier: st.tier, denyOrigins: st.denyOrigins, originMode: st.originMode, sharedCount: allShared, tabs: shared, paused, activeTabId: active?.id, label, useTabGroup: useTabGroup !== false, unshareOnGroupLeave: unshareOnGroupLeave === true, readOnly: st.readOnly, ttlMs: st.ttlMs, lockToDomain: st.lockToDomain, noAutoShareOpened: noAutoShareOpened !== false, allowCdp: st.allowCdp, cdpAlways: st.cdpAlways, cdpConsole: st.cdpConsole, wakeBrowser: st.wakeBrowser, silent: st.silent, extensionVersion: EXT_VERSION, browser: browserName(), cdpAvailable: hasDebugger(), tabGroupsAvailable: hasTabGroups(), tabMark: normalizeMode(tabMark, hasTabGroups()), tabMarkDefault: defaultMode(hasTabGroups()) };
 }
 
 // Cross-instance view for the popup: ask our host to fetch the hub's /control
@@ -818,6 +821,8 @@ chrome.debugger?.onDetach?.addListener((source, reason) => {
 });
 
 chrome.tabs.onUpdated.addListener((_id, info) => { if (info.status === "complete") scheduleBadges(); });
+// A page that rewrites its icon or title undoes the mark on a shared tab: look again (only for tabs we marked, not for every title change).
+chrome.tabs.onUpdated.addListener(async (id, info) => { if ((info.favIconUrl !== undefined || info.title !== undefined) && (await markedTabIds()).has(id)) scheduleBadges(); });
 
 // Tabs Chrome opened a moment ago: if it drops one into our "⚡" group (a link opened from a
 // grouped tab), that is Chrome, not the user sharing it.
@@ -972,6 +977,7 @@ chrome.runtime.onMessage.addListener((req, _sender, sendResponse) => {
         sendResponse(await sharingStatus());
         break;
       }
+      case "sharing.setTabMark": await chrome.storage.local.set({ tabMark: normalizeMode(req.mode, hasTabGroups()) }); scheduleBadges(); sendResponse(await sharingStatus()); break;
       case "sharing.setTabGroup": await chrome.storage.local.set({ useTabGroup: !!req.on }); if (!req.on) await cleanupTabGroups(); scheduleBadges(); sendResponse(await sharingStatus()); break;
       case "sharing.activate": try { await chrome.tabs.update(req.tabId, { active: true }); const t = await chrome.tabs.get(req.tabId); await chrome.windows.update(t.windowId, { focused: true }); } catch {} sendResponse(await sharingStatus()); break;
       case "screenshot.capture": sendResponse(await captureToViewer()); break;

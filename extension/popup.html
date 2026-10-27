@@ -140,6 +140,10 @@
               Don't auto-share tabs the agent opens
               <span class="help" title="When on (default), tabs the agent creates with open_tab are NOT shared automatically — you must share them yourself. Turn off to auto-share every tab the agent opens (sticky to its opening origin).">?</span>
             </label>
+            <label class="field">
+              <span>Mark shared tabs <span class="help" title="How a shared tab shows in the browser's tab strip. Tab icon: the site's own icon with a green ring and dot (a page whose security policy refuses the new icon gets the title mark instead). Title: a ⚡ in front of the title. Off: no mark. Chrome can also use the tab group below. The mark is a change to the page's own icon / title, which the page can see (a site could notice that a tab is shared); it is put back when you unshare the tab, stop Tabduct or change this setting, and nothing is marked in Share Everything mode. The green dot on the toolbar icon needs none of this and the page cannot see it.">?</span></span>
+              <select id="tabMark"><option value="icon">tab icon</option><option value="title">⚡ in the title</option><option value="off">off</option></select>
+            </label>
             <label class="tg" data-needs="tabgroups">
               <input type="checkbox" id="tabGroup" />
               Mark shared tabs with a "⚡" tab group

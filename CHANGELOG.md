@@ -4,6 +4,17 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims for
 [Semantic Versioning](https://semver.org/) once it reaches 1.0.
 
+## [1.10.0] — 2026-10-27
+
+### Added
+- **A visible mark on a shared tab, in the tab strip** (`Settings -> Mark shared tabs`): the site's own icon with a green ring and dot (`icon`), a `⚡ ` in front of the
+  title (`title`), or `off`. The default is `icon` in Firefox (which cannot name or colour a tab group) and `off` in Chrome (which has its group). A page with no icon
+  link of its own, or whose Content-Security-Policy refuses the new icon (Firefox applies `img-src` to icons), gets the title mark instead; a page that rewrites its icon or
+  title is marked again a few times at most; the marks come off when the tab is unshared, Tabduct is stopped or the setting changes, and nothing is marked in Share Everything
+  mode. The page can see the change (a site could notice that a tab is shared): the toolbar-icon dot and the Chrome group do not have that cost. The agent is shown clean titles.
+- Tests: `scripts/test-tabmark.mjs` (the decisions), mark cases in the gate test, and real-Firefox cases in `scripts/e2e-firefox.mjs` (an icon of its own, a strict policy, a page
+  with no icon link, unshare, mode off).
+
 ## [1.9.0] — 2026-10-27
 
 ### Added

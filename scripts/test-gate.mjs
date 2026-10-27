@@ -484,5 +484,72 @@ eq(groupAction({ ...base, tier: "all", inOurGroup: true, shared: false }), null,
   await C.setShareOptions({ allowCdp: false, cdpAlways: false, cdpConsole: false });
 }
 
+// ---- the mark on a shared tab (tabmark.js): the browser's own tab strip shows which tabs are shared -----------------------------------------------
+{
+  globalThis.OffscreenCanvas = class { getContext() { return new Proxy({}, { get: () => () => {}, set: () => true }); } async convertToBlob() { return new Blob([new Uint8Array([137, 80, 78, 71])]); } };
+  globalThis.createImageBitmap = async () => ({});
+  const real = chrome.scripting.executeScript; const LOGM = [];
+  chrome.scripting.executeScript = async (d) => {
+    const n = d.func?.name;
+    if (n === "pageSetIcon") { LOGM.push([n, d.target.tabId]); return [{ result: { orig: [{ href: "/f.ico", type: null, sizes: null }], created: false } }]; }
+    if (n === "pageSetTitle" || n === "pageUnsetTitle") { // the page shows the title it was given
+      LOGM.push([n, d.target.tabId]); const t = TABS.find((x) => x.id === d.target.tabId);
+      if (t) t.title = n === "pageSetTitle" ? (t.title.startsWith("⚡ ") ? t.title : "⚡ " + t.title) : t.title.replace(/^⚡ /, "");
+      return [{ result: "ok" }];
+    }
+    if (n === "pageRestoreIcon") { LOGM.push([n, d.target.tabId]); return [{ result: "ok" }]; }
+    return real(d);
+  };
+  const mk = (id, extra = {}) => ({ id, url: `https://m${id}.example/`, active: id === 1, windowId: 1, title: `M${id}`, favIconUrl: `https://m${id}.example/f.ico`, status: "complete", ...extra });
+  const settle = (ms = 700) => sleep(ms);
+  const names = () => LOGM.map(([n, id]) => `${n}:${id}`);
+  await popup({ cmd: "disconnect" });
+  await chrome.storage.local.set({ tdMarks: {} });
+  TABS = [mk(1), mk(2)];
+  await C.revokeAll(); await C.setShareOptions({ lockToDomain: false });
+  const { port: PM } = await connect();
+  await C.shareTab(1);
+  await popup({ cmd: "sharing.setTabMark", mode: "icon" }); await settle();
+  eq(names(), ["pageSetIcon:1"], "mark mode icon: the shared tab gets the icon mark, the unshared one does not");
+  eq(Object.keys(chrome.storage.local.d.tdMarks), ["1"], "...and the mark is remembered (so a reloaded extension can take it off)");
+  TABS[0].title = "⚡ M1";
+  eq((await call(PM, "list_tabs")).result.tabs[0]?.title, "M1", "list_tabs gives the agent the title without the mark");
+  TABS[0].title = "M1";
+  eq((await popup({ cmd: "sharing.status" })).tabMark, "icon", "the popup status says which mark is on");
+  LOGM.length = 0;
+  await popup({ cmd: "sharing.unshare", tabId: 1 }); await settle();
+  eq([names(), Object.keys(chrome.storage.local.d.tdMarks)], [["pageRestoreIcon:1"], []], "unshared: the page's own icon is put back and the mark is forgotten");
+
+  LOGM.length = 0;
+  await C.shareTab(1); await popup({ cmd: "sharing.setTabMark", mode: "title" }); await settle();
+  eq(names(), ["pageSetTitle:1"], "mode title: the title gets the mark");
+  LOGM.length = 0;
+  await popup({ cmd: "sharing.setTabMark", mode: "icon" }); await settle();
+  eq(names(), ["pageUnsetTitle:1", "pageSetIcon:1"], "changing the mode takes the old mark off and puts the new one on");
+  LOGM.length = 0;
+  await popup({ cmd: "sharing.setTabMark", mode: "off" }); await settle();
+  eq([names(), Object.keys(chrome.storage.local.d.tdMarks)], [["pageRestoreIcon:1"], []], "mode off: everything is put back");
+
+  // the page never shows the icon (a strict policy): after a moment the title takes over
+  LOGM.length = 0;
+  await popup({ cmd: "sharing.setTabMark", mode: "icon" }); await settle(400);
+  eq(names(), ["pageSetIcon:1"], "(setup) icon mark applied");
+  await settle(3400); // the page did not take the icon: tabmark looks again after its settle time
+  eq(names(), ["pageSetIcon:1", "pageRestoreIcon:1", "pageSetTitle:1"], "an icon the page refuses falls back to the title mark (and the page's own icon links are put back)");
+  eq(chrome.storage.local.d.tdMarks[1]?.mode, "title", "...remembered as a title mark");
+
+  // nothing is marked while stopped, or in Share-Everything mode
+  LOGM.length = 0;
+  await popup({ cmd: "disconnect" }); await settle();
+  eq([names(), Object.keys(chrome.storage.local.d.tdMarks)], [["pageUnsetTitle:1"], []], "stopping Tabduct takes the mark off");
+  const { port: PM2 } = await connect(); await settle(400); // the tab that is still shared is marked again after the restart
+  await C.setTier("all"); await popup({ cmd: "sharing.setTabMark", mode: "icon" }); await settle(); // ...and in Share-Everything mode the marks come off
+  LOGM.length = 0; await popup({ cmd: "sharing.setTabMark", mode: "title" }); await settle();
+  eq([names(), Object.keys(chrome.storage.local.d.tdMarks)], [[], []], "Share Everything marks no tab");
+  await C.revokeAll();
+  chrome.scripting.executeScript = real;
+  await popup({ cmd: "sharing.setTabMark", mode: "off" });
+}
+
 console.log(fails ? `\nGATE TESTS FAILED (${fails})` : "\nGATE TESTS PASSED");
 process.exit(fails ? 1 : 0);

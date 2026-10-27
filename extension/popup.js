@@ -108,6 +108,7 @@ function renderSharing(s) {
   $("unshareOnGroupLeave").checked = !!s.unshareOnGroupLeave;
   $("unshareOnGroupLeave").disabled = !s.useTabGroup;
   $("wakeBrowser").checked = s.wakeBrowser !== false;
+  $("tabMark").value = s.tabMark || "off";
   renderSilent(s);
   // What this browser lacks is not offered: Firefox has no debugger API (CDP, trusted input) and cannot name a tab group.
   for (const el of document.querySelectorAll('[data-needs="debugger"]')) el.hidden = s.cdpAvailable === false;
@@ -299,6 +300,7 @@ $("silent").addEventListener("click", async () => {
   silentWarn = r && r.peersReachable === false ? (r.peersError || "unreachable") : null;
   renderSharing(r);
 });
+$("tabMark").addEventListener("change", async () => renderSharing(await send({ cmd: "sharing.setTabMark", mode: $("tabMark").value })));
 $("shareThis").addEventListener("click", async () => renderSharing(await send({ cmd: "sharing.toggleActive" })));
 $("shareEvery").addEventListener("click", async () => {
   const s = await send({ cmd: "sharing.status" });

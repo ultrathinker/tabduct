@@ -207,6 +207,18 @@ and `press_key`, `execute_script` with `engine: "cdp"`, the full console/network
 tab group either, so the "⚡" group is not made. Everything else (reading pages, `execute_script` and clicks and typing as scripts, frames pinned by document,
 screenshots, waiting, the per-tab consent, the bell and Silent mode) works the same; `scripts/e2e-firefox.mjs` checks that on a real Firefox.
 
+## Seeing which tabs are shared
+
+Chrome can put shared tabs into a named, coloured "⚡" tab group (a setting, on by default). Firefox cannot name or colour a group from an extension, so there
+(and in Chrome too, if you like) a shared tab can be marked in the tab strip itself: **Settings → Mark shared tabs**.
+- **tab icon** (the default in Firefox): the site's own icon with a green ring and dot. A page with no icon of its own, or whose security policy
+  (Content-Security-Policy) refuses a new icon, gets the title mark instead.
+- **⚡ in the title**: a `⚡ ` in front of the tab's title. The agent is shown the clean title; a script that reads `document.title` itself sees the mark.
+- **off** (the default in Chrome, which has its group).
+
+The green dot on the toolbar icon of a shared tab needs none of this. Both marks change the page's own icon / title, which **the page can see** (a site could notice
+that a tab is shared); they come off when the tab is unshared, Tabduct is stopped or the setting changes, and nothing is marked in Share Everything mode.
+
 ## Multiple browsers & profiles
 
 > This section describes the Node-host hub. The Python and .NET hosts expose one

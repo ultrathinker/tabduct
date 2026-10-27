@@ -6,6 +6,7 @@
 // throw via err(CODE, message).
 
 import { getState as getConsentState, originBlocked, hostOf, evaluateFrame } from "../consent.js";
+import { stripMark } from "../tabmark.js";
 
 function err(code, message) {
   const e = new Error(message);
@@ -21,7 +22,7 @@ async function resolveTabId(args) {
 }
 
 function tabInfo(t) {
-  return { id: t.id, title: t.title, url: t.url, active: t.active, windowId: t.windowId, status: t.status };
+  return { id: t.id, title: stripMark(t.title), url: t.url, active: t.active, windowId: t.windowId, status: t.status };
 }
 
 // ---------------------------------------------------------------------------
@@ -521,7 +522,7 @@ export const HANDLERS = {
     const tabId = await resolveTabId(args);
     const frames = await framesOf(tabId, args._pin);
     return {
-      frames: frames.map(({ frameId, url, title, depth, width, height }) => ({ frameId, url, title, depth, width, height })),
+      frames: frames.map(({ frameId, url, title, depth, width, height }) => ({ frameId, url, title: stripMark(title), depth, width, height })),
       note: "frameId 0 is the page itself; pass another frameId to get_dom_snapshot/get_page_content/click/type/wait_for/execute_script/get_console_logs to act inside that frame",
     };
   },

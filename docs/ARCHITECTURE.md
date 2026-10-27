@@ -121,6 +121,18 @@ Native messaging: Firefox reads another registry key (`HKCU\Software\Mozilla\Nat
 Linux, and allows an add-on by `allowed_extensions` (its id) instead of `allowed_origins`; `hosts/node/src/register.js` writes that
 manifest to a file of its own (`com.tabduct.host.firefox.json` on Windows). The host process and the wire protocol are the same.
 
+## Marking a shared tab
+
+`extension/tabmark.js`. A tab has no property an extension may set, and Firefox cannot name or colour a tab group, so what is left to show "this tab is shared"
+in the tab strip is the page's own icon and title: `icon` (the site's icon with a green ring and dot, composed on an OffscreenCanvas from `tab.favIconUrl`
+and written into the page's `<link rel=icon>` hrefs) or `title` (a `⚡ ` prefix). `refreshBadges` hands `applyTabMarks` the set of shared tabs; `planMarks` (pure)
+decides what to put on, take off or put on again. Facts that shaped it, checked on Firefox 159: it applies a page's `img-src` policy to icons (a refused icon never
+shows: after a settle time the mark falls back to the title), it hands an icon data URL back RE-ENCODED (so "is our icon showing" compares the PNG header and the
+length, `sameIcon`), and once an icon is set it keeps showing it until the page reloads whatever happens to the link (so a page with no icon link of its own gets
+the title mark: an icon mark could not be taken off). A page that rewrites its icon or title is marked again (a few times at most, then left alone); the
+original link attributes are kept in `storage.local` (`tdMarks`) so a reloaded extension can still restore them; the agent-facing titles (`list_tabs`,
+`get_active_tab`, frames, the popup) go through `stripMark`.
+
 ## Waking a sleeping tab
 
 A minimized window, a window covered by others or a background tab is "hidden" to

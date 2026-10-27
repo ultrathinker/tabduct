@@ -62,6 +62,9 @@ function site(side, q, r) {
     if (u.pathname.startsWith("/m/")) { const id = Number(u.pathname.slice(3).replace(".mjs", "")); return send(200, modules.get(id) ?? "export default async () => 'missing module'", "text/javascript"); }
     if (u.pathname.startsWith("/result/") && q.method === "POST") { let b = ""; q.on("data", (c) => (b += c)); q.on("end", () => { results.get(Number(u.pathname.slice(8)))?.(b); send(200, "ok", "text/plain"); }); return; }
     if (u.pathname === "/hello") return send(200, "hello", "text/plain");
+    if (u.pathname === "/csp") { r.writeHead(200, { "content-type": "text/html", "content-security-policy": "default-src 'self'; img-src 'self'", ...cors }); return r.end(html(`<title>Strict CSP page</title><link rel="icon" href="/orig.png">hello csp`)); }
+    if (u.pathname === "/icon") return send(200, html(`<title>Icon page</title><link rel="icon" type="image/png" href="/orig.png">hello icon`));
+    if (u.pathname === "/orig.png") { r.writeHead(200, { "content-type": "image/png", ...cors }); return r.end(Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/q842iQAAAABJRU5ErkJggg==", "base64")); }
   } else {
     if (u.pathname === "/frame") return send(200, html(`<title>Frame</title><input id="email">in the frame`));
     if (u.pathname === "/other") return send(200, html(`<title>Other site</title>another origin`));
@@ -249,7 +252,7 @@ try {
     let t = await tool("get_page_content", { tabId: mine.id });
     ok(!t.isError && /hello shop/.test(t.text || ""), "get_page_content through the hub reads the page", t.text?.slice(0, 120));
     t = await tool("execute_script", { tabId: mine.id, code: "return document.title" });
-    ok(!t.isError && js(t.text)?.result === "Shop", "execute_script through the hub", t.text);
+    ok(!t.isError && /^(⚡ )?Shop$/.test(js(t.text)?.result || ""), "execute_script through the hub (the page's own script sees the mark on its title: the mark is visible to the page)", t.text);
     t = await tool("screenshot", { tabId: mine.id });
     ok(t.type === "image", "screenshot comes back as an image through the hub", t.type);
     t = await tool("press_key", { tabId: mine.id, key: "Enter" });
@@ -264,6 +267,35 @@ try {
       return { rows: [...d.querySelectorAll("#shared li:not(.grp)")].map((li) => li.querySelector(".ttl")?.textContent), groups: [...d.querySelectorAll("#shared li.grp")].map((li) => li.textContent), dot: d.getElementById("dot")?.dataset.state };
     `);
     ok(r.dot === "connected" && r.rows.length === 1 && r.groups.length === 0, "the connected popup lists the one shared tab once (no group header, no duplicate row)", r);
+    // ---- the mark on a shared tab, in Firefox's own tab strip
+    console.log("— the mark on a shared tab: the icon where the page has one of its own, the title where it has none or a strict policy refuses the icon");
+    const tabInfo = (id) => ext(`const t = await chrome.tabs.get(${id}); return { title: t.title, icon: (t.favIconUrl || "").slice(0, 22), full: t.favIconUrl || "" };`);
+    // opens the page, remembers its own icon BEFORE it is shared (the mark goes on as soon as it is), then shares it
+    const openShared = (path) => ext(`const t = await chrome.tabs.create({ url: ${JSON.stringify(URL_A + path)}, active: false }); for (let i = 0; i < 100; i++) { const x = await chrome.tabs.get(t.id); if (x.status === "complete") break; await new Promise((r) => setTimeout(r, 100)); } await new Promise((r) => setTimeout(r, 800)); const before = (await chrome.tabs.get(t.id)).favIconUrl || ""; await C.shareTab(t.id); return { id: t.id, before };`);
+    const unshare = (id) => ext(`await chrome.runtime.sendMessage({ cmd: "sharing.unshare", tabId: ${id} }); return 1;`);
+    const { id: tabIcon, before: iconBefore } = await openShared("/icon");
+    const { id: tabCsp, before: cspBefore } = await openShared("/csp");
+    await ext(`await chrome.runtime.sendMessage({ cmd: "sharing.setTabMark", mode: "icon" }); return 1;`);
+    await sleep(7500); // the marks go on, the browser shows them, the ones it refused fall back to the title
+    r = await tabInfo(tabIcon);
+    ok(iconBefore.length > 0 && r.icon === "data:image/png;base64," && r.full !== iconBefore && r.full.length > iconBefore.length * 3 && r.title === "Icon page", "a page with an icon of its own shows the marked icon, and its title is untouched", { ...r, full: r.full.length, before: iconBefore.length });
+    r = await tabInfo(tabCsp);
+    ok(r.title === "⚡ Strict CSP page" && r.full === cspBefore, "a page whose security policy refuses the new icon keeps its icon and gets the title mark", r);
+    r = await tabInfo(tab);
+    ok(r.title === "⚡ Shop", "a page with no icon link of its own gets the title mark (an icon set there could never be taken off again)", r);
+    const lt2 = js((await tool("list_tabs", {})).text);
+    ok((lt2?.tabs || []).some((x) => x.url?.endsWith("/csp") && x.title === "Strict CSP page") && (lt2?.tabs || []).some((x) => x.url?.endsWith(`:${PA}/page`) && x.title === "Shop"), "the agent still sees clean titles", (lt2?.tabs || []).map((x) => x.title));
+    await unshare(tabIcon); await unshare(tabCsp);
+    await sleep(2500);
+    r = await tabInfo(tabIcon);
+    ok(r.full === iconBefore && r.title === "Icon page", "unshared: the page's own icon is back", { icon: r.icon, same: r.full === iconBefore });
+    r = await tabInfo(tabCsp);
+    ok(r.title === "Strict CSP page" && r.full === cspBefore, "...and the title mark is gone", r);
+    await ext(`await chrome.runtime.sendMessage({ cmd: "sharing.setTabMark", mode: "off" }); return 1;`);
+    await sleep(2500);
+    r = await tabInfo(tab);
+    ok(r.title === "Shop", "mark mode off: the title is back to the page's own", r);
+
     await ext(`await chrome.runtime.sendMessage({ cmd: "sharing.setSilent", on: true }); return 1;`);
     t = await tool("activate_tab", { tabId: mine.id });
     ok(t.isError && /WAKE_NOT_ALLOWED/.test(t.text || ""), "Silent mode (set in the popup's background): activate_tab is refused with WAKE_NOT_ALLOWED", t.text?.slice(0, 160));
