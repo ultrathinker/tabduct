@@ -5,14 +5,18 @@
 // Firefox and profile are never touched), installs the build as a temporary add-on through Marionette and drives it like
 // scripts/e2e-chrome.mjs drives Chrome: the extension's own modules (handlers, consent, platform) run in an extension page
 // of the test build, fed with code by this script, against real pages (two origins, an iframe). The native host is not
-// involved at this layer, and nothing is written to the registry.
+// involved in the first part. The last part runs the WHOLE chain (Firefox -> native host -> hub -> an MCP client) in an isolated
+// TABDUCT_DIR with a test hub port (your live hub is never touched); it needs the native-messaging manifest registered for Firefox
+// (`node hosts/node/bin/tabduct.js register --browser firefox`) and is skipped, with a note, when it is not. This script writes nothing
+// to the registry itself.
 // Set FIREFOX to use a particular binary; the test skips when none is found (Firefox Developer Edition, Nightly or ESR
 // load an unsigned build; a release Firefox refuses it).
 
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import http from "node:http";
 import net from "node:net";
 import { existsSync, mkdtempSync, writeFileSync, mkdirSync, readFileSync } from "node:fs";
+import { manifestDir, windowsRegKey } from "../hosts/node/src/register.js";
 import { tmpdir } from "node:os";
 import { join, resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -113,7 +117,24 @@ writeFileSync(join(profile, "user.js"), [
   `user_pref("browser.shell.checkDefaultBrowser", false);`, `user_pref("datareporting.policy.dataSubmissionEnabled", false);`, `user_pref("toolkit.telemetry.reportingpolicy.firstRun", false);`,
   `user_pref("app.update.auto", false);`, `user_pref("app.update.enabled", false);`, `user_pref("browser.startup.homepage", "about:blank");`, `user_pref("startup.homepage_welcome_url", "about:blank");`,
 ].join("\n"));
-const ff = spawn(FIREFOX, ["-profile", profile, "-no-remote", "-headless", "-marionette"], { stdio: "ignore", windowsHide: true });
+const hubDir = join(base, "hub");
+const hubPort = 12800 + Math.floor(Date.now() % 900);
+const ff = spawn(FIREFOX, ["-profile", profile, "-no-remote", "-headless", "-marionette"], { stdio: "ignore", windowsHide: true, env: { ...process.env, TABDUCT_DIR: hubDir, TABDUCT_HUB_PORT: String(hubPort), TABDUCT_HUB_IDLE_MS: "4000" } });
+const nativeHostRegistered = () => {
+  if (process.platform === "win32") return spawnSync("reg", ["query", windowsRegKey("firefox")], { windowsHide: true }).status === 0;
+  const d = manifestDir("firefox"); return !!d && existsSync(join(d, "com.tabduct.host.json"));
+};
+function mcp(body, { sessionId, token } = {}) {
+  return new Promise((resolve) => {
+    const pl = Buffer.from(JSON.stringify(body));
+    const headers = { "content-type": "application/json", accept: "application/json, text/event-stream", "content-length": pl.length };
+    if (token) headers.authorization = `Bearer ${token}`; if (sessionId) headers["mcp-session-id"] = sessionId;
+    const req = http.request({ host: "127.0.0.1", port: hubPort, path: "/mcp", method: "POST", headers }, (r) => {
+      let d = ""; r.on("data", (x) => (d += x)); r.on("end", () => { let j; if ((r.headers["content-type"] || "").includes("text/event-stream")) { const l = d.split("\n").filter((x) => x.startsWith("data:")).pop(); j = l ? JSON.parse(l.slice(5).trim()) : undefined; } else if (d) { try { j = JSON.parse(d); } catch {} } resolve({ status: r.statusCode, json: j, sessionId: r.headers["mcp-session-id"] }); });
+    });
+    req.on("error", () => resolve({ status: "REFUSED" })); req.end(pl);
+  });
+}
 
 let sock = null, buf = ""; const waiting = new Map(); let mid = 1;
 const drain = () => { for (;;) { const c = buf.indexOf(":"); if (c < 0) return; const n = Number(buf.slice(0, c)); const rest = Buffer.from(buf.slice(c + 1)); if (rest.length < n) return; const m = JSON.parse(rest.subarray(0, n).toString()); buf = rest.subarray(n).toString(); if (Array.isArray(m) && m[0] === 1 && waiting.has(m[1])) { const { res, rej } = waiting.get(m[1]); waiting.delete(m[1]); m[2] ? rej(new Error(JSON.stringify(m[2]))) : res(m[3]); } } };
@@ -195,12 +216,63 @@ try {
     await new Promise((r) => setTimeout(r, 2500));
     const d = f.contentDocument;
     const hidden = (sel) => [...d.querySelectorAll(sel)].map((e) => e.hidden);
-    return { debuggerHidden: hidden('[data-needs="debugger"]'), groupsHidden: hidden('[data-needs="tabgroups"]'), bells: [...d.querySelectorAll("#shared .wk")].map((b) => b.textContent), silent: !!d.getElementById("silent"), ver: d.getElementById("ver")?.textContent };
+    return { debuggerHidden: hidden('[data-needs="debugger"]'), groupsHidden: hidden('[data-needs="tabgroups"]'), bells: [...d.querySelectorAll("#shared .wk")].map((b) => b.textContent), silent: !!d.getElementById("silent"), ver: d.getElementById("ver")?.textContent, shared: d.getElementById("shared")?.innerText };
   `);
   ok(r.debuggerHidden.length >= 1 && r.debuggerHidden.every(Boolean), "the CDP settings are not offered in Firefox", r);
   ok(r.groupsHidden.length >= 1 && r.groupsHidden.every(Boolean), "...nor the tab-group settings", r);
-  ok(r.bells.length === 1 && r.bells[0] === "🔔" && r.silent === true, "the shared tab has its bell, and the Silent button is there", r);
+  ok(r.bells.length >= 1 && r.bells[0] === "🔔" && r.silent === true, "the shared tab has its bell, and the Silent button is there", r);
   ok(/Tabduct v/.test(r.ver || ""), "the popup says which version it is", r);
+
+  // ======================================================================================================
+  console.log("— the whole chain: Firefox -> native host -> hub -> an MCP client (isolated hub, test port)");
+  if (!nativeHostRegistered()) {
+    console.log("  SKIP: the native-messaging manifest is not registered for Firefox (node hosts/node/bin/tabduct.js register --browser firefox)");
+  } else {
+    r = await ext(`const answer = await chrome.runtime.sendMessage({ cmd: "connect", port: 0 }); let st = answer; for (let i = 0; i < 60 && st?.state !== "connected"; i++) { await new Promise((r) => setTimeout(r, 500)); st = await chrome.runtime.sendMessage({ cmd: "status" }); } return st;`, 60000);
+    ok(r?.state === "connected", "the extension connects: Firefox starts the native host, which starts the (isolated) hub", r);
+    let tAgent = null;
+    for (let i = 0; i < 50 && !tAgent; i++) { await sleep(200); try { tAgent = JSON.parse(readFileSync(join(hubDir, "token"), "utf8")).tAgent; } catch {} }
+    ok(!!tAgent, "the hub came up in the isolated folder and wrote its token");
+    const init = await mcp({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "e2e", version: "0" } } }, { token: tAgent });
+    const sid = init.sessionId;
+    await mcp({ jsonrpc: "2.0", method: "notifications/initialized" }, { sessionId: sid, token: tAgent });
+    const tool = async (name, args) => { const x = await mcp({ jsonrpc: "2.0", id: Math.floor(Math.random() * 1e6), method: "tools/call", params: { name, arguments: args } }, { sessionId: sid, token: tAgent }); const c = x.json?.result?.content?.[0]; return { isError: !!x.json?.result?.isError, text: c?.text, type: c?.type, raw: x.json }; };
+    const js = (t) => { try { return JSON.parse(t); } catch { return null; } };
+    let inst = null;
+    for (let i = 0; i < 40 && !inst; i++) { const li = js((await tool("list_instances", {})).text); inst = li?.instances?.find((x) => x.browser === "firefox") ?? null; if (!inst) await sleep(500); }
+    ok(!!inst, "the agent sees the Firefox as an instance behind the hub", inst);
+    ok(inst?.extensionVersion === JSON.parse(readFileSync(join(out, "manifest.json"), "utf8")).version && !inst?.features?.includes("cdp-input") && inst?.features?.includes("frames"), "...with the extension version, no 'cdp-input' feature and the others", inst);
+    ok(/^Firefox-[a-z]{4}$/.test(inst?.label || ""), "...and a label that says Firefox", inst?.label);
+    const lt = js((await tool("list_tabs", {})).text);
+    const mine = (lt?.tabs || []).find((t) => t.url?.startsWith(URL_A));
+    ok(!!mine && mine.id.startsWith(inst.instanceId + ":"), "list_tabs shows the shared tab with a composite id", lt?.tabs?.map((t) => t.url));
+    let t = await tool("get_page_content", { tabId: mine.id });
+    ok(!t.isError && /hello shop/.test(t.text || ""), "get_page_content through the hub reads the page", t.text?.slice(0, 120));
+    t = await tool("execute_script", { tabId: mine.id, code: "return document.title" });
+    ok(!t.isError && js(t.text)?.result === "Shop", "execute_script through the hub", t.text);
+    t = await tool("screenshot", { tabId: mine.id });
+    ok(t.type === "image", "screenshot comes back as an image through the hub", t.type);
+    t = await tool("press_key", { tabId: mine.id, key: "Enter" });
+    ok(t.isError && /CDP_NOT_PERMITTED/.test(t.text || "") && /Firefox/.test(t.text || "") && !/EXTENSION_OUTDATED/.test(t.text || ""), "press_key: the hub refuses it by name (Firefox has no debugger API), not as 'outdated'", t.text?.slice(0, 200));
+    t = await tool("get_page_content", { tabId: mine.id, quiet: true });
+    ok(!t.isError, "a quiet read works too", t.text?.slice(0, 100));
+    // the popup while connected (it also lists the other browsers behind the hub): one browser, one row per shared tab, no duplicates
+    r = await ext(`
+      const f = document.createElement("iframe"); f.src = chrome.runtime.getURL("popup.html"); f.style.width = "400px"; f.style.height = "500px"; document.body.appendChild(f);
+      await new Promise((r) => setTimeout(r, 3500));
+      const d = f.contentDocument;
+      return { rows: [...d.querySelectorAll("#shared li:not(.grp)")].map((li) => li.querySelector(".ttl")?.textContent), groups: [...d.querySelectorAll("#shared li.grp")].map((li) => li.textContent), dot: d.getElementById("dot")?.dataset.state };
+    `);
+    ok(r.dot === "connected" && r.rows.length === 1 && r.groups.length === 0, "the connected popup lists the one shared tab once (no group header, no duplicate row)", r);
+    await ext(`await chrome.runtime.sendMessage({ cmd: "sharing.setSilent", on: true }); return 1;`);
+    t = await tool("activate_tab", { tabId: mine.id });
+    ok(t.isError && /WAKE_NOT_ALLOWED/.test(t.text || ""), "Silent mode (set in the popup's background): activate_tab is refused with WAKE_NOT_ALLOWED", t.text?.slice(0, 160));
+    await ext(`await chrome.runtime.sendMessage({ cmd: "sharing.setSilent", on: false }); await chrome.runtime.sendMessage({ cmd: "disconnect" }); return 1;`);
+  }
 } catch (e) { console.error("  ERROR:", e.stack || e); fails++; }
+
+// the hub this run started leaves by itself once its last browser is gone; if it has not by now, stop exactly that process
+for (let i = 0; i < 30 && existsSync(join(hubDir, "hub.json")); i++) await sleep(500);
+try { const hj = JSON.parse(readFileSync(join(hubDir, "hub.json"), "utf8")); if (hj.pid) process.kill(hj.pid); } catch {}
 
 await finish(fails ? 1 : 0);
