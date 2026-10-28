@@ -20,7 +20,7 @@ const patch = JSON.parse(readFileSync(join(REPO, "firefox", "manifest.patch.json
 // ---- the pure patch ----
 {
   const m = patchManifest({ key: "K", minimum_chrome_version: "116", permissions: ["tabs", "debugger", "storage", "favicon", "tabGroups"], background: { service_worker: "b.js" }, name: "X" }, patch);
-  eq([m.key, m.minimum_chrome_version, m.permissions, m.background, m.name], [undefined, undefined, ["tabs", "storage"], { scripts: ["background.js"], type: "module" }, "X"], "patchManifest: drops the Chrome-only keys and permissions, sets the event page, keeps the rest");
+  eq([m.key, m.minimum_chrome_version, m.permissions, m.background, m.name], [undefined, undefined, ["tabs", "storage", "tabGroups"], { scripts: ["background.js"], type: "module" }, "X"], "patchManifest: drops the Chrome-only keys and permissions (debugger, favicon), keeps tabGroups, sets the event page, keeps the rest");
   eq(/^\{[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\}$/.test(m.browser_specific_settings.gecko.id), true, "the add-on id is a GUID in braces (it never changes once published)");
 }
 
@@ -31,7 +31,8 @@ const mf = JSON.parse(readFileSync(join(out, "manifest.json"), "utf8"));
 eq([mf.version, mf.manifest_version, mf.name], [chromeMf.version, 3, "Tabduct"], "the Firefox build has the Chrome version number and is MV3");
 eq([mf.key, mf.minimum_chrome_version, mf.background.service_worker], [undefined, undefined, undefined], "no Chrome key, Chrome minimum version or service worker");
 eq([mf.background.scripts, mf.background.type], [["background.js"], "module"], "a module event page");
-eq(mf.permissions, chromeMf.permissions.filter((p) => !["debugger", "favicon", "tabGroups"].includes(p)), "permissions: the Chrome ones minus debugger, favicon and tabGroups (a permission added for Chrome reaches Firefox)");
+eq(mf.permissions, chromeMf.permissions.filter((p) => !["debugger", "favicon"].includes(p)), "permissions: the Chrome ones minus debugger and favicon (a permission added for Chrome reaches Firefox)");
+eq(mf.permissions.includes("tabGroups"), true, "...tabGroups stays: Firefox 139+ names and colours a tab group like Chrome");
 eq([mf.host_permissions, mf.commands, mf.action, mf.icons], [chromeMf.host_permissions, chromeMf.commands, chromeMf.action, chromeMf.icons], "host permissions, shortcut, toolbar button and icons are the Chrome ones");
 const srcFiles = listFiles(join(REPO, "extension")).filter((f) => f !== "manifest.json" && f !== "key.pem");
 eq(srcFiles.filter((f) => !existsSync(join(out, f))), [], "every file of extension/ arrived");

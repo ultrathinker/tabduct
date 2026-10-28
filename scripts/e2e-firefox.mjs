@@ -150,7 +150,7 @@ async function finish(code) {
   process.exit(code);
 }
 process.on("unhandledRejection", (e) => { console.error("  ERROR:", e); fails++; finish(1); });
-setTimeout(() => { console.error("FIREFOX E2E TIMEOUT (180 s)"); fails++; finish(1); }, 180000).unref();
+setTimeout(() => { console.error("FIREFOX E2E TIMEOUT (240 s)"); fails++; finish(1); }, 240000).unref();
 
 for (let i = 0; i < 60 && !sock; i++) { try { sock = await new Promise((res, rej) => { const s = net.connect(MARIONETTE, "127.0.0.1", () => res(s)); s.once("error", rej); }); } catch { await sleep(500); } }
 if (!sock) { console.error("Firefox did not come up (no Marionette)"); fails++; await finish(1); }
@@ -163,9 +163,9 @@ ok(addonId === GECKO_ID, `installed with the add-on id from firefox/manifest.pat
 
 try {
   // ======================================================================================================
-  console.log("— platform: Firefox has no debugger API and no tab-group API; the extension knows");
+  console.log("— platform: Firefox has no debugger API but has tab groups; the extension knows");
   let r = await ext(`return { ff: P.isFirefox(), name: P.browserName(), dbg: P.hasDebugger(), groups: P.hasTabGroups(), ver: chrome.runtime.getManifest().version, st: P.withPlatform({ allowCdp: true, cdpAlways: true, cdpConsole: true }) };`);
-  ok(r.ff === true && r.name === "firefox" && r.dbg === false && r.groups === false, "isFirefox, no debugger, no tab groups", r);
+  ok(r.ff === true && r.name === "firefox" && r.dbg === false && r.groups === true, "isFirefox, no debugger, but tab groups (the \⚡ group works as in Chrome)", r);
   ok(r.st.allowCdp === false && r.st.cdpAlways === false && r.st.cdpConsole === false, "withPlatform turns the CDP opt-ins off whatever was stored");
 
   // ======================================================================================================
@@ -222,7 +222,7 @@ try {
     return { debuggerHidden: hidden('[data-needs="debugger"]'), groupsHidden: hidden('[data-needs="tabgroups"]'), bells: [...d.querySelectorAll("#shared .wk")].map((b) => b.textContent), silent: !!d.getElementById("silent"), ver: d.getElementById("ver")?.textContent, shared: d.getElementById("shared")?.innerText };
   `);
   ok(r.debuggerHidden.length >= 1 && r.debuggerHidden.every(Boolean), "the CDP settings are not offered in Firefox", r);
-  ok(r.groupsHidden.length >= 1 && r.groupsHidden.every(Boolean), "...nor the tab-group settings", r);
+  ok(r.groupsHidden.length >= 1 && r.groupsHidden.every((h) => h === false), "...but the tab-group settings are (Firefox has tab groups)", r);
   ok(r.bells.length >= 1 && r.bells[0] === "🔔" && r.silent === true, "the shared tab has its bell, and the Silent button is there", r);
   ok(/Tabduct v/.test(r.ver || ""), "the popup says which version it is", r);
 
@@ -267,12 +267,37 @@ try {
       return { rows: [...d.querySelectorAll("#shared li:not(.grp)")].map((li) => li.querySelector(".ttl")?.textContent), groups: [...d.querySelectorAll("#shared li.grp")].map((li) => li.textContent), dot: d.getElementById("dot")?.dataset.state };
     `);
     ok(r.dot === "connected" && r.rows.length === 1 && r.groups.length === 0, "the connected popup lists the one shared tab once (no group header, no duplicate row)", r);
+    // ---- the "\⚡" tab group: named and coloured in Firefox as in Chrome, and in sync with sharing both ways
+    console.log("— the \⚡ tab group (Firefox 139+ names and colours it like Chrome)");
+    const unshare = (id) => ext(`await chrome.runtime.sendMessage({ cmd: "sharing.unshare", tabId: ${id} }); return 1;`);
+    const grp = (id) => ext(`const t = await chrome.tabs.get(${id}); const g = t.groupId >= 0 ? await chrome.tabGroups.get(t.groupId) : null; return { groupId: t.groupId, title: g?.title, color: g?.color };`);
+    await ext(`await chrome.runtime.sendMessage({ cmd: "sharing.setTabGroup", on: true }); return 1;`);
+    await sleep(3000);
+    r = await grp(tab);
+    ok(r.groupId >= 0 && r.title === "\⚡" && r.color === "purple", "a shared tab sits in a named, coloured \⚡ group", r);
+    const gid = r.groupId;
+    const tabIn = await ext(`const t = await chrome.tabs.create({ url: ${JSON.stringify(URL_A + "/hello")}, active: false }); for (let i = 0; i < 100; i++) { const x = await chrome.tabs.get(t.id); if (x.status === "complete") break; await new Promise((r) => setTimeout(r, 100)); } await new Promise((r) => setTimeout(r, 4500)); await chrome.tabs.group({ groupId: ${gid}, tabIds: [t.id] }); return t.id;`);
+    await sleep(2000);
+    let ltg = js((await tool("list_tabs", {})).text);
+    ok((ltg?.tabs || []).some((x) => x.url?.endsWith("/hello")), "dragging a tab INTO the group shares it (Firefox reports the group change)", (ltg?.tabs || []).map((x) => x.url));
+    await ext(`await chrome.tabs.ungroup([${tabIn}]); return 1;`);
+    await sleep(3500);
+    ltg = js((await tool("list_tabs", {})).text);
+    r = await grp(tabIn);
+    ok((ltg?.tabs || []).some((x) => x.url?.endsWith("/hello")) && r.groupId === -1, "taken OUT of the group the tab stays shared (the default) and is not herded back in", r);
+    await unshare(tabIn);
+    await ext(`await chrome.runtime.sendMessage({ cmd: "sharing.setTabGroup", on: false }); return 1;`);
+    await sleep(2500);
+    r = await grp(tab);
+    ok(r.groupId === -1, "switching the group setting off takes the shared tabs out of the group", r);
+    await ext(`await chrome.runtime.sendMessage({ cmd: "sharing.setTabGroup", on: true }); return 1;`);
+    await sleep(2500);
+
     // ---- the mark on a shared tab, in Firefox's own tab strip
     console.log("— the mark on a shared tab: the icon where the page has one of its own, the title where it has none or a strict policy refuses the icon");
     const tabInfo = (id) => ext(`const t = await chrome.tabs.get(${id}); return { title: t.title, icon: (t.favIconUrl || "").slice(0, 22), full: t.favIconUrl || "" };`);
     // opens the page, remembers its own icon BEFORE it is shared (the mark goes on as soon as it is), then shares it
     const openShared = (path) => ext(`const t = await chrome.tabs.create({ url: ${JSON.stringify(URL_A + path)}, active: false }); for (let i = 0; i < 100; i++) { const x = await chrome.tabs.get(t.id); if (x.status === "complete") break; await new Promise((r) => setTimeout(r, 100)); } await new Promise((r) => setTimeout(r, 800)); const before = (await chrome.tabs.get(t.id)).favIconUrl || ""; await C.shareTab(t.id); return { id: t.id, before };`);
-    const unshare = (id) => ext(`await chrome.runtime.sendMessage({ cmd: "sharing.unshare", tabId: ${id} }); return 1;`);
     const { id: tabIcon, before: iconBefore } = await openShared("/icon");
     const { id: tabCsp, before: cspBefore } = await openShared("/csp");
     await ext(`await chrome.runtime.sendMessage({ cmd: "sharing.setTabMark", mode: "icon" }); return 1;`);

@@ -105,7 +105,7 @@ The extension background is an MV3 service worker and can be evicted.
 
 `extension/` is the single code base. Chrome (and Edge, Brave, Opera, Vivaldi) loads the folder as it is. Firefox gets a build:
 `scripts/build-firefox.mjs` copies `extension/` into `dist/firefox` and patches the manifest from `firefox/manifest.patch.json`
-(a module event page instead of a service worker, the add-on id, no `key`, no `debugger` / `tabGroups` / `favicon` permissions); a permission
+(a module event page instead of a service worker, the add-on id, no `key`, no `debugger` / `favicon` permissions); a permission
 added to the Chrome manifest therefore reaches Firefox unless the patch removes it. Nothing is forked: the host, hub, protocol, consent store
 (`consent.js`), wake logic and popup are the same bytes.
 
@@ -123,7 +123,7 @@ manifest to a file of its own (`com.tabduct.host.firefox.json` on Windows). The 
 
 ## Marking a shared tab
 
-`extension/tabmark.js`. A tab has no property an extension may set, and Firefox cannot name or colour a tab group, so what is left to show "this tab is shared"
+`extension/tabmark.js`. A tab has no property an extension may set, so besides the tab group (Chrome and Firefox 139+, which both name and colour it) what is left to show "this tab is shared"
 in the tab strip is the page's own icon and title: `icon` (the site's icon with a green ring and dot, composed on an OffscreenCanvas from `tab.favIconUrl`
 and written into the page's `<link rel=icon>` hrefs) or `title` (a `⚡ ` prefix). `refreshBadges` hands `applyTabMarks` the set of shared tabs; `planMarks` (pure)
 decides what to put on, take off or put on again. Facts that shaped it, checked on Firefox 159: it applies a page's `img-src` policy to icons (a refused icon never

@@ -3,7 +3,7 @@
 //
 //   debugger  Chrome has chrome.debugger (the DevTools protocol): trusted input, press_key, CDP eval, console and
 //             network capture through CDP, thawing a frozen page. Firefox has no such API: those features are off.
-//   tabGroups Chrome can name and colour a tab group (the "⚡" group). Firefox cannot: the group is not made.
+//   tabGroups Chrome and Firefox 139+ name and colour a tab group (the "⚡" group). A Firefox before 139 has no such API: the group is not made.
 
 export function isFirefox() {
   try { return chrome.runtime.getURL("").startsWith("moz-extension:"); } catch { return false; }

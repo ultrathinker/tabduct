@@ -4,6 +4,15 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims for
 [Semantic Versioning](https://semver.org/) once it reaches 1.0.
 
+## [1.10.1] — 2026-10-28
+
+### Fixed
+- **Firefox gets the same "⚡" tab group as Chrome.** The Firefox build had dropped the `tabGroups` permission on the belief that Firefox cannot name or colour a group.
+  Firefox 139+ has the `tabGroups` API (title, colour, events); a probe on Firefox 159 confirmed it, and `tabs.onUpdated` reports group changes there. The manifest patch now keeps
+  the permission, so on Firefox 139+ shared tabs go into a purple "⚡" group, dragging a tab in shares it and out of it (with the setting on) unshares it, and the popup shows the
+  tab-group settings. "Mark shared tabs" now defaults to `off` wherever a tab group exists; a Firefox without tab groups keeps `icon`.
+- Tests: real-Firefox cases for the group (named and coloured, into the group shares, out of it the share stays, the setting off ungroups).
+
 ## [1.10.0] — 2026-10-27
 
 ### Added

@@ -11,7 +11,7 @@ const plan = (o) => planMarks({ mode: "icon", shared: new Set([1]), tabs: [T(1)]
 
 // ---- helpers
 eq([stripMark(MARK_PREFIX + "Inbox"), stripMark("Inbox"), stripMark(undefined)], ["Inbox", "Inbox", undefined], "stripMark takes the prefix off a title, and only the prefix");
-eq([defaultMode(true), defaultMode(false), normalizeMode("title", true), normalizeMode("junk", false), normalizeMode(undefined, true)], ["off", "icon", "title", "icon", "off"], "the default is 'off' where a tab group exists (Chrome) and 'icon' where nothing else can show it (Firefox); junk falls back to the default");
+eq([defaultMode(true), defaultMode(false), normalizeMode("title", true), normalizeMode("junk", false), normalizeMode(undefined, true)], ["off", "icon", "title", "icon", "off"], "the default is 'off' where a tab group exists (Chrome, Firefox 139+) and 'icon' where nothing else can show it (a Firefox without tab groups); junk falls back to the default");
 const head = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAH"; // signature + a 32x32 RGBA header
 const body = (n, c = "Q") => c.repeat(n);
 eq([sameIcon(head + body(1600), head + body(1600)), sameIcon(head + body(1600, "R"), head + body(1650, "S")), sameIcon(head + body(1600), head + body(2400)), sameIcon("a", undefined)], [true, true, false, false], "sameIcon: the same PNG header and about the same length, even when the browser re-encoded the bytes after it; a much longer one, or junk, is not");

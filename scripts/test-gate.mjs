@@ -456,7 +456,7 @@ eq(groupAction({ ...base, tier: "all", inOurGroup: true, shared: false }), null,
   chrome.debugger = had.debugger; chrome.permissions.contains = had.contains; delete TABS[0].frozen;
 }
 
-// ---- Firefox: no debugger API, no tab-group API --------------------------------------------------------------
+// ---- Firefox: no debugger API (and, before Firefox 139, no tab-group API either) ---------------------------------
 {
   const had = { debugger: chrome.debugger, getURL: chrome.runtime.getURL, tabGroups: chrome.tabGroups };
   delete chrome.debugger; delete chrome.tabGroups;
@@ -471,7 +471,7 @@ eq(groupAction({ ...base, tier: "all", inOurGroup: true, shared: false }), null,
   eq([openF.payload.features, openF.payload.browser], [["frames", "pinned-docs", "wait-text", "quiet"], "firefox"], "Firefox: the extension reports no 'cdp-input' feature and says which browser it is");
   eq(/^Firefox-[a-z]{4}$/.test(openF.payload.label), true, "...and the default label says Firefox, not Chrome", openF.payload.label);
   const stF = await popup({ cmd: "sharing.status" });
-  eq([stF.browser, stF.cdpAvailable, stF.tabGroupsAvailable, stF.allowCdp, stF.cdpAlways, stF.cdpConsole], ["firefox", false, false, false, false, false], "the popup status: no CDP and no tab groups here, and the stored CDP opt-ins count as off");
+  eq([stF.browser, stF.cdpAvailable, stF.tabGroupsAvailable, stF.allowCdp, stF.cdpAlways, stF.cdpConsole], ["firefox", false, false, false, false, false], "the popup status: no CDP and (an old Firefox) no tab groups here, and the stored CDP opt-ins count as off");
   const pk = await call(PF, "press_key", { tabId: 1, key: "Enter" });
   eq([pk?.error?.code, /Firefox/.test(pk?.error?.message || "")], ["CDP_NOT_PERMITTED", true], "press_key: refused, and the message names Firefox instead of telling the user to turn a setting on");
   const tc = await call(PF, "click", { tabId: 1, selector: "#b", trusted: true });

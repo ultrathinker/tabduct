@@ -4,7 +4,7 @@
 //   node scripts/build-firefox.mjs [--out <dir>] [--zip]
 //
 // extension/ is copied as it is and its manifest.json is patched with firefox/manifest.patch.json (what Firefox
-// does differently: a module event page instead of a service worker, its own add-on id, no debugger / tabGroups /
+// does differently: a module event page instead of a service worker, its own add-on id, no debugger /
 // favicon permissions). Nothing in extension/ changes: Chrome keeps loading that folder.
 //   --out  where to build (default dist/firefox). Files are overwritten, never deleted: a file left over from an earlier
 //          build is only reported ("stale"), the person who owns the folder removes it.

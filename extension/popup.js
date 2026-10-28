@@ -110,7 +110,7 @@ function renderSharing(s) {
   $("wakeBrowser").checked = s.wakeBrowser !== false;
   $("tabMark").value = s.tabMark || "off";
   renderSilent(s);
-  // What this browser lacks is not offered: Firefox has no debugger API (CDP, trusted input) and cannot name a tab group.
+  // What this browser lacks is not offered: Firefox has no debugger API (CDP, trusted input), and a Firefox before 139 no tab groups.
   for (const el of document.querySelectorAll('[data-needs="debugger"]')) el.hidden = s.cdpAvailable === false;
   for (const el of document.querySelectorAll('[data-needs="tabgroups"]')) el.hidden = s.tabGroupsAvailable === false;
   $("readOnly").checked = !!s.readOnly;

@@ -1,7 +1,7 @@
 {
-  "_comment": "What differs in the Firefox build of the extension, applied by scripts/build-firefox.mjs on top of extension/manifest.json (everything not named here is taken from it unchanged, so a permission added for Chrome reaches Firefox too). Firefox has no service workers (a module event page instead), no 'debugger' API (no CDP: the extension turns those features off, see extension/platform.js), no 'tabGroups' and no 'favicon' API.",
+  "_comment": "What differs in the Firefox build of the extension, applied by scripts/build-firefox.mjs on top of extension/manifest.json (everything not named here is taken from it unchanged, so a permission added for Chrome reaches Firefox too). Firefox has no service workers (a module event page instead), no 'debugger' API (no CDP: the extension turns those features off, see extension/platform.js), no 'favicon' API. It keeps 'tabGroups': Firefox 139+ names and colours a tab group like Chrome.",
   "remove": ["key", "minimum_chrome_version"],
-  "removePermissions": ["debugger", "favicon", "tabGroups"],
+  "removePermissions": ["debugger", "favicon"],
   "set": {
     "background": { "scripts": ["background.js"], "type": "module" },
     "browser_specific_settings": { "gecko": { "id": "{6b0f2e0a-3d7c-4a57-9a52-7c1d4f0e8b21}", "strict_min_version": "128.0" } }

@@ -1,7 +1,7 @@
 // A visible mark on a shared tab, in the browser's own tab strip.
 //
-// Chrome can put shared tabs into a named, coloured "⚡" tab group. Firefox cannot name or colour a group from an extension, and a tab has no
-// other property the extension may set, so the page's own icon and title are what is left: the tab shows the site's icon with a green ring and
+// Chrome and Firefox 139+ can put shared tabs into a named, coloured "⚡" tab group. A tab has no other property the extension may set, so where
+// there is no group (an older Firefox), or when the person wants a mark on the tab itself, the page's own icon and title are what is left: the tab shows the site's icon with a green ring and
 // dot ("icon"), or the title gets a "⚡ " in front ("title"). The extension toolbar icon (a green dot on the shared tab) needs none of this and
 // the page cannot see it; these two change the page's <link rel=icon> / document.title, which the page CAN see. That is the price, and why the
 // mode is a setting ("off" switches it all off).
@@ -17,7 +17,7 @@
 export const MARK_PREFIX = "⚡ ";
 export const MODES = ["icon", "title", "off"];
 export const stripMark = (title) => (typeof title === "string" && title.startsWith(MARK_PREFIX) ? title.slice(MARK_PREFIX.length) : title);
-// Chrome has its tab group; Firefox has nothing else to show, so there the icon mark is the default.
+// Where there is a tab group (Chrome, Firefox 139+) it is the mark; a Firefox without tab groups has nothing else to show, so there the icon mark is the default.
 export const defaultMode = (hasTabGroups) => (hasTabGroups ? "off" : "icon");
 export const normalizeMode = (v, hasTabGroups) => (MODES.includes(v) ? v : defaultMode(hasTabGroups));
 
