@@ -138,17 +138,19 @@ presentation. The rules, also written into the tool descriptions:
 
 1. **Read in the background.** `get_page_content`, `execute_script`, `get_dom_snapshot`, `list_frames`, console and network reads work on a
    minimized window or a background tab. Prefer them. A screenshot needs a drawn page: use it only when text will not do.
-2. **For polling and scheduled checks pass `quiet: true`.** The call never brings the window forward, never activates a tab;
-   when the page cannot answer without that you get an error that says so, and you can report it instead of interrupting the user.
-3. **Without `quiet`**, where the user allows waking the tab, `screenshot`, `type`, `click`, `press_key`, `get_page_content` and
-   `get_dom_snapshot` may bring a minimized or covered window forward and put it back afterwards. `activate_tab`, `screenshot` with
-   `activate:true` and `open_tab` with `active:true` always take the user's focus: last resort only.
+2. **Every page call is quiet by default.** It never brings the window forward and never activates a tab; when the page cannot answer
+   without that you get an error that says so (`TAB_FROZEN`, a hint to repeat with `wake:true`), and you can report it instead of interrupting
+   the user. (`quiet:true` is still accepted and changes nothing.)
+3. **`wake: true` asks for the window.** Only with it, and where the user allows waking the tab, `screenshot`, `type`, `click`, `press_key`,
+   `get_page_content` and `get_dom_snapshot` may bring a minimized or covered window forward and put it back afterwards (the older `quiet:false`
+   means the same). `activate_tab`, `screenshot` with `activate:true` (it counts as `wake`) and `open_tab` with `active:true` always take the
+   user's focus: last resort only.
 4. **The user decides, per tab, whether a tab may be woken** (the 🔔 / 🔕 next to the tab's ✕ in the Tabduct popup; new shares take the default
    from the settings, on) **and can switch waking off for every tab at once with Silent mode.** `list_tabs` shows `wakeAllowed:false` for a tab you
    may not bring forward: `activate_tab` and `screenshot` with `activate:true` are then refused with `WAKE_NOT_ALLOWED`, and in Silent mode `open_tab`
    opens the tab in the background. Respect it: do not retry, work with the tab where it is, or tell the user.
-5. **A page Chrome has frozen** is thawed silently (see below) before the call. If that fails and the call is `quiet:true` (or waking is off for the
-   tab) you get `TAB_FROZEN` at once, with the reason; repeat the call without `quiet` to wake it (the window is brought forward, which the user
+5. **A page Chrome has frozen** is thawed silently (see below) before the call. If that fails (and the call is quiet, as it is by default, or waking is off for the
+   tab) you get `TAB_FROZEN` at once, with the reason; repeat the call with `wake:true` to wake it (the window is brought forward, which the user
    allowed by default), or leave it. A call the page does not answer ends with `TIMEOUT` after 18 s: look for a dialog ("Leave site?") instead of
    retrying blindly, and do not call `location.reload()` from `execute_script` on a tab the user has been using.
 
@@ -157,8 +159,8 @@ presentation. The rules, also written into the tool descriptions:
 frozen page runs nothing, so every call to it hangs. Tabduct sees `tab.frozen` and thaws the page through the debugger (`Page.setWebLifecycleState`),
 which needs *Allow CDP eval* on, and keeps the debugger attached to that tab for the call and 20 s after it (Chrome does not freeze a page that is being
 inspected) and tries up to three ways of thawing in turn. Chrome 154 does not let the debugger thaw every kind of freeze (reproduced on a tab Chrome froze
-by itself; one frozen from `chrome://discards` thaws), so the dependable way is the window, as when you click the tab yourself: a call without `quiet` brings the window
-forward where waking is allowed, and the call goes on. A `quiet` call, or one on a tab where waking is off, gets
+by itself; one frozen from `chrome://discards` thaws), so the dependable way is the window, as when you click the tab yourself: a call with `wake:true` brings the window
+forward where waking is allowed, and the call goes on. A call without it, or one on a tab where waking is off, gets
 `TAB_FROZEN` with what each way of thawing did. `list_tabs` shows `frozen: true`. Chrome has no extension
 API for its "Always keep these sites active" list, so Tabduct does not touch it.
 

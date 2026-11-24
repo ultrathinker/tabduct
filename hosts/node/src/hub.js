@@ -16,7 +16,7 @@ import { ListToolsRequestSchema, CallToolRequestSchema } from "@modelcontextprot
 import { McpHttpServer } from "./mcp-server.js";
 import { readAll } from "./discovery.js";
 import { ensureSecrets, baseDir } from "./secrets.js";
-import { loadCatalog, requiredFeatures, missingFeatureError } from "./tools.js";
+import { loadCatalog, requiredFeatures, missingFeatureError, windowIntentConflict, withWindowIntent } from "./tools.js";
 import { HUB_PORT, ERR, INVOKE_TIMEOUT_MS, invokeTimeoutMs } from "./constants.js";
 
 const CATALOG = loadCatalog();
@@ -201,6 +201,8 @@ class Hub {
       if (typeof name === "string" && name.startsWith("_td/")) return errResult(ERR.UNKNOWN_TOOL, `Unknown tool: ${name}`);
       if (name === "list_instances") return textResult({ instances: [...this.meta].map(([instanceId, m]) => ({ instanceId, label: m.label, extensionVersion: m.extensionVersion ?? null, features: m.features ?? [], ...(m.browser ? { browser: m.browser } : {}) })) });
       if (name === "list_tabs") return await this._listTabsFanout(args);
+      const conflict = windowIntentConflict(args);
+      if (conflict) return errResult(ERR.INVALID_ARGS, conflict);
       const { instanceId, forward } = this._resolveTarget(args);
       // The host in front of an instance may be an older build (it outlives a `git pull` just like
       // the hub does): such a host doesn't gate, and its extension would run a call that needs a
@@ -212,7 +214,8 @@ class Hub {
         const missing = [...requiredFeatures(name, forward)].filter((f) => !have.has(f));
         if (missing.length) { const e = missingFeatureError({ browser: m.browser, version: m.extensionVersion, missing, where: `the Tabduct host or extension behind instance ${instanceId}` }); return errResult(e.code, e.message); }
       }
-      return await this._callInstance(instanceId, name, forward);
+      // Page tools are quiet unless the caller asked for the window (wake:true): the default is set here, for every agent.
+      return await this._callInstance(instanceId, name, withWindowIntent(name, forward, m ? new Set(m.features ?? []) : undefined));
     } catch (e) {
       return errResult(e.code || ERR.INTERNAL, e.message);
     }

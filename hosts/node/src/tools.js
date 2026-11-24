@@ -67,6 +67,28 @@ export function requiredFeatures(toolName, args) {
   return out;
 }
 
+// Window etiquette, decided here once for every agent: a page tool is QUIET (the extension's `quiet:true`: the user's window is never
+// raised) unless the caller asks for the window with `wake:true`. The older `quiet:false` and `activate:true` (activating a tab raises
+// the window) are requests for it too. The extension keeps the wire-level meaning (no `quiet` = it may raise the window); the default
+// lives in the hub and in every host, so an agent has to ask before it can interrupt the user.
+export function windowIntentConflict(args) {
+  const { wake, quiet, activate } = args ?? {};
+  if (wake === true && quiet === true) return "wake:true and quiet:true contradict each other: wake allows the user's window to be raised, quiet forbids it";
+  if (wake === false && quiet === false) return "wake:false and quiet:false contradict each other";
+  if (wake === false && activate === true) return "wake:false and activate:true contradict each other: activating a tab raises the window";
+  return null;
+}
+// `haveFeatures`: what the target extension reports (undefined = unknown: the call is only cleaned of `wake`, not made quiet). A build
+// without the `quiet` feature cannot be told to stay quiet; it raises the window as it always did.
+export function withWindowIntent(toolName, args, haveFeatures) {
+  const tool = CATALOG.tools.find((t) => t.name === toolName);
+  if (!tool?.inputSchema?.properties?.quiet) return args;
+  const { wake, ...rest } = args ?? {};
+  if (!haveFeatures?.has("quiet")) return rest;
+  const asked = wake === true || rest.quiet === false || (rest.activate === true && rest.quiet !== true);
+  return { ...rest, quiet: !asked };
+}
+
 // The refusal for a call that needs an extension feature the instance does not have. A build that is merely old must be
 // reloaded; Firefox has no debugger API, so "cdp-input" (trusted input) is something that browser can never do.
 export function missingFeatureError({ browser, version, missing, where }) {
@@ -118,7 +140,7 @@ export function registerTools(server, bridge, getExt) {
       }
       const tool = CATALOG.tools.find((t) => t.name === name);
       if (!tool) return { isError: true, content: [{ type: "text", text: `UNKNOWN_TOOL: Unknown tool: ${name}` }] };
-      const bad = validateArgs(tool.inputSchema, args ?? {});
+      const bad = validateArgs(tool.inputSchema, args ?? {}) ?? windowIntentConflict(args);
       if (bad) return { isError: true, content: [{ type: "text", text: `INVALID_ARGS: ${bad}` }] };
       const ext = getExt?.();
       if (ext) {
@@ -128,7 +150,7 @@ export function registerTools(server, bridge, getExt) {
           return { isError: true, content: [{ type: "text", text: `${e.code}: ${e.message}` }] };
         }
       }
-      const result = await bridge.invoke(name, args ?? {});
+      const result = await bridge.invoke(name, withWindowIntent(name, args ?? {}, ext?.features));
       return { content: toContent(name, result) };
     } catch (e) {
       return { isError: true, content: [{ type: "text", text: `${e.code || "INTERNAL"}: ${e.message}` }] };

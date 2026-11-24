@@ -320,9 +320,11 @@ async function handleInvoke(msg) {
     if (!handler) { reply(id, false, { code: "UNKNOWN_TOOL", message: `Unknown tool: ${tool}` }); return; }
 
     // `quiet`: the caller asks that its user's window is NEVER raised for this call (scheduled checks while the
-    // user plays or presents). A screenshot of a background tab that asks to be activated contradicts that.
+    // user plays or presents). The hub and the hosts send it with every page call unless the agent asked for the
+    // window (wake:true), so for an agent quiet is the default. A screenshot of a background tab that asks to be
+    // activated contradicts that.
     const quiet = args.quiet === true && QUIET_TOOLS.has(tool);
-    if (quiet && args.activate === true) { reply(id, false, { code: "INVALID_ARGS", message: "quiet and activate contradict each other: activating a tab raises the window" }); return; }
+    if (quiet && args.activate === true) { reply(id, false, { code: "INVALID_ARGS", message: "quiet:true and activate:true contradict each other: activating a tab raises the window (to allow that, pass wake:true instead of quiet:true)" }); return; }
 
     const decision = await gate(tool, args);
     if (!decision.allow) { reply(id, false, { code: decision.code, message: decision.message }); flashDenied(decision.tabId); return; }
@@ -364,7 +366,7 @@ async function handleInvoke(msg) {
       // The page did not answer: most likely it is waiting for the user (a "Leave site?" prompt, an alert).
       // Bring the window forward and leave it there so the user can see and answer it.
       if (e?.stuck) e.message += await freezeNote(decision.tabId, thaw, decision.thaw);
-      if (e?.stuck && quiet) e.message += " (quiet: the window was not raised)";
+      if (e?.stuck && quiet) e.message += " (quiet: the window was not raised; repeat the call with wake:true to allow it, which interrupts the user)";
       else if (e?.stuck && !decision.wake) e.message += " (the window was not raised: waking is turned off for this tab, or Silent mode is on)";
       else if (e?.stuck && decision.tabId != null) { try { releaseTab(await wakeTab(decision.tabId, { keep: true })); } catch {} }
       throw e;
@@ -388,7 +390,7 @@ async function isFrozenTab(tabId) { try { return (await chrome.tabs.get(tabId)).
 // TAB_FROZEN: the page is frozen by Chrome, could not be thawed silently, and nothing may bring the window forward.
 function frozenMessage({ quiet, wakeOk, thawAllowed, thaw, trace }) {
   const tried = thawAllowed ? `The silent thaw ended: ${thaw ?? "not tried"}${trace ? ` (${trace})` : ""}.` : "A silent thaw needs 'Allow CDP eval' in the Tabduct popup.";
-  const next = wakeOk && quiet ? "Repeat the call without quiet:true to wake it (the browser window is brought forward), or leave it."
+  const next = wakeOk && quiet ? "Repeat the call with wake:true to wake it (the browser window is brought forward, which interrupts the user), or leave it."
     : "The user has turned waking off for this tab (or Silent mode is on): ask them to open the tab or to allow waking in the Tabduct popup.";
   return `this tab is frozen by Chrome (hidden for a long time) and does not answer. ${tried} ${next}`.trim();
 }
@@ -399,7 +401,7 @@ async function freezeNote(tabId, thaw, thawAllowed) {
   try { frozen = tabId != null && (await chrome.tabs.get(tabId)).frozen === true; } catch {}
   if (frozen && thaw === "not-frozen") thaw = null; // it froze again after the check
   const how = thaw && thaw !== "not-frozen" && thawTraceOf(tabId) ? ` (${thawTraceOf(tabId)})` : ""; // what each way of thawing did
-  if (frozen) return ` Chrome has frozen this tab (hidden for a long time)${thawAllowed ? `; the silent thaw ended: ${thaw ?? "not tried"}${how}` : "; the silent thaw needs 'Allow CDP eval' in the extension, otherwise a call without quiet raises the window to wake it"}.`;
+  if (frozen) return ` Chrome has frozen this tab (hidden for a long time)${thawAllowed ? `; the silent thaw ended: ${thaw ?? "not tried"}${how}` : "; the silent thaw needs 'Allow CDP eval' in the extension, otherwise a call with wake:true raises the window to wake it"}.`;
   if (thaw && thaw !== "not-frozen") return ` The tab had been frozen by Chrome; the silent thaw ended: ${thaw}${how}.`;
   return "";
 }

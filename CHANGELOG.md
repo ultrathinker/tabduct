@@ -4,6 +4,20 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims for
 [Semantic Versioning](https://semver.org/) once it reaches 1.0.
 
+## [1.11.0] — 2026-11-24
+
+### Changed
+- **Every page call is quiet by default.** An agent that never heard of `quiet` used to raise the user's window whenever a page was asleep (a trusted click, a
+  screenshot, a read of a hidden tab), which interrupted games, calls and work. Now the hub and every host (`withWindowIntent` in `hosts/node/src/tools.js`)
+  send `quiet:true` with each call of a page tool unless the caller asks for the window. The new argument **`wake: true`** is that request; the older
+  `quiet:false` and `screenshot` with `activate:true` mean the same, and `quiet:true` is still accepted (it is now the default spelled out). `wake` together
+  with `quiet:true` is `INVALID_ARGS`. When a quiet call cannot be answered without the window (a frozen tab, a page that does not answer) the error says so and
+  names `wake:true`. The user's own switches still decide whether a window may be raised at all: the per-tab bell, Silent mode and "Wake the browser".
+- Works with the extension builds already installed: the default is set in the hub and the host, and an extension without the `quiet` feature (too old to be told)
+  is left alone. The extension itself only changed wording (the hints name `wake:true`); at the wire level an absent `quiet` still means "may raise the window".
+- Tool descriptions, the README rules for agents, `PROTOCOL.md` and `ARCHITECTURE.md` say it; tests: the pure helpers (`test-host.mjs`), the host and the hub with
+  a build that has the feature and one that has not (`run.mjs`, `run-hub.mjs`).
+
 ## [1.10.1] — 2026-10-28
 
 ### Fixed

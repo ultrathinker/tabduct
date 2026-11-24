@@ -11,7 +11,7 @@ import { tmpdir, homedir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve, join } from "node:path";
 import { randomUUID } from "node:crypto";
-import { cmpVersion } from "../hosts/node/src/tools.js";
+import { cmpVersion, withWindowIntent, windowIntentConflict } from "../hosts/node/src/tools.js";
 import { invokeTimeoutMs } from "../hosts/node/src/constants.js";
 
 const REPO = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -129,6 +129,14 @@ const text = (r) => r.json?.result?.content?.[0]?.text || "";
     ok([cmpVersion("1.5.0", "1.6.0"), cmpVersion("1.6.0", "1.6.0"), cmpVersion("1.10.0", "1.9.9"), cmpVersion(null, "0.0.1")].join() === "-1,0,1,-1", "cmpVersion orders dotted versions numerically (missing = oldest)");
     ok(invokeTimeoutMs("wait_for", { timeoutMs: 25000 }) === 30000 && invokeTimeoutMs("wait_for", {}) === 15000 && invokeTimeoutMs("click", {}) === 20000, "wait_for gets its wait plus overhead; others the generic budget");
     ok(invokeTimeoutMs("wait_for", { timeoutMs: 99999 }) === 30000, "...but never more than the 25 s cap + overhead");
+    // window etiquette: a page tool is quiet unless it asks for the window
+    const Q = new Set(["quiet"]);
+    const j = JSON.stringify;
+    ok(j([withWindowIntent("get_page_content", { tabId: 1 }, Q), withWindowIntent("get_page_content", { tabId: 1, wake: true }, Q), withWindowIntent("get_page_content", { tabId: 1, wake: false }, Q), withWindowIntent("get_page_content", { tabId: 1, quiet: false }, Q), withWindowIntent("screenshot", { activate: true }, Q), withWindowIntent("screenshot", { activate: true, quiet: true }, Q)])
+      === j([{ tabId: 1, quiet: true }, { tabId: 1, quiet: false }, { tabId: 1, quiet: true }, { tabId: 1, quiet: false }, { activate: true, quiet: false }, { activate: true, quiet: true }]), "withWindowIntent: quiet by default; wake:true, quiet:false and activate:true ask for the window");
+    ok(j([withWindowIntent("get_page_content", { tabId: 1, wake: true }, new Set()), withWindowIntent("get_page_content", { tabId: 1 }, undefined), withWindowIntent("navigate", { url: "x", wake: true }, Q), withWindowIntent("get_page_content", withWindowIntent("get_page_content", { tabId: 1, wake: true }, Q), Q)])
+      === j([{ tabId: 1 }, { tabId: 1 }, { url: "x", wake: true }, { tabId: 1, quiet: false }]), "...a build without `quiet` (or unknown features) is only cleaned of `wake`; a tool that has no `quiet` is left alone; applying it twice changes nothing");
+    ok([windowIntentConflict({ wake: true, quiet: true }), windowIntentConflict({ wake: false, quiet: false }), windowIntentConflict({ wake: false, activate: true }), windowIntentConflict({ wake: true, activate: true }), windowIntentConflict({ quiet: true, activate: true }), windowIntentConflict(undefined)].map(Boolean).join() === "true,true,true,false,false,false", "windowIntentConflict: wake and quiet contradict each other (quiet + activate is the extension's own refusal)");
   } catch (e) { console.error("  ERROR:", e); fails++; }
   for (const h of hosts) h.kill();
   console.log(fails ? `\nHOST TESTS FAILED (${fails})` : "\nHOST TESTS PASSED");

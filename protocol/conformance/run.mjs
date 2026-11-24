@@ -97,6 +97,11 @@ export async function runConformance(hostCmd) {
       ok(lf.json?.result?.isError === true && /^EXTENSION_OUTDATED/.test(lf.json.result.content[0].text) && invokes === before, "list_frames on an extension without `frames` → EXTENSION_OUTDATED");
       await rpc({ jsonrpc: "2.0", id: 22, method: "tools/call", params: { name: "get_page_content", arguments: { frameId: 0 } } }, { sessionId: sid });
       ok(invokes === before + 1, "frameId 0 (the page itself) works on any build and is forwarded");
+      // window etiquette: `wake` is never forwarded, and an extension without the `quiet` feature is not told to be quiet
+      await rpc({ jsonrpc: "2.0", id: 25, method: "tools/call", params: { name: "get_page_content", arguments: { tabId: 1, wake: true } } }, { sessionId: sid });
+      ok(invokeSeen?.payload?.tool === "get_page_content" && !("wake" in (invokeSeen.payload.args || {})) && !("quiet" in (invokeSeen.payload.args || {})), "wake is not forwarded; an extension without the `quiet` feature is not told to be quiet");
+      const wq = await rpc({ jsonrpc: "2.0", id: 26, method: "tools/call", params: { name: "get_page_content", arguments: { tabId: 1, wake: true, quiet: true } } }, { sessionId: sid });
+      ok(wq.json?.result?.isError === true && /^INVALID_ARGS/.test(wq.json.result.content[0].text), "wake:true together with quiet:true contradict each other: INVALID_ARGS");
       const bound = await rpc({ jsonrpc: "2.0", id: 23, method: "tools/call", params: { name: "screenshot", arguments: { quality: 1000 } } }, { sessionId: sid });
       ok(bound.json?.result?.isError === true && /INVALID_ARGS/.test(bound.json.result.content[0].text), "numeric bounds from the schema are enforced (quality <= 100)");
       ok((await rpc({ jsonrpc: "2.0", id: 24, method: "tools/list" }, { sessionId: "no-such-session" })).status === 404, "unknown session id → 404");

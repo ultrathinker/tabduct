@@ -388,7 +388,7 @@ eq(groupAction({ ...base, tier: "all", inOurGroup: true, shared: false }), null,
   const t0 = Date.now();
   const noCdp = await call(P4, "get_page_content", { tabId: 1, quiet: true });
   const m1 = noCdp?.error?.message || "";
-  eq([noCdp?.error?.code, /frozen by Chrome/.test(m1), /Allow CDP eval/.test(m1), /without quiet:true/.test(m1), Date.now() - t0 < 1000], ["TAB_FROZEN", true, true, true, true], "frozen tab, quiet, no CDP opt-in: TAB_FROZEN at once; names the setting that would thaw it and says how to wake it");
+  eq([noCdp?.error?.code, /frozen by Chrome/.test(m1), /Allow CDP eval/.test(m1), /wake:true/.test(m1), Date.now() - t0 < 1000], ["TAB_FROZEN", true, true, true, true], "frozen tab, quiet, no CDP opt-in: TAB_FROZEN at once; names the setting that would thaw it and says how to wake it");
   await C.setShareOptions({ allowCdp: true });
   TABS[0].frozen = true;
   chrome.debugger.sendCommand = async (_t, m) => { DBG.push(m); return {}; }; // the thaw does not take effect

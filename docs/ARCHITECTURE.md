@@ -161,8 +161,11 @@ thawed; one applied from `chrome://discards` was), so a frozen page that stays f
 brought forward like a hidden one (as a click on its tab would): `wake(tabId, { force: true })` raises the window without asking the page
 (it cannot answer) and waits for `tab.frozen` to go. If nothing may raise the window, the call fails at once
 with `TAB_FROZEN` (the thaw trace and what to do) instead of waiting out the deadline.
-And a call may carry `quiet:true` (feature `quiet`): the window is then never raised, not even
-after a timeout, and a call that cannot be answered without it fails with an explanation.
+The extension-level flag is `quiet:true` (feature `quiet`): the window is then never raised, not even
+after a timeout, and a call that cannot be answered without it fails with an explanation. The DEFAULT is decided one layer up: the hub and
+every host (`withWindowIntent` in `hosts/node/src/tools.js`) send `quiet:true` with every page call unless the caller asked for the window
+(`wake:true`, the older `quiet:false`, or `activate:true`), so an agent has to ask before it can interrupt the user. A build without the
+`quiet` feature cannot be told and raises the window as it always did.
 
 **Who may wake a tab** (`consent.wakeAllowed`, resolved in the gate and handed on as `decision.wake`):
 Silent mode (`silentMode` in storage.local, switched from the popup's header button, fanned out to every
@@ -175,7 +178,7 @@ refused with `WAKE_NOT_ALLOWED`, and in Silent mode `open_tab` opens in the back
 shared), `_td/set_wake` and `_td/set_silent` can switch things on, because they decide only whether a window
 may be raised, never what an agent may read or do.
 A call the page does not answer within 18 s ends with `TIMEOUT` (typically a "Leave site?"
-dialog); unless quiet, the window is raised and left up so the user can answer it.
+dialog); a call that asked for the window (`wake:true`) leaves it raised so the user can answer it, a quiet call (the default) raises nothing.
 
 ## execute_script & page CSP
 

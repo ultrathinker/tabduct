@@ -33,14 +33,14 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 // A fake instance = real host + a fake extension answering invokes over stdio.
 function startInstance(instanceId, gen = "", extra = {}) {
-  const invokes = [];
+  const invokes = [], lastArgs = {};
   const proc = spawn(process.execPath, [HOST], { stdio: ["pipe", "pipe", "inherit"], env: ENV }); procs.push(proc);
   const send = (o) => { const b = Buffer.from(JSON.stringify(o)); const h = Buffer.alloc(4); h.writeUInt32LE(b.length, 0); proc.stdin.write(Buffer.concat([h, b])); };
   let buf = Buffer.alloc(0), need = -1; const pend = new Map();
   proc.stdout.on("data", (c) => { buf = Buffer.concat([buf, c]); for (;;) { if (need === -1) { if (buf.length < 4) return; need = buf.readUInt32LE(0); buf = buf.subarray(4); } if (buf.length < need) return; const m = JSON.parse(buf.subarray(0, need).toString()); buf = buf.subarray(need); need = -1; if (m.replyTo) { const r = pend.get(m.replyTo); if (r) { pend.delete(m.replyTo); r(m); } } else if (m.type === "invoke") answer(m); } });
   const answer = (m) => {
     const t = m.payload.tool, ok = (result) => send({ replyTo: m.id, ok: true, result });
-    invokes.push(t);
+    invokes.push(t); lastArgs[t] = m.payload.args;
     if (t === "list_tabs") ok({ tabs: [{ id: 1, title: `tab-${instanceId}${gen}`, url: "https://example.com", active: true }] });
     else if (t === "_td/revoke_all") { if (instanceId === "B") send({ replyTo: m.id, ok: false, error: { code: "INTERNAL", message: "boom" } }); else ok({ ok: true }); }
     else if (t === "_td/set_tier") ok({ ok: true });
@@ -53,7 +53,7 @@ function startInstance(instanceId, gen = "", extra = {}) {
     else send({ replyTo: m.id, ok: false, error: { code: "TAB_NOT_FOUND", message: "no" } });
   };
   const hostReq = (type, payload) => new Promise((res) => { const id = randomUUID(); pend.set(id, res); send({ type, id, payload }); });
-  return { proc, instanceId, invokes, req: hostReq, kill: () => { try { proc.kill(); } catch {} }, open: () => hostReq("open", { port: 0, token: `tok-${instanceId}-${randomUUID()}`, protocolVersion: 0, instanceId, label: `L-${instanceId}`, ...extra }) };
+  return { proc, instanceId, invokes, lastArgs, req: hostReq, kill: () => { try { proc.kill(); } catch {} }, open: () => hostReq("open", { port: 0, token: `tok-${instanceId}-${randomUUID()}`, protocolVersion: 0, instanceId, label: `L-${instanceId}`, ...extra }) };
 }
 
 function rpc(body, { sessionId, token, port } = {}) {
@@ -150,7 +150,7 @@ const call = (name, args, sid, token) => rpc({ jsonrpc: "2.0", id: Math.floor(Ma
   // the hub refuses a call that needs a feature the TARGET instance's build lacks, instead of
   // forwarding it to a host/extension that would run it somewhere else (frameId ignored -> top page).
   // A's fake extension reported no features (an old build); C's reports them.
-  const C = startInstance("C", "", { extensionVersion: "1.6.0", features: ["frames", "pinned-docs"], browser: "firefox" }); // a Firefox: no debugger API, so never 'cdp-input'
+  const C = startInstance("C", "", { extensionVersion: "1.6.0", features: ["frames", "pinned-docs", "quiet"], browser: "firefox" }); // a Firefox: no debugger API, so never 'cdp-input'
   ok((await C.open()).ok, "a third instance reporting its extension features is up");
   await sleep(3600); // the hub's poll connects it
   const outdated = await call("list_frames", { instanceId: "A" }, sid, tAgent);
@@ -163,10 +163,31 @@ const call = (name, args, sid, token) => rpc({ jsonrpc: "2.0", id: Math.floor(Ma
   ok(!/EXTENSION_OUTDATED/.test(fine.json?.result?.content?.[0]?.text || "") && C.invokes.includes("list_frames"), "an instance that reports the feature gets the call");
   const outdated3 = await call("wait_for", { instanceId: "C", text: "done" }, sid, tAgent);
   ok(outdated3.json?.result?.isError && /EXTENSION_OUTDATED/.test(outdated3.json.result.content[0].text) && /wait-text/.test(outdated3.json.result.content[0].text) && !C.invokes.includes("wait_for"), "wait_for with `text` on a build without the 'wait-text' feature → EXTENSION_OUTDATED, not forwarded");
-  const outdated4 = await call("get_page_content", { instanceId: "C", tabId: 1, quiet: true }, sid, tAgent);
-  ok(outdated4.json?.result?.isError && /EXTENSION_OUTDATED/.test(outdated4.json.result.content[0].text) && /quiet/.test(outdated4.json.result.content[0].text) && !C.invokes.includes("get_page_content"), "quiet:true on a build without the 'quiet' feature → EXTENSION_OUTDATED (an old build would raise the window), not forwarded");
-  const quietOff = await call("get_page_content", { instanceId: "C", tabId: 1, quiet: false }, sid, tAgent);
-  ok(!/EXTENSION_OUTDATED/.test(quietOff.json?.result?.content?.[0]?.text || ""), "...quiet:false needs no feature");
+  const reads = () => A2.invokes.filter((x) => x === "get_page_content").length;
+  const r0 = reads();
+  const outdated4 = await call("get_page_content", { instanceId: "A", tabId: 1, quiet: true }, sid, tAgent);
+  ok(outdated4.json?.result?.isError && /EXTENSION_OUTDATED/.test(outdated4.json.result.content[0].text) && /quiet/.test(outdated4.json.result.content[0].text) && reads() === r0, "quiet:true on a build without the 'quiet' feature → EXTENSION_OUTDATED (an old build would raise the window), not forwarded");
+  const quietOff = await call("get_page_content", { instanceId: "A", tabId: 1, quiet: false }, sid, tAgent);
+  ok(!/EXTENSION_OUTDATED/.test(quietOff.json?.result?.content?.[0]?.text || "") && reads() === r0 + 1, "...quiet:false needs no feature");
+  // Window etiquette: a page call is quiet unless it asks for the window (wake:true), `wake` itself is never forwarded, and a build that cannot be told is left alone
+  const argsOf = async (inst, tool, args) => { await call(tool, { instanceId: inst.instanceId, tabId: 1, ...args }, sid, tAgent); return inst.lastArgs[tool]; };
+  const dflt = await argsOf(C, "get_page_content", {});
+  ok(dflt?.quiet === true, `a page call is quiet by default: the hub forwards quiet:true (${JSON.stringify(dflt)})`);
+  const woke = await argsOf(C, "get_page_content", { wake: true });
+  ok(woke?.quiet === false && !("wake" in woke), `wake:true asks for the window: forwarded as quiet:false, without \`wake\` (${JSON.stringify(woke)})`);
+  const qFalse = await argsOf(C, "get_page_content", { quiet: false });
+  ok(qFalse?.quiet === false, "the older quiet:false still asks for the window");
+  const qTrue = await argsOf(C, "get_page_content", { quiet: true });
+  ok(qTrue?.quiet === true, "quiet:true spelled out is the default");
+  const shotAct = await argsOf(C, "screenshot", { activate: true });
+  ok(shotAct?.quiet === false && shotAct?.activate === true, "screenshot with activate:true counts as a request for the window");
+  const shotPlain = await argsOf(C, "screenshot", {});
+  ok(shotPlain?.quiet === true, "a screenshot without it is quiet");
+  const cInv = C.invokes.length;
+  const clash = await call("get_page_content", { instanceId: "C", tabId: 1, wake: true, quiet: true }, sid, tAgent);
+  ok(clash.json?.result?.isError && /INVALID_ARGS/.test(clash.json.result.content[0].text) && C.invokes.length === cInv, "wake:true together with quiet:true contradict each other: refused, nothing forwarded");
+  const oldBuild = await argsOf(A2, "get_page_content", { wake: true });
+  ok(oldBuild && !("wake" in oldBuild) && !("quiet" in oldBuild), `a build without the 'quiet' feature is not told to be quiet and never sees \`wake\` (${JSON.stringify(oldBuild)})`);
   // Firefox has no debugger API: a call that needs trusted input is not "outdated", it is impossible there, and the message says so
   const pkF = await call("press_key", { instanceId: "C", tabId: 1, key: "Enter" }, sid, tAgent);
   const pkText = pkF.json?.result?.content?.[0]?.text || "";
