@@ -9,7 +9,7 @@
     "notification": ["type", "payload"]
   },
   "extensionToHost": {
-    "requests": ["open", "close", "ping", "relabel", "peers", "peerUnshare", "peerStopAll", "peerRevokeAll", "hubRestart", "hubStopEverywhere"],
+    "requests": ["open", "close", "ping", "relabel", "peers", "peerUnshare", "peerStopAll", "peerRevokeAll", "peerSetWake", "peerSetSilent", "hubRestart", "hubStopEverywhere"],
     "notifications": ["event"]
   },
   "hostToExtension": {
@@ -17,7 +17,7 @@
     "notifications": ["notice"]
   },
   "events": ["permission_revoked", "permission_paused", "tab_removed"],
-  "internalInvokes": ["_td/snapshot", "_td/unshare", "_td/set_tier", "_td/revoke_all", "_td/set_wake", "_td/set_silent"],
+  "internalInvokes": ["_td/snapshot", "_td/unshare", "_td/set_tier", "_td/revoke_all", "_td/set_wake", "_td/set_silent", "_td/disconnect"],
   "errorCodes": [
     "UNKNOWN_TOOL", "TAB_NOT_FOUND", "TIMEOUT", "CSP_BLOCKED", "SCRIPT_ERROR",
     "FRAME_TOO_LARGE", "VERSION_MISMATCH", "INVALID_ARGS", "INTERNAL",

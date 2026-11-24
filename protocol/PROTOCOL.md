@@ -81,13 +81,15 @@ ignored (forward-compat).
 
 | `type` | payload | reply `result` |
 |--------|---------|----------------|
-| `open` | `{ port, token, protocolVersion, instanceId?, label?, hub?, extensionVersion?, features? }` | `{ port, protocolVersion }` (plus `{ hub, endpoint, token, hubReady }` when `hub:true`, see §11) — bind MCP server on `127.0.0.1:port` (**`port: 0` = ephemeral**; the reply echoes the actually-bound port). Require `token` for auth (§5). Mismatched `protocolVersion` → `VERSION_MISMATCH`. `instanceId`/`label` register the instance for discovery (§7). `extensionVersion` (the loaded build's manifest version) and `features` (string list of optional capabilities the build has, e.g. `"frames"`, `"cdp-input"`) are recorded for the instance and published in its discovery entry; see "Feature gating" below. |
+| `open` | `{ port, token, protocolVersion, instanceId?, label?, hub?, extensionVersion?, features?, browser? }` | `{ port, protocolVersion }` (plus `{ hub, endpoint, token, hubReady }` when `hub:true`, see §11) — bind MCP server on `127.0.0.1:port` (**`port: 0` = ephemeral**; the reply echoes the actually-bound port). Require `token` for auth (§5). Mismatched `protocolVersion` → `VERSION_MISMATCH`. `instanceId`/`label` register the instance for discovery (§7). `extensionVersion` (the loaded build's manifest version) and `features` (string list of optional capabilities the build has, e.g. `"frames"`, `"cdp-input"`) are recorded for the instance and published in its discovery entry; see "Feature gating" below. |
 | `relabel` | `{ label }` | `{}` — the user renamed this browser: republish the discovery entry (§7) so the hub and agents see the new label. |
 | `close` | — | `{}` — stop the MCP server (process keeps running). |
 | `ping` | — | `{ pong: true }` — liveness. |
 | `peers` | — | `{ instances: [{ instanceId, label, tier, sharedCount, tabs, activeTabId }] }` — host proxies the hub's `GET /control` (§11a) so the popup can show every browser + what each shares. |
 | `peerUnshare` | `{ instanceId, tabId }` | `{ ok:true }` — host proxies `POST /control {op:"unshare"}`: unshare one tab in another instance. |
 | `peerStopAll` | `{ instanceId }` | `{ ok:true }` — host proxies `POST /control {op:"stopAll"}`: turn off Share-Everything in another instance. |
+| `peerSetWake` | `{ instanceId, tabId, on }` | `{ ok:true }` — host proxies `POST /control {op:"setWake"}`: allow or forbid bringing one tab of another instance to the front (its bell in the popup). |
+| `peerSetSilent` | `{ on }` | `{ ok:true }` — host proxies `POST /control {op:"setSilent", exceptInstanceId}`: Silent mode in every OTHER instance (the caller sets it locally); fails, naming them, when a browser could not confirm. |
 | `peerRevokeAll` | — | `{ ok:true }` — host proxies `POST /control {op:"revokeAll", exceptInstanceId}`: clear sharing on every OTHER instance (the caller clears itself locally). Backs the popup's "Revoke all sharing". |
 | `hubRestart` | — | `{ ok:true, hubUp }` — host proxies `POST /control {op:"restart"}`: the hub answers, then exits (removing `hub.json` last); the host waits for the port to be free and starts a fresh hub at once (every other host's watchdog would within about 10 s). Backs the popup's "Restart hub". Stopping ONE browser never restarts the hub — it stays up while any browser is connected — so this is the way to load new hub code. MCP sessions are lost; clients re-initialize. |
 | `hubStopEverywhere` | — | `{ ok:true }` — host proxies `POST /control {op:"disconnectAll", exceptInstanceId}`: the hub tells every OTHER connected browser (control tool `_td/disconnect`) to disconnect and stay stopped, and exits only when all confirmed; otherwise `502` naming the browsers that did not (the hub keeps running). The caller then stops itself. Backs the popup's "Stop for all browsers". Like `peerRevokeAll` it can only reduce access. |
@@ -103,9 +105,13 @@ ever issued by the hub's `/control` handler — see §11a): `_td/snapshot` → t
 instance's sharing view `{ tier, sharedCount, tabs, activeTabId, label }`;
 `_td/unshare {tabId}` → unshare that tab; `_td/set_tier {tier:"none"}` → stop
 Share-Everything (accepts **only** `"none"` — it can never *raise* the tier, so it
-cannot grant access); `_td/revoke_all` → clear all sharing on that instance. These
-bypass the per-tool consent gate because, by construction, they only ever **reduce**
-what is shared.
+cannot grant access); `_td/revoke_all` → clear all sharing on that instance;
+`_td/disconnect` → disconnect this browser as if the user pressed Stop (it stays stopped
+until Start). These bypass the per-tool consent gate because, by construction, they only
+ever **reduce** what is shared. Two more decide only whether an agent may raise the
+user's window, never what it may read or do, so they may also switch something on:
+`_td/set_wake {tabId, on}` → the tab's "may be woken" switch; `_td/set_silent {on}` →
+Silent mode. `_td/snapshot` also carries `silent`.
 
 ## 5. Notifications (no reply)
 
@@ -397,11 +403,15 @@ unshare across browsers. It stays a user-only action.
 - `GET /control` → `{ instances: [{ instanceId, label, tier, sharedCount, tabs, activeTabId }] }` (fans out `_td/snapshot`; per-instance tab ids stay numeric — no composite rewrite).
 - `POST /control {op:"unshare", instanceId, tabId}` → routes `_td/unshare` to that instance.
 - `POST /control {op:"stopAll", instanceId}` → routes `_td/set_tier {tier:"none"}`.
+- `POST /control {op:"setWake", instanceId, tabId, on}` → routes `_td/set_wake`.
+- `POST /control {op:"setSilent", on, exceptInstanceId?}` → fans `_td/set_silent` to every instance except the caller; `502 {ok:false, error:"could not confirm in: ...", failed}` when one could not confirm.
+- `POST /control {op:"restart"}` → `200 {ok:true}`, then the hub exits (`hub.json` removed last); the hosts start a fresh one (current code and catalog). MCP sessions end with it.
+- `POST /control {op:"disconnectAll", exceptInstanceId}` → `_td/disconnect` to every OTHER instance; the hub exits only when all of them confirmed, else `502 {ok:false, error:"could not stop: ...", failed}` and the hub keeps running.
 - `POST /control {op:"revokeAll", exceptInstanceId?}` → fans `_td/revoke_all` to every instance except `exceptInstanceId` (the caller, which clears itself locally). It reports what really happened: `200 {ok:true}` only when every other instance confirmed, else `502 {ok:false, error, failed:[instanceId…]}` — "Revoke all" must never claim success while another browser still shares.
 
 The popup never calls `/control` directly (it's a browser context → would carry an
 `Origin`); instead its extension asks its **own host** via the `peers`/`peerUnshare`/
-`peerStopAll` wire requests (§3), and the host (not a browser, no `Origin`) calls
+`peerStopAll`/`peerRevokeAll`/`peerSetWake`/`peerSetSilent`/`hubRestart`/`hubStopEverywhere` wire requests (§3), and the host (not a browser, no `Origin`) calls
 `/control` with `tControl`. So the "`Origin` always rejected" invariant is preserved.
 Only the Node host implements this today (the hub is Node-only); a non-Node instance
 simply reports `tier:"unknown"` in the snapshot.
