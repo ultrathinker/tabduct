@@ -69,8 +69,9 @@ export function requiredFeatures(toolName, args) {
 
 // Window etiquette, decided here once for every agent: a page tool is QUIET (the extension's `quiet:true`: the user's window is never
 // raised) unless the caller asks for the window with `wake:true`. The older `quiet:false` and `activate:true` (activating a tab raises
-// the window) are requests for it too. The extension keeps the wire-level meaning (no `quiet` = it may raise the window); the default
-// lives in the hub and in every host, so an agent has to ask before it can interrupt the user.
+// the window) are requests for it too. Likewise a new tab opens in the background unless the caller passes active:true. The extension keeps
+// the wire-level meaning (no `quiet` = it may raise the window, no `active` = the new tab is shown); the defaults live in the hub and in
+// every host, so an agent has to ask before it can interrupt the user.
 export function windowIntentConflict(args) {
   const { wake, quiet, activate } = args ?? {};
   if (wake === true && quiet === true) return "wake:true and quiet:true contradict each other: wake allows the user's window to be raised, quiet forbids it";
@@ -81,6 +82,7 @@ export function windowIntentConflict(args) {
 // `haveFeatures`: what the target extension reports (undefined = unknown: the call is only cleaned of `wake`, not made quiet). A build
 // without the `quiet` feature cannot be told to stay quiet; it raises the window as it always did.
 export function withWindowIntent(toolName, args, haveFeatures) {
+  if (toolName === "open_tab") { const { wake, ...rest } = args ?? {}; return rest.active === undefined ? { ...rest, active: false } : rest; } // any build understands active:false
   const tool = CATALOG.tools.find((t) => t.name === toolName);
   if (!tool?.inputSchema?.properties?.quiet) return args;
   const { wake, ...rest } = args ?? {};

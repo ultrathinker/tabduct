@@ -45,13 +45,21 @@ const pending = new Map();
 // ---------------------------------------------------------------------------
 // Persisted connection state (popup source of truth + restart recovery)
 
-async function setState(patch) {
-  const cur = (await chrome.storage.session.get("tabduct")).tabduct ?? {};
-  const next = { ...cur, ...patch };
-  await chrome.storage.session.set({ tabduct: next });
-  chrome.runtime.sendMessage({ evt: "status", ...next }).catch(() => {});
-  updateContextMenu(); // connection state changed → show/hide the right-click item
-  return next;
+// One at a time: each call reads the stored state and writes it back whole, so two at once lost an update. A host notice that
+// arrived while "connected" was being written put the old "connecting" state back: the popup showed Start and the warning as an
+// error while the browser was in fact connected.
+let stateChain = Promise.resolve();
+function setState(patch) {
+  const run = stateChain.then(async () => {
+    const cur = (await chrome.storage.session.get("tabduct")).tabduct ?? {};
+    const next = { ...cur, ...patch };
+    await chrome.storage.session.set({ tabduct: next });
+    chrome.runtime.sendMessage({ evt: "status", ...next }).catch(() => {});
+    updateContextMenu(); // connection state changed → show/hide the right-click item
+    return next;
+  });
+  stateChain = run.catch(() => {});
+  return run;
 }
 async function getConnState() { return (await chrome.storage.session.get("tabduct")).tabduct ?? { state: "disconnected" }; }
 
@@ -89,7 +97,7 @@ function connect(port = DEFAULT_PORT) {
     // implementation detail the hub reads from the discovery file), so remembering one only
     // risked reusing a port that had since become busy or reserved (a permanent Start failure).
     const usePort = port;
-    await setState({ state: "connecting", port: usePort, token, error: null });
+    await setState({ state: "connecting", port: usePort, token, error: null, warn: null });
     let thisPort;
     try { thisPort = chrome.runtime.connectNative(HOST_NAME); hostPort = thisPort; }
     catch (e) { await setState({ state: "error", error: String(e) }); return getConnState(); }
@@ -102,7 +110,7 @@ function connect(port = DEFAULT_PORT) {
       if (hostPort !== thisPort) return;
       hostPort = null; rejectAllPending("native host disconnected");
       await detachAllCdp(); // port dropped → drop any held debugger sessions (PART 4)
-      await setState({ state: err ? "error" : "disconnected", error: err ? err.message : null });
+      await setState({ state: err ? "error" : "disconnected", error: err ? err.message : null, warn: null });
       scheduleBadges(); // port dropped → red icons
     });
 
@@ -152,7 +160,7 @@ async function disconnect() {
   if (hostPort) { try { await request("close", {}, 3000); } catch {} try { hostPort.disconnect(); } catch {} hostPort = null; }
   rejectAllPending("disconnected by user");
   await detachAllCdp(); // release any held debugger sessions (PART 4)
-  await setState({ state: "disconnected", error: null });
+  await setState({ state: "disconnected", error: null, warn: null });
   scheduleBadges(); // repaint icons → red (not connected)
   return getConnState();
 }
@@ -184,7 +192,9 @@ async function onHostMessage(msg) {
     return;
   }
   if (msg.type === "invoke") return handleInvoke(msg);
-  if (msg.type === "notice") { const lvl = msg.payload?.level; if (lvl === "warn" || lvl === "error") await setState({ error: msg.payload?.message ?? null }); return; } // info notices aren't errors
+  // A warning (e.g. "the code on disk is newer: reload the extension") is not an error: it is kept apart and shown as a warning,
+  // and a successful connect does not wipe it. Info notices are not shown.
+  if (msg.type === "notice") { const lvl = msg.payload?.level, text = msg.payload?.message ?? null; if (lvl === "warn") await setState({ warn: text }); else if (lvl === "error") await setState({ error: text }); return; }
 }
 
 // Chrome lets us send the host up to 64 MiB, but the host drops anything over 32 MiB without a

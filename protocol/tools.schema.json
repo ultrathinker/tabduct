@@ -22,12 +22,12 @@
     },
     {
       "name": "open_tab",
-      "description": "Open a new tab, optionally at a URL. Returns the new tab. Window etiquette: a tab opened with active:true takes the user's focus; pass active:false unless they need to see it (in Silent mode the tab opens in the background whatever active says).",
+      "description": "Open a new tab, optionally at a URL. Returns the new tab. Window etiquette: the tab opens in the background by default; active:true shows it and takes the user's focus, so pass it only when they need to see it (in Silent mode the tab opens in the background whatever active says).",
       "inputSchema": {
         "type": "object",
         "properties": {
           "url": { "type": "string", "description": "Optional URL; omit for a blank tab." },
-          "active": { "type": "boolean", "default": true, "description": "Focus the new tab." }
+          "active": { "type": "boolean", "default": false, "description": "Show the new tab, which takes the user's focus. Default false: the tab opens in the background; pass true only when the user needs to see it." }
         },
         "additionalProperties": false
       }

@@ -127,6 +127,7 @@ async function injectionTarget(args) {
 // unfiltered leak path if dispatch is refactored.
 export const HANDLERS = {
   async open_tab(args) {
+    // No `active` means "show it" on the wire; the hub and the hosts send active:false unless the agent asked for the tab to be shown.
     const tab = await chrome.tabs.create({ url: args?.url, active: args?.active !== false });
     // tab.url is usually "" until the navigation commits (dest lives in pendingUrl);
     // report the intended origin so auto-share grants the right host instead of a

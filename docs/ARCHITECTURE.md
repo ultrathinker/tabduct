@@ -164,7 +164,8 @@ with `TAB_FROZEN` (the thaw trace and what to do) instead of waiting out the dea
 The extension-level flag is `quiet:true` (feature `quiet`): the window is then never raised, not even
 after a timeout, and a call that cannot be answered without it fails with an explanation. The DEFAULT is decided one layer up: the hub and
 every host (`withWindowIntent` in `hosts/node/src/tools.js`) send `quiet:true` with every page call unless the caller asked for the window
-(`wake:true`, the older `quiet:false`, or `activate:true`), so an agent has to ask before it can interrupt the user. A build without the
+(`wake:true`, the older `quiet:false`, or `activate:true`), and `open_tab` without `active` with `active:false` (the new tab opens in the
+background), so an agent has to ask before it can interrupt the user. A build without the
 `quiet` feature cannot be told and raises the window as it always did.
 
 **Who may wake a tab** (`consent.wakeAllowed`, resolved in the gate and handed on as `decision.wake`):

@@ -37,8 +37,9 @@ function renderConn(s) {
   // While connected the status line is hidden (the dot is the indicator), so a warning from the
   // host (e.g. "this extension build is older than the host - reload it") would be invisible:
   // show it on its own line.
-  $("connWarn").hidden = !(connected && s?.error);
-  $("connWarn").textContent = connected && s?.error ? `⚠ ${s.error}` : "";
+  const warnText = s?.warn ? `⚠ ${s.warn}` : (connected && s?.error ? `⚠ ${s.error}` : "");
+  $("connWarn").hidden = !warnText;
+  $("connWarn").textContent = warnText;
   $("toggle").disabled = state === "connecting";
   $("port").disabled = state === "connecting";
   $("status").dataset.state = state; // colour: red disconnected/error, green connected

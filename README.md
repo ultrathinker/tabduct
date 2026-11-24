@@ -144,7 +144,7 @@ presentation. The rules, also written into the tool descriptions:
 3. **`wake: true` asks for the window.** Only with it, and where the user allows waking the tab, `screenshot`, `type`, `click`, `press_key`,
    `get_page_content` and `get_dom_snapshot` may bring a minimized or covered window forward and put it back afterwards (the older `quiet:false`
    means the same). `activate_tab`, `screenshot` with `activate:true` (it counts as `wake`) and `open_tab` with `active:true` always take the
-   user's focus: last resort only.
+   user's focus: last resort only. `open_tab` opens the tab in the background unless you pass `active:true`.
 4. **The user decides, per tab, whether a tab may be woken** (the 🔔 / 🔕 next to the tab's ✕ in the Tabduct popup; new shares take the default
    from the settings, on) **and can switch waking off for every tab at once with Silent mode.** `list_tabs` shows `wakeAllowed:false` for a tab you
    may not bring forward: `activate_tab` and `screenshot` with `activate:true` are then refused with `WAKE_NOT_ALLOWED`, and in Silent mode `open_tab`

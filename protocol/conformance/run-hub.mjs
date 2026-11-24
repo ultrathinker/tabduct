@@ -183,6 +183,12 @@ const call = (name, args, sid, token) => rpc({ jsonrpc: "2.0", id: Math.floor(Ma
   ok(shotAct?.quiet === false && shotAct?.activate === true, "screenshot with activate:true counts as a request for the window");
   const shotPlain = await argsOf(C, "screenshot", {});
   ok(shotPlain?.quiet === true, "a screenshot without it is quiet");
+  const opened = await argsOf(C, "open_tab", { url: "https://example.com/" });
+  ok(opened?.active === false, `open_tab opens in the background by default: the hub forwards active:false (${JSON.stringify(opened)})`);
+  const shown = await argsOf(C, "open_tab", { url: "https://example.com/", active: true });
+  ok(shown?.active === true, "...and active:true still shows it");
+  const openedOld = await argsOf(A2, "open_tab", { url: "https://example.com/" });
+  ok(openedOld?.active === false, "...on an old build too (every build understands active:false)");
   const cInv = C.invokes.length;
   const clash = await call("get_page_content", { instanceId: "C", tabId: 1, wake: true, quiet: true }, sid, tAgent);
   ok(clash.json?.result?.isError && /INVALID_ARGS/.test(clash.json.result.content[0].text) && C.invokes.length === cInv, "wake:true together with quiet:true contradict each other: refused, nothing forwarded");

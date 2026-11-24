@@ -4,6 +4,18 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims for
 [Semantic Versioning](https://semver.org/) once it reaches 1.0.
 
+## [1.12.0] — 2026-11-24
+
+### Changed
+- **`open_tab` opens the tab in the background by default.** A tab opened in front takes the user's focus, the same interruption as a raised window. The hub
+  and the hosts now forward `open_tab` without `active` as `active:false`; `active:true` still shows the tab. Every extension build understands `active:false`,
+  so no reload is needed.
+
+### Fixed
+- **The popup could show "Start" and the "reload the extension" warning as an error while the browser was in fact connected.** Every change of the
+  connection state is a read-and-write-back of the stored state; the host's warning, arriving while "connected" was being written, wrote the older
+  "connecting" state back. The writes now run one at a time. The warning is kept apart from errors, shown as a warning (⚠) and not wiped by the connect.
+
 ## [1.11.0] — 2026-11-24
 
 ### Changed
